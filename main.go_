@@ -3,28 +3,110 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"strings"
+
 	"github.com/joho/godotenv"
 	"github.com/qodex/id1"
-	"net/http"
-	"os"
 )
 
 var version = "latest"
 
+// nextcloudProxy creates a reverse proxy for Nextcloud requests
+func nextcloudProxy(target string) (http.HandlerFunc, error) {
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		return nil, fmt.Errorf("invalid NEXTCLOUD_URL: %w", err)
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+	// Customize the director to strip /nextcloud prefix
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		// Strip the /nextcloud prefix from the path
+		req.URL.Path = strings.TrimPrefix(req.URL.Path, "/nextcloud")
+		if req.URL.Path == "" {
+			req.URL.Path = "/"
+		}
+		req.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, "/nextcloud")
+		if req.URL.RawPath == "" {
+			req.URL.RawPath = "/"
+		}
+
+		// Set the target URL
+		req.URL.Scheme = targetURL.Scheme
+		req.URL.Host = targetURL.Host
+
+		// Set the Host header to the target
+		req.Host = targetURL.Host
+
+		// Call the original director for any additional setup
+		originalDirector(req)
+
+		log.Printf("[nextcloud-proxy] %s %s -> %s%s", req.Method, req.URL.Path, targetURL.Host, req.URL.Path)
+	}
+
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		log.Printf("[nextcloud-proxy] Error: %v", err)
+		http.Error(w, "Nextcloud service unavailable", http.StatusBadGateway)
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		proxy.ServeHTTP(w, r)
+	}, nil
+}
+
 func main() {
 	port := "8080"
 	dbpath := "/mnt/id1db"
+	nextcloudURL := ""
+
 	if godotenv.Load(".env") == nil {
 		port = os.Getenv("PORT")
 		dbpath = os.Getenv("DBPATH")
+		nextcloudURL = os.Getenv("NEXTCLOUD_URL")
+	}
+
+	// Also check environment directly (for Kubernetes)
+	if port == "" {
+		port = os.Getenv("ID1_PORT")
+	}
+	if port == "" {
+		port = "8080"
+	}
+	if nextcloudURL == "" {
+		nextcloudURL = os.Getenv("NEXTCLOUD_URL")
 	}
 
 	fmt.Printf("id1 API build %s, port: %s, dbpath: %s\n", version, port, dbpath)
+	if nextcloudURL != "" {
+		fmt.Printf("Nextcloud proxy enabled: %s\n", nextcloudURL)
+	}
 
 	ctx := context.Background()
+
+	// Set up Nextcloud proxy first (before the catch-all handler)
+	if nextcloudURL != "" {
+		proxyHandler, err := nextcloudProxy(nextcloudURL)
+		if err != nil {
+			log.Fatalf("Failed to create Nextcloud proxy: %v", err)
+		}
+		http.HandleFunc("/nextcloud/", proxyHandler)
+		http.HandleFunc("/nextcloud", proxyHandler)
+		fmt.Println("Registered /nextcloud/* proxy handler")
+	}
+
+	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", id1.Handle(dbpath, ctx))
+
+	fmt.Printf("Starting server on port %s\n", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
-		fmt.Printf("error starting service: %s", err)
+		log.Fatalf("error starting service: %s", err)
 	}
 
 	ctx.Done()
