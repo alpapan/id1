@@ -41,7 +41,7 @@ func TestIdExists(t *testing.T) {
 		t.Errorf("set err: %s", err)
 	}
 
-	if !idExists("testid") {
+	if !idExists("testid1") {
 		t.Errorf("expected exists")
 	}
 
