@@ -74,7 +74,7 @@ func main() {
 
 	// Also check environment directly (for Kubernetes)
 	if port == "" {
-		port = os.Getenv("ID1_PORT")
+		port = os.Getenv("ID1_AUTH_PORT")
 	}
 	if port == "" {
 		port = "8080"
