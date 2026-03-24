@@ -33,14 +33,12 @@ func nextcloudProxy(target string) (http.HandlerFunc, error) {
 		if req.URL.Path == "" {
 			req.URL.Path = "/"
 		}
-		req.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, "/nextcloud")
-		if req.URL.RawPath == "" {
-			req.URL.RawPath = "/"
+		if req.URL.RawPath != "" {
+			req.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, "/nextcloud")
+			if req.URL.RawPath == "" {
+				req.URL.RawPath = "/"
+			}
 		}
-
-		// Set the target URL
-		req.URL.Scheme = targetURL.Scheme
-		req.URL.Host = targetURL.Host
 
 		// Set the Host header to the target
 		req.Host = targetURL.Host
@@ -121,6 +119,15 @@ func main() {
 
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", id1.Handle(dbpath, ctx))
+
+	// Gate on the credentials, not NEXTCLOUD_URL. The URL is always set as an
+	// inline env var in the k8s deployment; the credentials are secrets that
+	// must be explicitly provided. Missing credentials → provisioner disabled.
+	if os.Getenv("NC_PROVISIONER_USER") != "" && os.Getenv("NC_PROVISIONER_PASSWORD") != "" {
+		provisioner := id1.NewNextcloudProvisioner()
+		provisioner.StartProvisioner()
+		fmt.Println("Nextcloud provisioner started (polling every 30 seconds)")
+	}
 
 	fmt.Printf("Starting server on port %s\n", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
