@@ -1,14 +1,9 @@
 module github.com/qodex/id1
 
-go 1.23.3
+go 1.25.0
 
-require (
-	github.com/golang-jwt/jwt/v4 v4.5.2
-	golang.org/x/crypto v0.37.0
-)
+require github.com/golang-jwt/jwt/v4 v4.5.2
 
-require (
-	github.com/gorilla/websocket v1.5.3
-	github.com/joho/godotenv v1.5.1 // indirect
-	golang.org/x/sys v0.32.0 // indirect
-)
+require golang.org/x/oauth2 v0.28.0
+
+require github.com/gorilla/websocket v1.5.3

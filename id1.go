@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -44,7 +45,10 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		id := ""
 		if claims, _ := validateToken(req.Token, ""); len(claims.Subject) > 0 {
 			id = claims.Subject
-			if _, err := validateToken(req.Token, generateSecret(id)); err != nil {
+			if secret, err := generateSecret(id); err != nil {
+				log.Printf("generateSecret failed for id %q: %v", id, err)
+				id = ""
+			} else if _, err := validateToken(req.Token, secret); err != nil {
 				id = ""
 			}
 		}
@@ -85,3 +89,5 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		}
 	}
 }
+
+// __END_OF_FILE_MARKER__
