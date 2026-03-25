@@ -5,7 +5,10 @@ import (
 )
 
 func TestAuth(t *testing.T) {
-	dbpath = "test"
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
 	testid1PubKey := K("testid1/pub/key")
 	if _, err := NewCommand(Set, K("testid1/pub/key"), map[string]string{}, []byte("..........")).Exec(); err != nil {
 		t.Errorf("set err: %s", err)
@@ -35,7 +38,10 @@ func TestParseClaims(t *testing.T) {
 }
 
 func TestIdExists(t *testing.T) {
-	dbpath = "test"
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
 	testidPubKey := K("testid1/pub/key")
 	if _, err := NewCommand(Set, testidPubKey, map[string]string{}, []byte("..........")).Exec(); err != nil {
 		t.Errorf("set err: %s", err)

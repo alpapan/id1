@@ -42,7 +42,10 @@ func TestParseCommand(t *testing.T) {
 }
 
 func TestCommandCRUD(t *testing.T) {
-	dbpath = "test"
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
 	testKey := KK("test", "one")
 	NewCommand(Del, testKey, map[string]string{}, []byte{}).Exec()
 
@@ -69,7 +72,10 @@ func TestCommandCRUD(t *testing.T) {
 }
 
 func TestCommandMov(t *testing.T) {
-	dbpath = "test"
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
 	testKey := KK("test", "one")
 	testKeyTgt := KK("test", "two")
 	CmdDel(testKeyTgt).Exec()
@@ -89,7 +95,10 @@ func TestCommandMov(t *testing.T) {
 }
 
 func TestCommandList(t *testing.T) {
-	dbpath = "test"
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
 	id := "test"
 	idKey := K(id)
 	testKey1 := KK(id, "one")

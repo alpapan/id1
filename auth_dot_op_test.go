@@ -5,8 +5,11 @@ import (
 	"testing"
 )
 
-func setup() {
-	dbpath = "test"
+func setup(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
 	CmdSet(K("test0/pub/key"), map[string]string{}, []byte("...")).Exec()
 	CmdSet(K("test0/pub/tags/Robot"), map[string]string{}, []byte("...")).Exec()
 	CmdSet(K("test0/.get"), map[string]string{}, []byte("Reader")).Exec()
@@ -17,7 +20,7 @@ func setup() {
 }
 
 func TestAuthDotOp(t *testing.T) {
-	setup()
+	setup(t)
 	if !authDotOp("max", CmdSet(K("test0/pub/tags/Robot"), map[string]string{}, []byte{})) {
 		t.Fail()
 	}
@@ -33,7 +36,7 @@ func TestAuthDotOp(t *testing.T) {
 }
 
 func TestGetRoles(t *testing.T) {
-	setup()
+	setup(t)
 	roles := getRoles("max", K("test0/pub/tags/Robot"))
 	if !slices.Contains(roles, "Reader") ||
 		!slices.Contains(roles, "Admin") ||
