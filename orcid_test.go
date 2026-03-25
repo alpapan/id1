@@ -13,6 +13,16 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// CRITICAL: Read frontend port from environment variable (set by .env.test)
+func getFrontendURL() string {
+	port := os.Getenv("HTTP_FRONTEND_PORT")
+	if port == "" {
+		port = "19001"
+	}
+	return fmt.Sprintf("http://localhost:%s", port)
+}
+
+
 // newTestOrcidHandler constructs an OrcidHandler suitable for unit tests
 // without requiring environment variables. tokenServerURL is the URL of a
 // mock ORCID token endpoint (use httptest.NewServer); pass "" to omit it.
@@ -44,7 +54,7 @@ func newTestOrcidHandler(tokenServerURL, frontendURL string) *OrcidHandler {
 // TestOrcidStateExpiry verifies that HandleCallback rejects a state token
 // that is older than stateTTL, even though the entry was legitimately inserted.
 func TestOrcidStateExpiry(t *testing.T) {
-	h := newTestOrcidHandler("", "http://localhost:3001")
+	h := newTestOrcidHandler("", getFrontendURL())
 
 	// Insert a state that is 6 minutes old (beyond the 5-minute TTL).
 	h.stateStore["expired_state"] = stateEntry{created: time.Now().Add(-6 * time.Minute)}
@@ -64,7 +74,7 @@ func TestOrcidStateExpiry(t *testing.T) {
 // TestOrcidStatePrune verifies that HandleBegin evicts stale state entries
 // before inserting a new one, preventing unbounded map growth.
 func TestOrcidStatePrune(t *testing.T) {
-	h := newTestOrcidHandler("", "http://localhost:3001")
+	h := newTestOrcidHandler("", getFrontendURL())
 
 	// Insert one stale entry (7 minutes old) and one fresh entry (1 minute old).
 	h.stateStore["stale_state"] = stateEntry{created: time.Now().Add(-7 * time.Minute)}
@@ -114,7 +124,7 @@ func TestOrcidCallback(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	h := newTestOrcidHandler(mockServer.URL, "http://localhost:3001")
+	h := newTestOrcidHandler(mockServer.URL, getFrontendURL())
 
 	// Insert a valid, fresh state with a PKCE verifier.
 	h.stateMu.Lock()
@@ -144,7 +154,7 @@ func TestOrcidCallback(t *testing.T) {
 
 // TestOrcidCallbackMissingState verifies that HandleCallback returns 400 when state parameter is absent.
 func TestOrcidCallbackMissingState(t *testing.T) {
-	h := newTestOrcidHandler("", "http://localhost:3001")
+	h := newTestOrcidHandler("", getFrontendURL())
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?code=test_code", nil)
 	rec := httptest.NewRecorder()
@@ -160,7 +170,7 @@ func TestOrcidCallbackMissingState(t *testing.T) {
 
 // TestOrcidCallbackMissingCode verifies that HandleCallback returns 400 when code parameter is absent.
 func TestOrcidCallbackMissingCode(t *testing.T) {
-	h := newTestOrcidHandler("", "http://localhost:3001")
+	h := newTestOrcidHandler("", getFrontendURL())
 
 	// Insert a valid state so we know the error is due to missing code, not missing state.
 	h.stateMu.Lock()
@@ -218,7 +228,7 @@ func TestOrcidCallbackInvalidFormat(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	h := newTestOrcidHandler(mockServer.URL, "http://localhost:3001")
+	h := newTestOrcidHandler(mockServer.URL, getFrontendURL())
 
 	h.stateMu.Lock()
 	h.stateStore["valid_state"] = stateEntry{created: time.Now(), verifier: "test_verifier_12345"}
@@ -254,7 +264,7 @@ func TestOrcidCallbackMissingOrcidField(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	h := newTestOrcidHandler(mockServer.URL, "http://localhost:3001")
+	h := newTestOrcidHandler(mockServer.URL, getFrontendURL())
 
 	h.stateMu.Lock()
 	h.stateStore["valid_state"] = stateEntry{created: time.Now(), verifier: "test_verifier_12345"}
