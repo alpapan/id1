@@ -117,6 +117,18 @@ func main() {
 		}
 	}
 
+	// Initialize JWT signing key at startup
+	id1KVStore := &id1.ID1KeyValueStore{}
+	if _, _, err := id1.GetOrCreateSigningKey(id1KVStore); err != nil {
+		log.Printf("Warning: Failed to initialize JWT signing key: %v", err)
+	} else {
+		fmt.Println("JWT signing key initialized")
+	}
+
+	// Register JWKS endpoint for public key retrieval
+	http.HandleFunc("/pub/jwks.json", id1.HandleJWKS(id1KVStore))
+	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
+
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", id1.Handle(dbpath, ctx))
 
