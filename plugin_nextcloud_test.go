@@ -188,7 +188,7 @@ func TestScanAndProvisionIntegration(t *testing.T) {
 	// Save and restore the global dbpath.
 	originalDbpath := dbpath
 	dbpath = tmpDir
-	defer func() { dbpath = originalDbpath }()
+	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Create an ORCID directory structure:
 	// tmpDir/
@@ -274,7 +274,7 @@ func TestProvisionUserFullFlow(t *testing.T) {
 	// Save and restore the global dbpath.
 	originalDbpath := dbpath
 	dbpath = tmpDir
-	defer func() { dbpath = originalDbpath }()
+	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Create user directory with pub/key.
 	userDir := filepath.Join(tmpDir, "0000-0003-0003-0003", "pub")
