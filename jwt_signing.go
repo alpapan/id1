@@ -60,6 +60,7 @@ const (
 	privKeyPrevPath    = "_system/priv/jwt-signing-key-prev"
 	pubKeyPrevPath     = "_system/pub/jwt-signing-key-prev"
 	jwtAudience        = "curatorium-backend"
+	jwtIssuer          = "http://id1-router:8080"  // Internal Kubernetes DNS for id1
 	jwtExpirationHours = 1
 )
 
@@ -122,10 +123,11 @@ func parsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
-// signJWT issues RS256 JWT with claims: sub, aud="curatorium-backend", iat, exp=iat+3600, kid.
+// signJWT issues RS256 JWT with claims: iss, sub, aud="curatorium-backend", iat, exp=iat+3600, kid.
 func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
 	now := time.Now()
 	claims := jwt.RegisteredClaims{
+		Issuer:    jwtIssuer,
 		Subject:   orcidID,
 		Audience:  jwt.ClaimStrings{jwtAudience},
 		IssuedAt:  jwt.NewNumericDate(now),
