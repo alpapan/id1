@@ -2,7 +2,7 @@ package id1
 
 import (
 	"fmt"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func auth(id string, cmd Command) bool {

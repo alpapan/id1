@@ -19,27 +19,66 @@ func (e *errReader) Read(p []byte) (int, error) {
 }
 
 func TestPublicKeyEnc(t *testing.T) {
+	oldDbpath := dbpath
 	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = oldDbpath })
+
 	secret, err := generateSecret("test1")
 	if err != nil {
 		t.Fatalf("generateSecret failed: %s", err)
 	}
-	if data, err := encrypt(`-----BEGIN PUBLIC KEY-----
+	if len(secret) == 0 {
+		t.Fatalf("generateSecret returned empty secret")
+	}
+
+	publicKey := `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC3gMw5zAsvBuJ+swdVW8Ec9r1zu42Z+m7TsgoaV6yas58hxrPCeBUoNhFmz380yBpXjB7jwX1f5nGrZA9FWt2hmtJNLCvr6U1ZMZeERbPWjFIE02BWK0p+qZKByjpNv+LYMr8YM/JfYmqhhVbhqno15vVFyfNmaVIB6y1yJtn7xQIDAQAB
------END PUBLIC KEY-----`, secret); err != nil || len(data) == 0 {
-		t.Errorf("encrypt failed: %s", err)
+-----END PUBLIC KEY-----`
+
+	data, err := encrypt(publicKey, secret)
+	if err != nil {
+		t.Errorf("encrypt failed: %v", err)
+	}
+	if len(data) == 0 {
+		t.Errorf("encrypt returned empty data")
 	}
 }
 
 func TestGenerateChallenge(t *testing.T) {
+	oldDbpath := dbpath
 	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = oldDbpath })
+
 	challenge1, err1 := generateChallenge("testid1", testPubKey1)
-	challenge2, err2 := generateChallenge("testid2", testPubKey2)
-	if err1 != nil || err2 != nil {
-		t.Errorf("error generating challenge: %v %v", err1, err2)
+	if err1 != nil {
+		t.Fatalf("generateChallenge failed for testid1: %v", err1)
 	}
+	if len(challenge1) == 0 {
+		t.Errorf("generateChallenge returned empty challenge for testid1")
+	}
+
+	challenge2, err2 := generateChallenge("testid2", testPubKey2)
+	if err2 != nil {
+		t.Fatalf("generateChallenge failed for testid2: %v", err2)
+	}
+	if len(challenge2) == 0 {
+		t.Errorf("generateChallenge returned empty challenge for testid2")
+	}
+
+	// Challenges for different users with different keys must be different
 	if challenge1 == challenge2 {
-		t.Errorf("invalid challenge")
+		t.Errorf("challenges for different users should differ: challenge1=%q, challenge2=%q", challenge1, challenge2)
+	}
+}
+
+func TestGenerateChallengeWithInvalidPublicKey(t *testing.T) {
+	oldDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = oldDbpath })
+
+	_, err := generateChallenge("testid", "invalid-key")
+	if err == nil {
+		t.Errorf("expected error for invalid public key, got nil")
 	}
 }
 
@@ -70,15 +109,19 @@ func TestGenerateSecretSameSalt(t *testing.T) {
 func TestGenerateSecretRandReadError(t *testing.T) {
 	oldReader := cryptoRandReader
 	cryptoRandReader = &errReader{}
-	defer func() { cryptoRandReader = oldReader }()
+	t.Cleanup(func() { cryptoRandReader = oldReader })
 
 	oldDbpath := dbpath
 	dbpath = t.TempDir()
-	defer func() { dbpath = oldDbpath }()
+	t.Cleanup(func() { dbpath = oldDbpath })
 
 	_, err := generateSecret("testid_rand_error")
 	if err == nil {
-		t.Error("expected error from rand.Read failure, got nil")
+		t.Errorf("expected error from rand.Read failure, got nil")
+	}
+	// Verify error message indicates the rand failure
+	if err != nil && len(err.Error()) == 0 {
+		t.Errorf("error message is empty")
 	}
 }
 
@@ -90,18 +133,18 @@ func TestGenerateSecretSaltPersistError(t *testing.T) {
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Skip("cannot set directory to read-only; skipping")
 	}
-	defer func() {
-		// Restore write permission so TempDir cleanup can succeed.
+	// Restore write permission so TempDir cleanup can succeed.
+	t.Cleanup(func() {
 		_ = os.Chmod(dir, 0o700)
-	}()
+	})
 
 	oldDbpath := dbpath
 	dbpath = dir
-	defer func() { dbpath = oldDbpath }()
+	t.Cleanup(func() { dbpath = oldDbpath })
 
 	_, err := generateSecret("testid_persist_error")
 	if err == nil {
-		t.Error("expected error from CmdSet failure, got nil")
+		t.Errorf("expected error from CmdSet failure, got nil")
 	}
 }
 
