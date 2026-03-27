@@ -22,7 +22,7 @@ func setupTestKVStore(t *testing.T) KeyValueStore {
 
 func TestGetOrCreateSigningKey_CreatesKeyOnFirstCall(t *testing.T) {
 	kv := setupTestKVStore(t)
-	keyID, privKey, err := getOrCreateSigningKey(kv)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
 
 	require.NoError(t, err)
 	assert.NotEmpty(t, keyID)
@@ -43,10 +43,10 @@ func TestGetOrCreateSigningKey_CreatesKeyOnFirstCall(t *testing.T) {
 func TestGetOrCreateSigningKey_ReturnsExistingKey(t *testing.T) {
 	kv := setupTestKVStore(t)
 
-	keyID1, privKey1, err1 := getOrCreateSigningKey(kv)
+	keyID1, privKey1, err1 := GetOrCreateSigningKey(kv)
 	require.NoError(t, err1)
 
-	keyID2, privKey2, err2 := getOrCreateSigningKey(kv)
+	keyID2, privKey2, err2 := GetOrCreateSigningKey(kv)
 	require.NoError(t, err2)
 
 	// Both calls should return the same key from persistent storage
@@ -56,7 +56,7 @@ func TestGetOrCreateSigningKey_ReturnsExistingKey(t *testing.T) {
 
 func TestSignJWT_RS256Valid(t *testing.T) {
 	kv := setupTestKVStore(t)
-	keyID, privKey, _ := getOrCreateSigningKey(kv)
+	keyID, privKey, _ := GetOrCreateSigningKey(kv)
 
 	orcidID := "0000-0001-2345-6789"
 	tokenString, err := signJWT(orcidID, privKey, keyID)
@@ -80,7 +80,7 @@ func TestSignJWT_RS256Valid(t *testing.T) {
 
 func TestSignJWT_HasCorrectKeyID(t *testing.T) {
 	kv := setupTestKVStore(t)
-	keyID, privKey, _ := getOrCreateSigningKey(kv)
+	keyID, privKey, _ := GetOrCreateSigningKey(kv)
 
 	tokenString, _ := signJWT("0000-0001-2345-6789", privKey, keyID)
 
@@ -98,7 +98,7 @@ func TestRotateSigningKey_KeepsPreviousKey(t *testing.T) {
 	kv := setupTestKVStore(t)
 
 	// Create initial key
-	_, _, _ = getOrCreateSigningKey(kv)
+	_, _, _ = GetOrCreateSigningKey(kv)
 	storedPrivKey1, err := kv.CmdGet("_system/priv/jwt-signing-key")
 	require.NoError(t, err)
 	storedPubKey1, err := kv.CmdGet("_system/pub/jwt-signing-key")
@@ -128,7 +128,7 @@ func TestRotateSigningKey_KeepsPreviousKey(t *testing.T) {
 func TestGetJWKS_ReturnsBothKeysDuringRotationOverlap(t *testing.T) {
 	kv := setupTestKVStore(t)
 
-	getOrCreateSigningKey(kv)
+	GetOrCreateSigningKey(kv)
 	rotateSigningKey(kv)
 
 	jwksBytes, err := getJWKS(kv)
@@ -146,7 +146,7 @@ func TestGetJWKS_ReturnsBothKeysDuringRotationOverlap(t *testing.T) {
 func TestGetJWKS_ReturnsOnlyCurrentKeyWhenNoPrev(t *testing.T) {
 	kv := setupTestKVStore(t)
 
-	getOrCreateSigningKey(kv)
+	GetOrCreateSigningKey(kv)
 
 	jwksBytes, err := getJWKS(kv)
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestGetJWKS_ReturnsOnlyCurrentKeyWhenNoPrev(t *testing.T) {
 
 func TestKeyIDFormat_IsSHA256Thumbprint(t *testing.T) {
 	kv := setupTestKVStore(t)
-	keyID, _, _ := getOrCreateSigningKey(kv)
+	keyID, _, _ := GetOrCreateSigningKey(kv)
 
 	// SHA-256 thumbprint base64url-encoded = 43 chars (256 bits / 6 bits per char, no padding)
 	assert.Equal(t, 43, len(keyID), "SHA-256 thumbprint should be 43 base64url chars")

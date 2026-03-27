@@ -55,19 +55,19 @@ func HandleJWKS(kvStore KeyValueStore) http.HandlerFunc {
 
 // KVPaths for JWT signing keys
 const (
-	privKeyPath       = "_system/priv/jwt-signing-key"
-	pubKeyPath        = "_system/pub/jwt-signing-key"
-	privKeyPrevPath   = "_system/priv/jwt-signing-key-prev"
-	pubKeyPrevPath    = "_system/pub/jwt-signing-key-prev"
-	jwtAudience       = "curatorium-backend"
+	privKeyPath        = "_system/priv/jwt-signing-key"
+	pubKeyPath         = "_system/pub/jwt-signing-key"
+	privKeyPrevPath    = "_system/priv/jwt-signing-key-prev"
+	pubKeyPrevPath     = "_system/pub/jwt-signing-key-prev"
+	jwtAudience        = "curatorium-backend"
 	jwtExpirationHours = 1
 )
 
-// getOrCreateSigningKey loads RSA-2048 key from KV store or creates new one.
+// GetOrCreateSigningKey loads RSA-2048 key from KV store or creates new one.
 // Stores private key at _system/priv/jwt-signing-key (PEM).
 // Stores public key at _system/pub/jwt-signing-key (PEM).
 // Returns (keyID, privateKey, error). Key ID is SHA-256 JWK Thumbprint (RFC 7638).
-func getOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, error) {
+func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, error) {
 	// Try to load existing private key
 	privPEM, err := kvStore.CmdGet(privKeyPath)
 	if err == nil && len(privPEM) > 0 {
