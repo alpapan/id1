@@ -10,32 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// MockKeyValueStore wraps id1's CmdGet/CmdSet interface (k.go, cmd.go) with
-// an in-memory map for test isolation. Implements the KeyValueStore interface.
-type MockKeyValueStore struct {
-	data map[string][]byte
-}
-
-func NewMockKVStore() *MockKeyValueStore {
-	return &MockKeyValueStore{data: make(map[string][]byte)}
-}
-
-// CmdGet mirrors id1's existing CmdGet function signature from cmd.go.
-func (m *MockKeyValueStore) CmdGet(key string) ([]byte, error) {
-	if val, ok := m.data[key]; ok {
-		return val, nil
-	}
-	return nil, nil
-}
-
-// CmdSet mirrors id1's existing CmdSet function signature from cmd.go.
-func (m *MockKeyValueStore) CmdSet(key string, value []byte) error {
-	m.data[key] = value
-	return nil
+// setupTestKVStore creates a temporary database for test isolation.
+// Returns KeyValueStore using real KV operations with isolated tmpdir.
+func setupTestKVStore(t *testing.T) KeyValueStore {
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+	return ID1KeyValueStore{}
 }
 
 func TestGetOrCreateSigningKey_CreatesKeyOnFirstCall(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 	keyID, privKey, err := getOrCreateSigningKey(kv)
 
 	require.NoError(t, err)
@@ -43,17 +29,19 @@ func TestGetOrCreateSigningKey_CreatesKeyOnFirstCall(t *testing.T) {
 	assert.NotNil(t, privKey)
 	assert.Equal(t, 2048, privKey.N.BitLen(), "Key should be RSA-2048")
 
-	// Verify private key stored at correct path
-	storedPrivBytes, _ := kv.CmdGet("_system/priv/jwt-signing-key")
+	// Verify private key stored at correct path in real KV store
+	storedPrivBytes, err := kv.CmdGet("_system/priv/jwt-signing-key")
+	require.NoError(t, err)
 	assert.NotNil(t, storedPrivBytes, "Private key should be stored at _system/priv/jwt-signing-key")
 
-	// Verify public key stored at correct path
-	storedPubBytes, _ := kv.CmdGet("_system/pub/jwt-signing-key")
+	// Verify public key stored at correct path in real KV store
+	storedPubBytes, err := kv.CmdGet("_system/pub/jwt-signing-key")
+	require.NoError(t, err)
 	assert.NotNil(t, storedPubBytes, "Public key should be stored at _system/pub/jwt-signing-key")
 }
 
 func TestGetOrCreateSigningKey_ReturnsExistingKey(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 
 	keyID1, privKey1, err1 := getOrCreateSigningKey(kv)
 	require.NoError(t, err1)
@@ -61,13 +49,13 @@ func TestGetOrCreateSigningKey_ReturnsExistingKey(t *testing.T) {
 	keyID2, privKey2, err2 := getOrCreateSigningKey(kv)
 	require.NoError(t, err2)
 
-	// Both calls should return the same key
-	assert.Equal(t, keyID1, keyID2)
+	// Both calls should return the same key from persistent storage
+	assert.Equal(t, keyID1, keyID2, "Key IDs should match on subsequent calls")
 	assert.Equal(t, privKey1.D, privKey2.D, "Private key components should match")
 }
 
 func TestSignJWT_RS256Valid(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 	keyID, privKey, _ := getOrCreateSigningKey(kv)
 
 	orcidID := "0000-0001-2345-6789"
@@ -91,7 +79,7 @@ func TestSignJWT_RS256Valid(t *testing.T) {
 }
 
 func TestSignJWT_HasCorrectKeyID(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 	keyID, privKey, _ := getOrCreateSigningKey(kv)
 
 	tokenString, _ := signJWT("0000-0001-2345-6789", privKey, keyID)
@@ -107,33 +95,38 @@ func TestSignJWT_HasCorrectKeyID(t *testing.T) {
 }
 
 func TestRotateSigningKey_KeepsPreviousKey(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 
 	// Create initial key
 	_, _, _ = getOrCreateSigningKey(kv)
-	storedPrivKey1, _ := kv.CmdGet("_system/priv/jwt-signing-key")
-	storedPubKey1, _ := kv.CmdGet("_system/pub/jwt-signing-key")
+	storedPrivKey1, err := kv.CmdGet("_system/priv/jwt-signing-key")
+	require.NoError(t, err)
+	storedPubKey1, err := kv.CmdGet("_system/pub/jwt-signing-key")
+	require.NoError(t, err)
 
 	// Rotate
-	err := rotateSigningKey(kv)
+	err = rotateSigningKey(kv)
 	require.NoError(t, err)
 
 	// Verify new key exists at primary path
-	storedPrivKey2, _ := kv.CmdGet("_system/priv/jwt-signing-key")
+	storedPrivKey2, err := kv.CmdGet("_system/priv/jwt-signing-key")
+	require.NoError(t, err)
 	assert.NotNil(t, storedPrivKey2)
 	assert.NotEqual(t, storedPrivKey1, storedPrivKey2, "Private key should be different after rotation")
 
 	// Verify previous private key saved at -prev path
-	storedPrivKeyPrev, _ := kv.CmdGet("_system/priv/jwt-signing-key-prev")
+	storedPrivKeyPrev, err := kv.CmdGet("_system/priv/jwt-signing-key-prev")
+	require.NoError(t, err)
 	assert.Equal(t, storedPrivKey1, storedPrivKeyPrev, "Previous private key should be at _system/priv/jwt-signing-key-prev")
 
 	// Verify previous public key saved at -prev path
-	storedPubKeyPrev, _ := kv.CmdGet("_system/pub/jwt-signing-key-prev")
+	storedPubKeyPrev, err := kv.CmdGet("_system/pub/jwt-signing-key-prev")
+	require.NoError(t, err)
 	assert.Equal(t, storedPubKey1, storedPubKeyPrev, "Previous public key should be at _system/pub/jwt-signing-key-prev")
 }
 
 func TestGetJWKS_ReturnsBothKeysDuringRotationOverlap(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 
 	getOrCreateSigningKey(kv)
 	rotateSigningKey(kv)
@@ -151,7 +144,7 @@ func TestGetJWKS_ReturnsBothKeysDuringRotationOverlap(t *testing.T) {
 }
 
 func TestGetJWKS_ReturnsOnlyCurrentKeyWhenNoPrev(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 
 	getOrCreateSigningKey(kv)
 
@@ -168,7 +161,7 @@ func TestGetJWKS_ReturnsOnlyCurrentKeyWhenNoPrev(t *testing.T) {
 }
 
 func TestKeyIDFormat_IsSHA256Thumbprint(t *testing.T) {
-	kv := NewMockKVStore()
+	kv := setupTestKVStore(t)
 	keyID, _, _ := getOrCreateSigningKey(kv)
 
 	// SHA-256 thumbprint base64url-encoded = 43 chars (256 bits / 6 bits per char, no padding)

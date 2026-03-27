@@ -4,26 +4,46 @@ import (
 	"testing"
 )
 
-func TestAuth(t *testing.T) {
+func setupAuthTest(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalDbpath := dbpath
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
+}
+
+func TestAuthOwnerCanSetOwnPublicKey(t *testing.T) {
+	setupAuthTest(t)
 	testid1PubKey := K("testid1/pub/key")
 	if _, err := NewCommand(Set, K("testid1/pub/key"), map[string]string{}, []byte("..........")).Exec(); err != nil {
-		t.Errorf("set err: %s", err)
+		t.Fatalf("setup failed to set initial key: %v", err)
 	}
 
 	if !auth("testid1", NewCommand(Set, testid1PubKey, map[string]string{}, []byte{})) {
-		t.Errorf("owner should be able to set own pub key")
+		t.Errorf("testid1 should be authorized to set own public key")
+	}
+}
+
+func TestAuthNonOwnerCannotSetOthersKey(t *testing.T) {
+	setupAuthTest(t)
+	testid1PubKey := K("testid1/pub/key")
+	if _, err := NewCommand(Set, K("testid1/pub/key"), map[string]string{}, []byte("..........")).Exec(); err != nil {
+		t.Fatalf("setup failed to set initial key: %v", err)
 	}
 
 	if auth("testid2", NewCommand(Set, testid1PubKey, map[string]string{}, []byte{})) {
-		t.Errorf("non-owner shouldn't be able to set other pub keys")
+		t.Errorf("testid2 should not be authorized to modify testid1's public key")
+	}
+}
+
+func TestAuthAnonymousCanReadPublicKeys(t *testing.T) {
+	setupAuthTest(t)
+	testid1PubKey := K("testid1/pub/key")
+	if _, err := NewCommand(Set, K("testid1/pub/key"), map[string]string{}, []byte("..........")).Exec(); err != nil {
+		t.Fatalf("setup failed to set initial key: %v", err)
 	}
 
 	if !auth("", NewCommand(Get, testid1PubKey, map[string]string{}, []byte{})) {
-		t.Errorf("anyone should be able to get pub keys")
+		t.Errorf("anonymous user should be authorized to read public keys")
 	}
 }
 
@@ -38,21 +58,18 @@ func TestParseClaims(t *testing.T) {
 }
 
 func TestIdExists(t *testing.T) {
-	tmpDir := t.TempDir()
-	originalDbpath := dbpath
-	dbpath = tmpDir
-	t.Cleanup(func() { dbpath = originalDbpath })
+	setupAuthTest(t)
 	testidPubKey := K("testid1/pub/key")
 	if _, err := NewCommand(Set, testidPubKey, map[string]string{}, []byte("..........")).Exec(); err != nil {
-		t.Errorf("set err: %s", err)
+		t.Fatalf("setup failed: %v", err)
 	}
 
 	if !idExists("testid1") {
-		t.Errorf("expected exists")
+		t.Errorf("idExists should return true for testid1 after setting its public key")
 	}
 
 	if idExists("testid123") {
-		t.Errorf("expected not exists")
+		t.Errorf("idExists should return false for non-existent testid123")
 	}
 }
 
