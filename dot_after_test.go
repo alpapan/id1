@@ -15,7 +15,7 @@ func TestDotAfter(t *testing.T) {
 
 	ttlKey := K("testda/1sec/qqqqbbbb")
 	expectedData := "..."
-	
+
 	// Set key with TTL
 	_, err := NewCommand(Set, ttlKey, map[string]string{"ttl": "1", "x-id": "testda"}, []byte(expectedData)).Exec()
 	if err != nil {

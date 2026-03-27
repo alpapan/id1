@@ -22,7 +22,6 @@ func getFrontendURL() string {
 	return fmt.Sprintf("http://localhost:%s", port)
 }
 
-
 // newTestOrcidHandler constructs an OrcidHandler suitable for unit tests
 // without requiring environment variables. tokenServerURL is the URL of a
 // mock ORCID token endpoint (use httptest.NewServer); pass "" to omit it.
@@ -100,7 +99,7 @@ func TestOrcidStatePrune(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Errorf("expected 302 redirect from HandleBegin, got %d", rec.Code)
 	}
-	
+
 	// Verify redirect URL is present (indicates new state was created).
 	location := rec.Header().Get("Location")
 	if location == "" {
