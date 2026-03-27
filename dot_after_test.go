@@ -14,15 +14,22 @@ func TestDotAfter(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	ttlKey := K("testda/1sec/qqqqbbbb")
-	_, err := NewCommand(Set, ttlKey, map[string]string{"ttl": "1", "x-id": "testda"}, []byte("...")).Exec()
+	expectedData := "..."
+	
+	// Set key with TTL
+	_, err := NewCommand(Set, ttlKey, map[string]string{"ttl": "1", "x-id": "testda"}, []byte(expectedData)).Exec()
 	if err != nil {
-		t.Fatalf("failed to set key with TTL: %v", err)
+		t.Fatalf("Failed to set key with TTL: %v", err)
 	}
 
-	// Verify key was created
+	// Verify key was created with correct data
 	data, err := CmdGet(ttlKey).Exec()
-	if err != nil || string(data) != "..." {
-		t.Fatalf("failed to verify key creation: got err=%v, data=%q", err, string(data))
+	if err != nil {
+		t.Fatalf("Failed to retrieve key after creation: %v", err)
+	}
+	actualData := string(data)
+	if actualData != expectedData {
+		t.Fatalf("Key data mismatch after creation: expected %q, got %q", expectedData, actualData)
 	}
 
 	// Wait for TTL to expire with extra margin (1100ms instead of 1000ms)
@@ -33,13 +40,15 @@ func TestDotAfter(t *testing.T) {
 	dotAfter(dbpath)
 
 	// After TTL expiry and dotAfter cleanup, the key should be gone
-	if _, err := CmdGet(ttlKey).Exec(); err == nil {
-		t.Errorf("expected ttlKey to be deleted by dotAfter, but it still exists")
+	_, errAfterDelete := CmdGet(ttlKey).Exec()
+	if errAfterDelete == nil {
+		t.Errorf("Expected TTL key to be deleted by dotAfter, but Get succeeded (key still exists)")
 	}
 
 	// The .ttl. metadata file should also be removed
 	ttlMetaKey := K(fmt.Sprintf("%s/.ttl.%s", ttlKey.Parent, ttlKey.Name))
-	if _, err := CmdGet(ttlMetaKey).Exec(); err == nil {
-		t.Errorf("expected .ttl.%s metadata to be deleted by dotAfter, but it still exists", ttlKey.Name)
+	_, errMetaDelete := CmdGet(ttlMetaKey).Exec()
+	if errMetaDelete == nil {
+		t.Errorf("Expected TTL metadata file %q to be deleted by dotAfter, but Get succeeded (file still exists)", ttlMetaKey.String())
 	}
 }
