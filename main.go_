@@ -88,6 +88,14 @@ func main() {
 
 	ctx := context.Background()
 
+	// Initialize KV store and JWT signing key at startup (BEFORE ORCID handler)
+	id1KVStore := &id1.ID1KeyValueStore{}
+	if _, _, err := id1.GetOrCreateSigningKey(id1KVStore); err != nil {
+		log.Printf("Warning: Failed to initialize JWT signing key: %v", err)
+	} else {
+		fmt.Println("JWT signing key initialized")
+	}
+
 	// Set up Nextcloud proxy first (before the catch-all handler)
 	if nextcloudURL != "" {
 		proxyHandler, err := nextcloudProxy(nextcloudURL)
@@ -107,7 +115,7 @@ func main() {
 	if os.Getenv("ORCID_CLIENT_ID") != "" &&
 		os.Getenv("ORCID_CLIENT_SECRET") != "" &&
 		os.Getenv("ORCID_ISSUER_URL") != "" {
-		orcidHandler, err := id1.NewOrcidHandler()
+		orcidHandler, err := id1.NewOrcidHandler(id1KVStore)
 		if err == nil {
 			http.HandleFunc("/auth/orcid", orcidHandler.HandleBegin)
 			http.HandleFunc("/auth/orcid/callback", orcidHandler.HandleCallback)
@@ -115,14 +123,6 @@ func main() {
 		} else {
 			log.Printf("ORCID handler init failed: %v", err)
 		}
-	}
-
-	// Initialize JWT signing key at startup
-	id1KVStore := &id1.ID1KeyValueStore{}
-	if _, _, err := id1.GetOrCreateSigningKey(id1KVStore); err != nil {
-		log.Printf("Warning: Failed to initialize JWT signing key: %v", err)
-	} else {
-		fmt.Println("JWT signing key initialized")
 	}
 
 	// Register JWKS endpoint for public key retrieval

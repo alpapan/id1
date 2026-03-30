@@ -32,6 +32,7 @@ var orcidIDPattern = regexp.MustCompile(`^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$`)
 type OrcidHandler struct {
 	oauth2Config *oauth2.Config
 	frontendURL  string
+	kvStore      KeyValueStore
 	stateMu      sync.Mutex
 	// stateStore holds short-lived CSRF state tokens keyed by opaque string.
 	// Entries must be pruned after TTL (5 minutes) to prevent unbounded growth.
@@ -48,7 +49,7 @@ type OrcidHandler struct {
 //
 // All three required vars are also checked by the caller in main.go_ before
 // this function is invoked, but they are validated here too for safety.
-func NewOrcidHandler() (*OrcidHandler, error) {
+func NewOrcidHandler(kvStore KeyValueStore) (*OrcidHandler, error) {
 	issuerURL := os.Getenv("ORCID_ISSUER_URL")
 	if issuerURL == "" {
 		return nil, fmt.Errorf("ORCID_ISSUER_URL is required")
@@ -77,6 +78,7 @@ func NewOrcidHandler() (*OrcidHandler, error) {
 			Scopes:      []string{"/authenticate"},
 		},
 		frontendURL: frontendURL,
+		kvStore:     kvStore,
 		stateStore:  make(map[string]stateEntry),
 		stateTTL:    5 * time.Minute,
 	}, nil
@@ -194,13 +196,28 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.frontendURL == "" {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"orcid":%q}`, orcidID)
+	// Get or create signing key for RS256 JWT
+	keyID, privKey, err := GetOrCreateSigningKey(h.kvStore)
+	if err != nil {
+		http.Error(w, "Failed to get signing key", http.StatusInternalServerError)
 		return
 	}
 
-	redirectURL := h.frontendURL + "?orcid=" + orcidID
+	// Sign JWT with ORCID iD as subject
+	jwtToken, err := signJWT(orcidID, privKey, keyID)
+	if err != nil {
+		http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
+		return
+	}
+
+	// Return JWT instead of ORCID iD
+	if h.frontendURL == "" {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"token":%q}`, jwtToken)
+		return
+	}
+
+	redirectURL := h.frontendURL + "?token=" + jwtToken
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
