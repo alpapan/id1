@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"os"
+	"os/exec"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -111,7 +113,38 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 	}
 
 	keyID := computeKeyID(&privateKey.PublicKey)
+
+	// Store key to Kubernetes Secret for test access
+	if err := storeKeyToKubeSecret(privPEM, keyID); err != nil {
+		// Log error but don't fail - KV store is primary
+		fmt.Printf("warning: failed to store key to kube secret: %v\n", err)
+	}
+
 	return keyID, privateKey, nil
+}
+
+// storeKeyToKubeSecret stores the private key and key ID to Kubernetes Secret.
+// This is used by e2e tests to access the real signing key.
+func storeKeyToKubeSecret(privPEM []byte, keyID string) error {
+	namespace := os.Getenv("CURATORIUM_NAMESPACE")
+	if namespace == "" {
+		namespace = "curatorium-test"
+	}
+
+	privKeyB64 := base64.StdEncoding.EncodeToString(privPEM)
+	keyIDB64 := base64.StdEncoding.EncodeToString([]byte(keyID))
+
+	// Use kubectl patch to update the secret
+	patch := fmt.Sprintf(`{"data":{"ID1_JWT_PRIVATE_KEY":"%s","ID1_JWT_KEY_ID":"%s"}}`,
+		privKeyB64, keyIDB64)
+
+	cmd := exec.Command("kubectl", "patch", "secret", "curatorium-secrets",
+		"-n", namespace,
+		"--type", "merge",
+		"-p", patch)
+
+	_, err := cmd.CombinedOutput()
+	return err
 }
 
 // parsePrivateKey parses a PEM-encoded RSA private key.
