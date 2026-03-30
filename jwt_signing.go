@@ -62,7 +62,7 @@ const (
 	privKeyPrevPath    = "_system/priv/jwt-signing-key-prev"
 	pubKeyPrevPath     = "_system/pub/jwt-signing-key-prev"
 	jwtAudience        = "curatorium-backend"
-	jwtIssuer          = "http://id1-router:8080"  // Internal Kubernetes DNS for id1
+	jwtIssuer          = "http://id1-router:8080" // Internal Kubernetes DNS for id1
 	jwtExpirationHours = 1
 )
 
