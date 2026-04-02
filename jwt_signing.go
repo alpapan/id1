@@ -3,15 +3,17 @@ package id1
 import (
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
-	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -161,28 +163,72 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 	return keyID, privateKey, nil
 }
 
-// storeKeyToKubeSecret stores the private key and key ID to Kubernetes Secret.
-// This is used by e2e tests to access the real signing key.
+// storeKeyToKubeSecret stores the private key and key ID to Kubernetes Secret
+// using the in-cluster service account credentials. No kubectl binary required.
+// The id1 ServiceAccount must have RBAC permission to patch curatorium-secrets.
 func storeKeyToKubeSecret(privPEM []byte, keyID string) error {
 	namespace := os.Getenv("CURATORIUM_NAMESPACE")
 	if namespace == "" {
 		namespace = "curatorium-test"
 	}
 
+	// Read in-cluster service account token (auto-mounted by Kubernetes)
+	tokenBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err != nil {
+		return fmt.Errorf("not running in a Kubernetes cluster (no service account token): %w", err)
+	}
+
+	// Read the cluster CA certificate to verify the API server
+	caCertBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+	if err != nil {
+		return fmt.Errorf("failed to read cluster CA cert: %w", err)
+	}
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCertBytes) {
+		return fmt.Errorf("failed to parse cluster CA cert")
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: caCertPool},
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	apiHost := os.Getenv("KUBERNETES_SERVICE_HOST")
+	apiPort := os.Getenv("KUBERNETES_SERVICE_PORT")
+	if apiHost == "" || apiPort == "" {
+		apiHost = "kubernetes.default.svc"
+		apiPort = "443"
+	}
+
 	privKeyB64 := base64.StdEncoding.EncodeToString(privPEM)
 	keyIDB64 := base64.StdEncoding.EncodeToString([]byte(keyID))
-
-	// Use kubectl patch to update the secret
 	patch := fmt.Sprintf(`{"data":{"ID1_JWT_PRIVATE_KEY":"%s","ID1_JWT_KEY_ID":"%s"}}`,
 		privKeyB64, keyIDB64)
 
-	cmd := exec.Command("kubectl", "patch", "secret", "curatorium-secrets",
-		"-n", namespace,
-		"--type", "merge",
-		"-p", patch)
+	apiURL := fmt.Sprintf("https://%s:%s/api/v1/namespaces/%s/secrets/curatorium-secrets",
+		apiHost, apiPort, namespace)
 
-	_, err := cmd.CombinedOutput()
-	return err
+	req, err := http.NewRequest(http.MethodPatch, apiURL, strings.NewReader(patch))
+	if err != nil {
+		return fmt.Errorf("failed to create PATCH request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/merge-patch+json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokenBytes)))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to patch Kubernetes Secret: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Kubernetes API returned %d: %s", resp.StatusCode, body)
+	}
+
+	return nil
 }
 
 // parsePrivateKey parses a PEM-encoded RSA private key.

@@ -70,7 +70,7 @@ func main() {
 		nextcloudURL = os.Getenv("NEXTCLOUD_URL")
 	}
 
-	// Also check environment directly (for Kubernetes)
+	// Also check environment directly (for Kubernetes, where no .env file exists)
 	if port == "" {
 		port = os.Getenv("ID1_AUTH_PORT")
 	}
@@ -80,6 +80,14 @@ func main() {
 	if nextcloudURL == "" {
 		nextcloudURL = os.Getenv("NEXTCLOUD_URL")
 	}
+	// DBPATH env var allows overriding the key storage location in Kubernetes.
+	// Must be checked directly here because godotenv only reads it from .env.
+	if dbpath == "" {
+		dbpath = os.Getenv("DBPATH")
+	}
+	if dbpath == "" {
+		dbpath = "/mnt/id1db"
+	}
 
 	fmt.Printf("id1 API build %s, port: %s, dbpath: %s\n", version, port, dbpath)
 	if nextcloudURL != "" {
@@ -87,6 +95,10 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	// Register the main KV handler first so that id1.Handle sets the package-level
+	// dbpath before GetOrCreateSigningKey runs — both use the same package variable.
+	mainHandler := id1.Handle(dbpath, ctx)
 
 	// Initialize KV store and JWT signing key at startup (BEFORE ORCID handler)
 	id1KVStore := &id1.ID1KeyValueStore{}
@@ -136,7 +148,7 @@ func main() {
 	}
 
 	// Set up the main id1 handler (catch-all for key-value operations)
-	http.HandleFunc("/{key...}", id1.Handle(dbpath, ctx))
+	http.HandleFunc("/{key...}", mainHandler)
 
 	// Gate on the credentials, not NEXTCLOUD_URL. The URL is always set as an
 	// inline env var in the k8s deployment; the credentials are secrets that
