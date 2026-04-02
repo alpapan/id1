@@ -55,6 +55,44 @@ func HandleJWKS(kvStore KeyValueStore) http.HandlerFunc {
 	}
 }
 
+// HandleTestUser returns an HTTP handler that issues a test JWT.
+// This endpoint is only registered when ENV=test.
+// It uses the same signing infrastructure as the ORCID callback.
+func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		orcidID := r.URL.Query().Get("orcid")
+		if orcidID == "" {
+			orcidID = "0000-0002-1825-0097"
+		}
+
+		// Validate ORCID format
+		if !orcidIDPattern.MatchString(orcidID) {
+			http.Error(w, "Invalid ORCID iD format", http.StatusBadRequest)
+			return
+		}
+
+		keyID, privKey, err := GetOrCreateSigningKey(kvStore)
+		if err != nil {
+			http.Error(w, "Failed to get signing key", http.StatusInternalServerError)
+			return
+		}
+
+		jwtToken, err := signJWT(orcidID, privKey, keyID)
+		if err != nil {
+			http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jwt":%q}`, jwtToken)
+	}
+}
+
 // KVPaths for JWT signing keys
 const (
 	privKeyPath        = "_system/priv/jwt-signing-key"

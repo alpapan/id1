@@ -129,6 +129,12 @@ func main() {
 	http.HandleFunc("/pub/jwks.json", id1.HandleJWKS(id1KVStore))
 	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
 
+	// Test-only endpoint for issuing JWTs (guarded by ENV=test)
+	if os.Getenv("ENV") == "test" {
+		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
+		fmt.Println("Registered /auth/test_user test endpoint (ENV=test)")
+	}
+
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", id1.Handle(dbpath, ctx))
 
