@@ -169,6 +169,9 @@ func (p *NextcloudProvisioner) createUser(userId, password string) error {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	client := &http.Client{Timeout: 30 * time.Second}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
@@ -205,6 +208,9 @@ func (p *NextcloudProvisioner) createAppPassword(userId, password string) (strin
 	req.SetBasicAuth(userId, password)
 
 	client := &http.Client{Timeout: 30 * time.Second}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)

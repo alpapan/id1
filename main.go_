@@ -24,6 +24,9 @@ func nextcloudProxy(target string) (http.HandlerFunc, error) {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	if transport, err := id1.BuildTLSTransport(); err == nil && transport != nil {
+		proxy.Transport = transport
+	}
 
 	// Customize the director to strip /nextcloud prefix
 	originalDirector := proxy.Director
@@ -160,8 +163,22 @@ func main() {
 	}
 
 	fmt.Printf("Starting server on port %s\n", port)
-	if err := http.ListenAndServe("0.0.0.0:"+port, nil); err != nil {
-		log.Fatalf("error starting service: %s", err)
+	tlsConfig, err := id1.BuildTLSConfig()
+	if err != nil {
+		log.Fatalf("Failed to build TLS config: %v", err)
+	}
+	if tlsConfig != nil {
+		certFile := os.Getenv("SSL_CERTFILE")
+		keyFile := os.Getenv("SSL_KEYFILE")
+		server := &http.Server{Addr: "0.0.0.0:" + port, TLSConfig: tlsConfig}
+		fmt.Println("Starting with TLS enabled")
+		if err := server.ListenAndServeTLS(certFile, keyFile); err != nil {
+			log.Fatalf("error starting TLS service: %s", err)
+		}
+	} else {
+		if err := http.ListenAndServe("0.0.0.0:"+port, nil); err != nil {
+			log.Fatalf("error starting service: %s", err)
+		}
 	}
 }
 
