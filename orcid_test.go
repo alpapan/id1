@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ import (
 func getFrontendURL() string {
 	port := os.Getenv("HTTP_FRONTEND_PORT")
 	if port == "" {
-		port = "19001"
+		panic("HTTP_FRONTEND_PORT env var not set — ensure .env.test is loaded before running Go tests")
 	}
 	return fmt.Sprintf("http://localhost:%s", port)
 }
@@ -850,6 +851,187 @@ func TestOrcidCallbackValidationBeforeJWT(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "invalid ORCID iD format") {
 		t.Errorf("Expected error message about invalid ORCID format, got: %s", rec.Body.String())
+	}
+}
+
+// Test: HandleBegin stores redirect_uri from query param.
+// Uses a test-only URI (no real port) since frontendURL validation is disabled (empty frontendURL).
+func TestHandleBegin_StoresRedirectURI(t *testing.T) {
+	h := newTestOrcidHandler("", "")
+	testRedirect := getFrontendURL() + "/auth/callback"
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid?redirect_uri="+testRedirect, nil)
+	w := httptest.NewRecorder()
+	h.HandleBegin(w, req)
+
+	// Should redirect to ORCID
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", w.Code)
+	}
+
+	// Verify state entry stores redirect_uri
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	for _, entry := range h.stateStore {
+		if entry.redirectURI != testRedirect {
+			t.Errorf("expected redirectURI %q, got %q", testRedirect, entry.redirectURI)
+		}
+		return // only one entry
+	}
+	t.Fatal("no state entry found")
+}
+
+// Test: HandleBegin uses frontendURL as fallback when no redirect_uri
+func TestHandleBegin_FallbackToFrontendURL(t *testing.T) {
+	frontendURL := getFrontendURL()
+	h := newTestOrcidHandler("", frontendURL)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid", nil)
+	w := httptest.NewRecorder()
+	h.HandleBegin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", w.Code)
+	}
+
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	for _, entry := range h.stateStore {
+		if entry.redirectURI != frontendURL {
+			t.Errorf("expected redirectURI %q, got %q", frontendURL, entry.redirectURI)
+		}
+		return
+	}
+	t.Fatal("no state entry found")
+}
+
+// Test: HandleCallback redirects to stored redirect_uri with token
+// Uses the same mock ORCID token server pattern as existing tests
+// (e.g. TestHandleCallback_Success at orcid_test.go:414)
+func TestHandleCallback_RedirectsToStoredRedirectURI(t *testing.T) {
+	customRedirect := getFrontendURL() + "/auth/callback"
+	// Use a distinct hostname for the "default" frontend so the test can distinguish
+	// between redirecting to the stored URI vs falling back to the default.
+	defaultFrontendURL := "http://other-frontend.internal"
+
+	// Mock ORCID token endpoint that returns a valid token with ORCID iD
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"test-token","token_type":"bearer","orcid":"0000-0002-1825-0097"}`)
+	}))
+	defer tokenServer.Close()
+
+	h := newTestOrcidHandler(tokenServer.URL, defaultFrontendURL)
+
+	// Pre-populate state with custom redirectURI
+	state := "test-state-redirect"
+	verifier := "test-verifier"
+	h.stateMu.Lock()
+	h.stateStore[state] = stateEntry{
+		created:     time.Now(),
+		verifier:    verifier,
+		redirectURI: customRedirect,
+	}
+	h.stateMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/auth/orcid/callback?code=test-code&state="+state, nil)
+	w := httptest.NewRecorder()
+	h.HandleCallback(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", w.Code, w.Body.String())
+	}
+
+	location := w.Header().Get("Location")
+	if !strings.HasPrefix(location, customRedirect+"?token=") {
+		t.Errorf("expected redirect to %s?token=..., got %q", customRedirect, location)
+	}
+	// Must NOT redirect to the default frontendURL
+	if strings.HasPrefix(location, defaultFrontendURL) {
+		t.Errorf("should redirect to stored redirectURI, not default frontendURL")
+	}
+}
+
+// Test: HandleBegin rejects redirect_uri that doesn't match allowed origins
+func TestHandleBegin_RejectsExternalRedirectURI(t *testing.T) {
+	frontendURL := getFrontendURL()
+	h := newTestOrcidHandler("", frontendURL)
+
+	// Attempt open redirect to external domain
+	req := httptest.NewRequest(http.MethodGet,
+		"/auth/orcid?redirect_uri=https://evil.example.com/steal", nil)
+	w := httptest.NewRecorder()
+	h.HandleBegin(w, req)
+
+	// Handler must either: (a) return 400 Bad Request, or (b) fall back to frontendURL.
+	// In both cases the evil URL must NOT be the stored redirectURI.
+	if w.Code == http.StatusBadRequest {
+		// Case (a): rejected outright — no state entry should exist.
+		h.stateMu.Lock()
+		defer h.stateMu.Unlock()
+		if len(h.stateStore) != 0 {
+			t.Error("SECURITY: stateStore must be empty when request is rejected with 400")
+		}
+		return
+	}
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302 (fallback) or 400 (reject), got %d", w.Code)
+	}
+	// Case (b): fallback — state entry must exist and redirect to frontendURL, NOT the evil URL.
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	if len(h.stateStore) == 0 {
+		t.Fatal("SECURITY: stateStore empty but handler returned 302 — no state to validate")
+	}
+	for _, entry := range h.stateStore {
+		if entry.redirectURI == "https://evil.example.com/steal" {
+			t.Error("SECURITY: external redirect_uri stored verbatim — open redirect vulnerability")
+		}
+		if entry.redirectURI != frontendURL && entry.redirectURI != "" {
+			t.Errorf("SECURITY: expected fallback to %q or empty, got %q", frontendURL, entry.redirectURI)
+		}
+		return
+	}
+}
+
+// Test: HandleBegin rejects subdomain-prefix bypass attacks
+// A malicious actor might try to bypass origin validation by using a domain like
+// https://app.example.com.evil.com when frontendURL is https://app.example.com.
+// If the code naively uses strings.HasPrefix, this bypass works.
+// This test ensures that proper URL parsing prevents this attack.
+func TestHandleBegin_RejectsSubdomainPrefixBypass(t *testing.T) {
+	// Use a realistic frontend URL for production-like testing
+	frontendURL := "https://app.example.com"
+	h := newTestOrcidHandler("", frontendURL)
+
+	// Attacker tries subdomain-prefix bypass: the hostname ends with the frontend domain
+	// but is actually a different domain (attacker-controlled)
+	attackerURL := "https://app.example.com.evil.com/steal"
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/auth/orcid?redirect_uri="+url.QueryEscape(attackerURL), nil)
+	w := httptest.NewRecorder()
+	h.HandleBegin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", w.Code)
+	}
+
+	// Verify the stored redirectURI is NOT the attacker's URL
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	if len(h.stateStore) == 0 {
+		t.Fatal("no state entry found")
+	}
+	for _, entry := range h.stateStore {
+		if entry.redirectURI == attackerURL {
+			t.Error("SECURITY: subdomain-prefix bypass succeeded — attacker URL was stored")
+		}
+		if entry.redirectURI != frontendURL {
+			t.Errorf("SECURITY: expected fallback to %q, got %q", frontendURL, entry.redirectURI)
+		}
+		return
 	}
 }
 

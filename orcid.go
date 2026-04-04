@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,8 +18,9 @@ import (
 
 // stateEntry records when a CSRF state token was created and the PKCE verifier.
 type stateEntry struct {
-	created  time.Time
-	verifier string
+	created     time.Time
+	verifier    string
+	redirectURI string // post-JWT frontend redirect target
 }
 
 // orcidIDPattern validates ORCID iD format: XXXX-XXXX-XXXX-XXX[X|digit]
@@ -117,9 +120,38 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 
 	verifier := oauth2.GenerateVerifier()
 
+	// Read redirect_uri from query param with validation
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	if redirectURI == "" {
+		redirectURI = h.frontendURL
+	} else {
+		// SECURITY: Validate redirect_uri against allowed origins to prevent open redirect.
+		// Compare parsed URL origin (scheme + host + port), not string prefix.
+		// In dev, frontendURL may be empty — in that case, allow any localhost URI.
+		parsedRedirect, rErr := url.Parse(redirectURI)
+		if rErr != nil {
+			// Malformed URL — fall back to frontendURL
+			redirectURI = h.frontendURL
+		} else if h.frontendURL != "" {
+			// frontendURL is configured — validate redirect_uri matches its origin
+			parsedFrontend, fErr := url.Parse(h.frontendURL)
+			if fErr != nil || parsedRedirect.Scheme != parsedFrontend.Scheme || parsedRedirect.Host != parsedFrontend.Host {
+				// Origin mismatch — fall back to frontendURL
+				redirectURI = h.frontendURL
+			}
+		} else if parsedRedirect.Hostname() != "localhost" {
+			// No frontendURL configured — only allow localhost
+			redirectURI = ""
+		}
+	}
+
 	h.stateMu.Lock()
 	h.pruneExpiredStates()
-	h.stateStore[state] = stateEntry{created: time.Now(), verifier: verifier}
+	h.stateStore[state] = stateEntry{
+		created:     time.Now(),
+		verifier:    verifier,
+		redirectURI: redirectURI,
+	}
 	h.stateMu.Unlock()
 
 	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), http.StatusFound)
@@ -210,15 +242,25 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine redirect target: use stored redirect_uri if available, fall back to frontendURL
+	redirectTarget := entry.redirectURI
+	if redirectTarget == "" {
+		redirectTarget = h.frontendURL
+	}
+
 	// Return JWT instead of ORCID iD
-	if h.frontendURL == "" {
+	if redirectTarget == "" {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"token":%q}`, jwtToken)
 		return
 	}
 
-	redirectURL := h.frontendURL + "?token=" + jwtToken
-	http.Redirect(w, r, redirectURL, http.StatusFound)
+	// Append token parameter, handling cases where redirectTarget already contains a query string
+	sep := "?"
+	if strings.Contains(redirectTarget, "?") {
+		sep = "&"
+	}
+	http.Redirect(w, r, redirectTarget+sep+"token="+url.QueryEscape(jwtToken), http.StatusFound)
 }
 
 // __END_OF_FILE_MARKER__
