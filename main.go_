@@ -144,6 +144,11 @@ func main() {
 	http.HandleFunc("/pub/jwks.json", id1.HandleJWKS(id1KVStore))
 	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
 
+	// Sovereign key token endpoint: issues RS256 JWTs to service accounts
+	// that prove private key ownership via RSA-SHA256 signature.
+	http.HandleFunc("/auth/sovereign/token", id1.HandleSovereignToken(id1KVStore))
+	fmt.Println("Registered /auth/sovereign/token sovereign key endpoint")
+
 	// Test-only endpoint for issuing JWTs (guarded by ENV=test)
 	if os.Getenv("ENV") == "test" {
 		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
