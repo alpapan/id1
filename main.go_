@@ -160,6 +160,12 @@ func main() {
 		fmt.Println("Registered /auth/test_user test endpoint (ENV=test)")
 	}
 
+	// Demo JWT endpoint — issues JWT for the seeded demo_user (ENV=test guard, same as test_user)
+	if os.Getenv("ENV") == "test" {
+		http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))
+		fmt.Println("Registered /auth/unauth_demo demo JWT endpoint (ENV=test)")
+	}
+
 	// Set up Automerge sync proxy (must be registered before the catch-all handler)
 	syncServerAddr := os.Getenv("AUTOMERGE_SYNC_SERVER")
 	if syncServerAddr == "" {

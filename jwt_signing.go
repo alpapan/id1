@@ -95,6 +95,33 @@ func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 	}
 }
 
+// demoUserORCID is the ORCID of the seeded demo_user (99d_seed_demo_user.sql, id=10).
+const demoUserORCID = "0009-0002-8023-3658"
+
+// HandleDemoUser returns an HTTP handler that issues a JWT for the demo_user account.
+// Registered at /auth/unauth_demo when ENV=test.
+// This enables the demo/blast-live page to submit real BLAST jobs without ORCID login.
+func HandleDemoUser(kvStore KeyValueStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		keyID, privKey, err := GetOrCreateSigningKey(kvStore)
+		if err != nil {
+			http.Error(w, "Failed to get signing key", http.StatusInternalServerError)
+			return
+		}
+		jwtToken, err := signJWT(demoUserORCID, privKey, keyID)
+		if err != nil {
+			http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"jwt":%q}`, jwtToken)
+	}
+}
+
 // KVPaths for JWT signing keys
 const (
 	privKeyPath        = "_system/priv/jwt-signing-key"
