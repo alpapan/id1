@@ -155,6 +155,19 @@ func main() {
 		fmt.Println("Registered /auth/test_user test endpoint (ENV=test)")
 	}
 
+	// Set up Automerge sync proxy (must be registered before the catch-all handler)
+	syncServerAddr := os.Getenv("AUTOMERGE_SYNC_SERVER")
+	if syncServerAddr == "" {
+		syncServerAddr = "automerge-sync-server:8100"
+	}
+	syncHandler, err := id1.SyncProxy(syncServerAddr)
+	if err != nil {
+		log.Fatalf("Failed to create sync proxy: %v", err)
+	}
+	http.HandleFunc("/sync", syncHandler)
+	http.HandleFunc("/sync/", syncHandler)
+	fmt.Printf("Registered /sync WebSocket proxy -> %s\n", syncServerAddr)
+
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", mainHandler)
 
