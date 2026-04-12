@@ -9,10 +9,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+// orcidPattern matches the standard ORCID iD format: XXXX-XXXX-XXXX-XXXX
+// where X is a digit (last character may also be 'X' checksum).
+var orcidPattern = regexp.MustCompile(`^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$`)
 
 // NextcloudProvisioner handles asynchronous Nextcloud user provisioning.
 // It polls the id1 key store for new public key registrations and creates
@@ -86,6 +91,11 @@ func (p *NextcloudProvisioner) scanAndProvision() {
 		}
 		orcidId := entry.Name()
 
+		// Skip service accounts and other non-ORCID identities.
+		if !orcidPattern.MatchString(orcidId) {
+			continue
+		}
+
 		// Skip if already provisioned in this session.
 		p.provisionedMu.Lock()
 		if p.provisioned[orcidId] {
@@ -154,7 +164,7 @@ func (p *NextcloudProvisioner) provisionUser(orcidId string) error {
 // If the user already exists (OCS 102), this is treated as success
 // to make the provisioner idempotent after pod restart.
 func (p *NextcloudProvisioner) createUser(userId, password string) error {
-	endpoint := p.nextcloudURL + "/ocs/v2.php/cloud/users"
+	endpoint := p.nextcloudURL + "/ocs/v2.php/cloud/users?format=json"
 	formData := url.Values{
 		"userid":   {userId},
 		"password": {password},
@@ -198,7 +208,7 @@ func (p *NextcloudProvisioner) createUser(userId, password string) error {
 // via the OCS API. The user authenticates with their own credentials
 // (BasicAuth as orcidId:initialPassword).
 func (p *NextcloudProvisioner) createAppPassword(userId, password string) (string, error) {
-	endpoint := p.nextcloudURL + "/ocs/v2.php/core/getapppassword"
+	endpoint := p.nextcloudURL + "/ocs/v2.php/core/getapppassword?format=json"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
