@@ -2,6 +2,8 @@ package id1
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -173,6 +175,37 @@ func TestKeyIDFormat_IsSHA256Thumbprint(t *testing.T) {
 			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_',
 			"Key ID should be base64url encoded (no +, /, or = padding)")
 	}
+}
+
+func TestHandleDemoUser(t *testing.T) {
+	kvStore := setupTestKVStore(t)
+
+	handler := HandleDemoUser(kvStore)
+
+	t.Run("GET returns JWT for demo_user ORCID", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/auth/unauth_demo", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if resp["jwt"] == "" {
+			t.Fatal("expected non-empty jwt")
+		}
+	})
+
+	t.Run("POST returns 405", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/auth/unauth_demo", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", w.Code)
+		}
+	})
 }
 
 // __END_OF_FILE_MARKER__
