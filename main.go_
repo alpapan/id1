@@ -140,6 +140,11 @@ func main() {
 		}
 	}
 
+	// Health check — returns 200 with no body. No identity information exposed.
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
 	// Register JWKS endpoint for public key retrieval
 	http.HandleFunc("/pub/jwks.json", id1.HandleJWKS(id1KVStore))
 	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
