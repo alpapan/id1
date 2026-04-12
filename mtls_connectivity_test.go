@@ -1,6 +1,7 @@
 package id1
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,15 +9,9 @@ import (
 	"testing"
 )
 
-// TestMTLSConnectivity_SyncProxy tests that SyncProxy correctly routes to
-// the sync server when MTLS is enabled. This test FAILS now (bug: tries https://)
-// and PASSES after the fix (hardcode http://).
-//
-// The bug: SyncProxy calls BuildTLSTransport() when MTLS_ENABLED=true,
-// which causes it to use scheme="https://" to reach the plain HTTP sync server,
-// resulting in a 502 Bad Gateway error.
-//
-// The fix: Remove TLS logic from SyncProxy, hardcode http://.
+// TestMTLSConnectivity_SyncProxy tests that SyncProxy connects via mTLS
+// when MTLS_ENABLED=true. The test creates a TLS server using the same
+// certs that BuildTLSTransport will load, so the mTLS handshake succeeds.
 func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	certFile, keyFile, caFile := generateTestCerts(t)
 	t.Setenv("MTLS_ENABLED", "true")
@@ -24,27 +19,31 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	t.Setenv("SSL_KEYFILE", keyFile)
 	t.Setenv("SSL_CA_CERTS", caFile)
 
-	// Start a plain HTTP test server (not HTTPS).
-	// The sync server is plain HTTP only (no TLS).
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Create a TLS server using the same cert the proxy will trust.
+	tlsCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("failed to load test cert: %v", err)
+	}
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			t.Errorf("expected path '/', got: %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("sync server ready"))
 	}))
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{tlsCert}}
+	server.StartTLS()
 	defer server.Close()
 
-	// Extract host:port from the test server URL.
-	target := strings.TrimPrefix(server.URL, "http://")
+	// Extract host:port from the TLS server URL.
+	target := strings.TrimPrefix(server.URL, "https://")
 
-	// Create the sync proxy.
 	handler, err := SyncProxy(target)
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
 
-	// Simulate a GET /sync request.
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
 
@@ -54,19 +53,47 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// EXPECTED (after fix): status == 200 (plain HTTP connection succeeds)
-	// ACTUAL (before fix): status == 502 (tries https://, connection refused)
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d (OK), got %d (%s). "+
-			"This suggests SyncProxy is trying https:// to reach plain HTTP server. "+
-			"Fix: hardcode http:// scheme in SyncProxy, remove TLS logic.",
+		t.Errorf("expected status %d (OK), got %d (%s)",
+			http.StatusOK, resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+}
+
+// TestMTLSConnectivity_SyncProxy_PlainHTTP tests that SyncProxy uses plain
+// HTTP when MTLS_ENABLED is false.
+func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("sync server ready"))
+	}))
+	defer server.Close()
+
+	target := strings.TrimPrefix(server.URL, "http://")
+
+	handler, err := SyncProxy(target)
+	if err != nil {
+		t.Fatalf("SyncProxy failed to create handler: %v", err)
+	}
+
+	proxyServer := httptest.NewServer(handler)
+	defer proxyServer.Close()
+
+	resp, err := http.Get(proxyServer.URL + "/sync")
+	if err != nil {
+		t.Fatalf("GET /sync failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status %d (OK), got %d (%s)",
 			http.StatusOK, resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 }
 
 // TestMTLSConnectivity_NextcloudCreateUser tests that NextcloudProvisioner.createUser()
-// correctly calls Nextcloud API when MTLS is enabled. This test PASSES now (no bug).
-// It is a regression test to ensure Nextcloud connectivity is not broken by sync proxy fixes.
+// correctly calls Nextcloud API when MTLS is enabled.
 func TestMTLSConnectivity_NextcloudCreateUser(t *testing.T) {
 	certFile, keyFile, caFile := generateTestCerts(t)
 	t.Setenv("MTLS_ENABLED", "true")
@@ -74,7 +101,6 @@ func TestMTLSConnectivity_NextcloudCreateUser(t *testing.T) {
 	t.Setenv("SSL_KEYFILE", keyFile)
 	t.Setenv("SSL_CA_CERTS", caFile)
 
-	// Start a plain HTTP test server returning valid OCS response (statuscode 100).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got: %s", r.Method)
@@ -106,8 +132,7 @@ func TestMTLSConnectivity_NextcloudCreateUser(t *testing.T) {
 }
 
 // TestMTLSConnectivity_NextcloudCreateAppPassword tests that NextcloudProvisioner.createAppPassword()
-// correctly calls Nextcloud API when MTLS is enabled. This test PASSES now (no bug).
-// It is a regression test to ensure Nextcloud connectivity is not broken by sync proxy fixes.
+// correctly calls Nextcloud API when MTLS is enabled.
 func TestMTLSConnectivity_NextcloudCreateAppPassword(t *testing.T) {
 	certFile, keyFile, caFile := generateTestCerts(t)
 	t.Setenv("MTLS_ENABLED", "true")
@@ -115,7 +140,6 @@ func TestMTLSConnectivity_NextcloudCreateAppPassword(t *testing.T) {
 	t.Setenv("SSL_KEYFILE", keyFile)
 	t.Setenv("SSL_CA_CERTS", caFile)
 
-	// Start a plain HTTP test server returning valid OCS response (statuscode 200).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET, got: %s", r.Method)

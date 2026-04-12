@@ -13,12 +13,19 @@ import (
 // target is host:port, e.g. "automerge-sync-server:8100".
 // The /sync path prefix is stripped so the sync server receives connections at /.
 //
-// IMPORTANT: automerge-sync-server is plain HTTP (ws://0.0.0.0:8100, no TLS).
-// We always connect via http://, never https://, regardless of MTLS_ENABLED.
-// MTLS governs client↔id1 and id1↔starlette connections, not id1↔sync-server.
+// When MTLS_ENABLED=true, connects via https:// with a client certificate
+// (same pattern as the Nextcloud proxy). When disabled, connects via plain http://.
 func SyncProxy(target string) (http.HandlerFunc, error) {
-	// automerge-sync-server has no TLS listener — always use plain HTTP.
-	targetURL, err := url.Parse("http://" + target)
+	scheme := "http"
+	transport, err := BuildTLSTransport()
+	if err != nil {
+		return nil, fmt.Errorf("sync proxy TLS transport: %w", err)
+	}
+	if transport != nil {
+		scheme = "https"
+	}
+
+	targetURL, err := url.Parse(scheme + "://" + target)
 	if err != nil {
 		return nil, fmt.Errorf("invalid AUTOMERGE_SYNC_SERVER: %w", err)
 	}
@@ -28,6 +35,10 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 	// the HTTP 101 Switching Protocols response is not buffered before the
 	// connection transitions to the bidirectional WebSocket tunnel.
 	proxy.FlushInterval = -1
+
+	if transport != nil {
+		proxy.Transport = transport
+	}
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
