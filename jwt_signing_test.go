@@ -196,6 +196,25 @@ func TestHandleDemoUser(t *testing.T) {
 		if resp["jwt"] == "" {
 			t.Fatal("expected non-empty jwt")
 		}
+
+		// Validate JWT is cryptographically valid and contains correct claims
+		_, privKey, err := GetOrCreateSigningKey(kvStore) // same kvStore as the handler used
+		if err != nil {
+			t.Fatalf("failed to get signing key: %v", err)
+		}
+		token, parseErr := jwt.ParseWithClaims(resp["jwt"], &jwt.RegisteredClaims{}, func(tok *jwt.Token) (interface{}, error) {
+			return &privKey.PublicKey, nil
+		})
+		if parseErr != nil {
+			t.Fatalf("JWT should be cryptographically valid: %v", parseErr)
+		}
+		claims, ok := token.Claims.(*jwt.RegisteredClaims)
+		if !ok {
+			t.Fatal("claims should be RegisteredClaims")
+		}
+		if claims.Subject != demoUserORCID {
+			t.Errorf("expected subject %q, got %q", demoUserORCID, claims.Subject)
+		}
 	})
 
 	t.Run("POST returns 405", func(t *testing.T) {
