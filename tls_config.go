@@ -47,6 +47,12 @@ func BuildTLSConfig() (*tls.Config, error) {
 	}
 
 	cfg := &tls.Config{
+		// NextProtos must explicitly list only http/1.1.
+		// Without this, Go's HTTP server auto-adds "h2" (HTTP/2) to ALPN.
+		// HTTP/2 strips the Connection and Upgrade headers, making WebSocket
+		// upgrade impossible (RFC 6455 requires HTTP/1.1). Setting this
+		// ensures cloudflared and other clients negotiate HTTP/1.1 only.
+		NextProtos: []string{"http/1.1"},
 		ClientAuth: tls.VerifyClientCertIfGiven,
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			if leCert != nil && strings.HasSuffix(hello.ServerName, ".curatorium.app") {
