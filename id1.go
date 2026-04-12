@@ -3,7 +3,6 @@ package id1
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -38,7 +37,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		req := NewRequestProps(r)
 
 		if req.Id == "" {
-			ok200(w, fmt.Appendf(nil, "Qodex id1 %s https://github.com/qodex/id1", version))
+			err404(w, "")
 			return
 		}
 
