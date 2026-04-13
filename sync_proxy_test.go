@@ -8,6 +8,7 @@ import (
 )
 
 func TestSyncProxyInvalidURL(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
 	// Unterminated IPv6 bracket causes url.Parse to return an error.
 	_, err := SyncProxy("[::1")
 	if err == nil {
@@ -16,6 +17,7 @@ func TestSyncProxyInvalidURL(t *testing.T) {
 }
 
 func TestSyncProxyPathStripping(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
 	var capturedPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
@@ -39,6 +41,7 @@ func TestSyncProxyPathStripping(t *testing.T) {
 }
 
 func TestSyncProxyPathWithTrailingSlash(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
 	var capturedPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPath = r.URL.Path
@@ -62,6 +65,7 @@ func TestSyncProxyPathWithTrailingSlash(t *testing.T) {
 }
 
 func TestSyncProxySuccessStatus(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -83,6 +87,7 @@ func TestSyncProxySuccessStatus(t *testing.T) {
 }
 
 func TestSyncProxyUpstreamUnavailable(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
 	// Use a port that is definitely not listening
 	handler, err := SyncProxy("127.0.0.1:19999")
 	if err != nil {
