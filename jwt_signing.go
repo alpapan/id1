@@ -118,6 +118,7 @@ func HandleDemoUser(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		cors(&w)
 		fmt.Fprintf(w, `{"jwt":%q}`, jwtToken)
 	}
 }
