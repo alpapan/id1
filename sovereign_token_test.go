@@ -67,7 +67,7 @@ func TestHandleSovereignToken_ValidSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	userID := "blast-service"
+	userID := "service"
 	privKey := testSovereignSetup(t, userID)
 
 	timestamp := time.Now().UTC().Format(time.RFC3339)
@@ -126,7 +126,7 @@ func TestHandleSovereignToken_WrongKey(t *testing.T) {
 	dbpath = t.TempDir()
 	kvStore := ID1KeyValueStore{}
 
-	userID := "blast-service-wrong"
+	userID := "service-wrong"
 	_ = testSovereignSetup(t, userID)
 
 	// Sign with a DIFFERENT key pair
@@ -150,7 +150,7 @@ func TestHandleSovereignToken_ExpiredTimestamp(t *testing.T) {
 	dbpath = t.TempDir()
 	kvStore := ID1KeyValueStore{}
 
-	userID := "blast-service-expired"
+	userID := "service-expired"
 	privKey := testSovereignSetup(t, userID)
 
 	// Timestamp 10 minutes ago — outside ±5 min window
