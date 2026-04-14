@@ -25,8 +25,10 @@ through id1. Everything else (Starlette API, PostgreSQL, sync server) is Cluster
    - `aud = curatorium-backend`
    - `sub = ORCID-iD`
    - `kid = JWK Thumbprint` (RFC 7638)
-3. JWT is returned to the frontend, stored in `sessionStorage['CURATORIUM_JWT']`, and sent
-   as `Authorization: Bearer` on subsequent API calls.
+3. JWT is returned to the frontend, stored in `localStorage['CURATORIUM_JWT']`, and sent
+   as `Authorization: Bearer` on subsequent API calls. (localStorage is shared across
+   tabs on the same origin, so a sign-in in one tab propagates to the others via
+   `storage` events; see the frontend's `AuthProvider.tsx` for the listener.)
 4. The Curatorium Starlette backend (sibling `containers/starlette`) validates the JWT
    against id1's JWKS endpoint at `id1-router:8080/pub/jwks.json`. RS256 public-key
    verification only — no shared HMAC for JWT validation.
