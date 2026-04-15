@@ -167,7 +167,7 @@ func TestCommandMove(t *testing.T) {
 	}
 
 	// Test: Move the key to target location
-	_, err = NewCommand(Mov, testKey, map[string]string{}, []byte(testKeyTgt.String())).Exec()
+	_, err = NewCommand(Mov, testKey, map[string]string{"x-id": "test"}, []byte(testKeyTgt.String())).Exec()
 	if err != nil {
 		t.Errorf("Move command failed: %v", err)
 		return
@@ -328,5 +328,118 @@ func TestCommandListWithSizeLimit(t *testing.T) {
 	dataStr := string(data)
 	if strings.Contains(dataStr, "22") {
 		t.Errorf("List with size-limit=1 should not contain data larger than 1 byte. Got: %s", dataStr)
+	}
+}
+
+func TestMoveRejectsCrossUserDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	// Setup: user "alice" has a file (Set auto-creates parent dirs via MkdirAll)
+	srcKey := KK("alice", "priv", "myfile")
+	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("secret")).Exec()
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	// Attempt: move alice's file to bob's directory — must be rejected
+	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": "alice"}, []byte("bob/priv/stolen"))
+	_, err = cmd.Exec()
+	if err == nil {
+		t.Errorf("Move to another user's directory should be rejected, but succeeded")
+	}
+}
+
+func TestMoveRejectsCrossUserViaRelativePath(t *testing.T) {
+	// Regression test: "alice/../bob/file" normalizes to "bob/file" but
+	// a naive ownership check on the unnormalized string sees "alice".
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	srcKey := KK("alice", "priv", "myfile")
+	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).Exec()
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	// Attempt: bypass ownership via relative path that normalizes to bob's dir
+	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": "alice"}, []byte("alice/../bob/priv/stolen"))
+	_, err = cmd.Exec()
+	if err == nil {
+		t.Errorf("Move via alice/../bob/... should be rejected after normalization, but succeeded")
+	}
+}
+
+func TestMoveRejectsPathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	srcKey := KK("alice", "priv", "myfile")
+	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).Exec()
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	// Attempt: escape the KV store root via ..
+	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": "alice"}, []byte("../../../etc/evil"))
+	_, err = cmd.Exec()
+	if err == nil {
+		t.Errorf("Move with path traversal should be rejected, but succeeded")
+	}
+}
+
+func TestMoveRejectsEmptyXId(t *testing.T) {
+	// Defense-in-depth: even if the auth layer is bypassed, an empty x-id
+	// must not allow unrestricted moves.
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	srcKey := KK("alice", "priv", "myfile")
+	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": ""}, []byte("data")).Exec()
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": ""}, []byte("alice/priv/renamed"))
+	_, err = cmd.Exec()
+	if err == nil {
+		t.Errorf("Move with empty x-id should be rejected for defense-in-depth, but succeeded")
+	}
+}
+
+func TestMoveAllowsSameUserDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	// Setup: user "alice" has a file (Set auto-creates parent dirs via MkdirAll)
+	srcKey := KK("alice", "priv", "myfile")
+	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).Exec()
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	// Move within alice's own directory should succeed
+	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": "alice"}, []byte("alice/priv/renamed"))
+	_, err = cmd.Exec()
+	if err != nil {
+		t.Errorf("Move within same user's directory should succeed, got: %v", err)
+	}
+
+	// Verify the data moved
+	data, err := NewCommand(Get, KK("alice", "priv", "renamed"), map[string]string{}, []byte{}).Exec()
+	if err != nil {
+		t.Errorf("Get moved file failed: %v", err)
+	} else if string(data) != "data" {
+		t.Errorf("Moved data mismatch: expected %q, got %q", "data", string(data))
 	}
 }

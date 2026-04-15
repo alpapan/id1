@@ -79,6 +79,8 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 			wsHandler.Handle(w, r)
 		} else if data, err := req.Cmd.Exec(); err == nil {
 			ok200(w, data)
+		} else if errors.Is(err, ErrForbidden) {
+			err403(w, "")
 		} else if errors.Is(err, ErrNotFound) {
 			err404(w, "")
 		} else if errors.Is(err, ErrLimitExceeded) {
