@@ -1,4 +1,4 @@
-FROM golang:1.25 AS build
+FROM localhost:5000/golang:1.25 AS build
 
 # Copy id1 library source (package github.com/qodex/id1)
 WORKDIR /go/src/app
@@ -14,7 +14,7 @@ RUN cd /go/src/cmd && \
     go mod tidy && \
     CGO_ENABLED=0 go build -ldflags="-X main.version=$(date +%Y%m%d)" -o /go/bin/app
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM localhost:5000/distroless/static-debian12:nonroot
 
 COPY --from=build /go/bin/app /
 CMD ["/app"]
