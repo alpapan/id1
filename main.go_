@@ -140,9 +140,11 @@ func main() {
 		}
 	}
 
-	// Health check — returns 200 with no body. No identity information exposed.
+	// Health check — returns 200 with minimal status JSON. No identity information exposed.
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy"}`))
 	})
 
 	// Register JWKS endpoint for public key retrieval
