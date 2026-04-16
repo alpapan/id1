@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // TestMTLSConnectivity_SyncProxy tests that SyncProxy connects via mTLS
@@ -19,26 +22,32 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	t.Setenv("SSL_KEYFILE", keyFile)
 	t.Setenv("SSL_CA_CERTS", caFile)
 
-	// Create a TLS server using the same cert the proxy will trust.
 	tlsCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		t.Fatalf("failed to load test cert: %v", err)
 	}
 
+	// Upstream WebSocket echo server over TLS
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			t.Errorf("expected path '/', got: %s", r.URL.Path)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
 		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("sync server ready"))
+		defer conn.Close()
+		for {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			conn.WriteMessage(mt, msg)
+		}
 	}))
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{tlsCert}}
 	server.StartTLS()
 	defer server.Close()
 
-	// Extract host:port from the TLS server URL.
 	target := strings.TrimPrefix(server.URL, "https://")
-
 	handler, err := SyncProxy(target)
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
@@ -47,15 +56,23 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
 
-	resp, err := http.Get(proxyServer.URL + "/sync")
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http")
+	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		t.Fatalf("GET /sync failed: %v", err)
+		t.Fatalf("WebSocket dial failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer client.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d (OK), got %d (%s)",
-			http.StatusOK, resp.StatusCode, http.StatusText(resp.StatusCode))
+	if err := client.WriteMessage(websocket.TextMessage, []byte("mTLS test")); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(msg) != "mTLS test" {
+		t.Errorf("expected 'mTLS test', got %q", msg)
 	}
 }
 
@@ -64,14 +81,24 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("sync server ready"))
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			conn.WriteMessage(mt, msg)
+		}
 	}))
 	defer server.Close()
 
 	target := strings.TrimPrefix(server.URL, "http://")
-
 	handler, err := SyncProxy(target)
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
@@ -80,15 +107,23 @@ func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
 
-	resp, err := http.Get(proxyServer.URL + "/sync")
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http")
+	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		t.Fatalf("GET /sync failed: %v", err)
+		t.Fatalf("WebSocket dial failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer client.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d (OK), got %d (%s)",
-			http.StatusOK, resp.StatusCode, http.StatusText(resp.StatusCode))
+	if err := client.WriteMessage(websocket.TextMessage, []byte("plain test")); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(msg) != "plain test" {
+		t.Errorf("expected 'plain test', got %q", msg)
 	}
 }
 

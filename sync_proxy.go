@@ -1,70 +1,106 @@
 package id1
 
 import (
+	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
-	"strings"
+
+	"github.com/gorilla/websocket"
 )
 
-// SyncProxy creates a reverse proxy for Automerge WebSocket sync requests.
+// SyncProxy creates a WebSocket reverse proxy for Automerge sync requests.
 // target is host:port, e.g. "automerge-sync-server:8100".
 // The /sync path prefix is stripped so the sync server receives connections at /.
 //
-// When MTLS_ENABLED=true, connects via https:// with a client certificate
-// (same pattern as the Nextcloud proxy). When disabled, connects via plain http://.
+// Uses gorilla/websocket on both sides for proper bidirectional frame relay,
+// rather than httputil.ReverseProxy which doesn't handle WebSocket streaming.
 func SyncProxy(target string) (http.HandlerFunc, error) {
-	scheme := "http"
+	scheme := "ws"
+	var tlsConfig *tls.Config
+
 	transport, err := BuildTLSTransport()
 	if err != nil {
 		return nil, fmt.Errorf("sync proxy TLS transport: %w", err)
 	}
 	if transport != nil {
-		scheme = "https"
+		scheme = "wss"
+		tlsConfig = transport.TLSClientConfig
 	}
 
-	targetURL, err := url.Parse(scheme + "://" + target)
+	backendURL, err := url.Parse(scheme + "://" + target)
 	if err != nil {
 		return nil, fmt.Errorf("invalid AUTOMERGE_SYNC_SERVER: %w", err)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	// FlushInterval -1 = flush immediately after each write. This ensures
-	// the HTTP 101 Switching Protocols response is not buffered before the
-	// connection transitions to the bidirectional WebSocket tunnel.
-	proxy.FlushInterval = -1
-
-	if transport != nil {
-		proxy.Transport = transport
-	}
-
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		req.URL.Path = strings.TrimPrefix(req.URL.Path, "/sync")
-		if req.URL.Path == "" {
-			req.URL.Path = "/"
-		}
-		if req.URL.RawPath != "" {
-			req.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, "/sync")
-			if req.URL.RawPath == "" {
-				req.URL.RawPath = "/"
-			}
-		}
-		req.Host = targetURL.Host
-		originalDirector(req)
-		log.Printf("[sync-proxy] %s %s -> %s%s", req.Method, req.URL.Path, targetURL.Host, req.URL.Path)
-	}
-
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("[sync-proxy] Error: %v", err)
-		http.Error(w, "Sync service unavailable", http.StatusBadGateway)
+	clientUpgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		proxy.ServeHTTP(w, r)
+		// Upgrade the inbound (browser → id1) connection
+		clientConn, err := clientUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("[sync-proxy] client upgrade failed: %v", err)
+			return
+		}
+		defer clientConn.Close()
+
+		// Dial the backend (id1 → automerge-sync-server)
+		dialer := websocket.Dialer{}
+		if tlsConfig != nil {
+			dialer.TLSClientConfig = tlsConfig
+		}
+		backendConn, resp, err := dialer.Dial(backendURL.String()+"/", nil)
+		if err != nil {
+			if resp != nil {
+				log.Printf("[sync-proxy] backend dial failed (HTTP %d): %v", resp.StatusCode, err)
+			} else {
+				log.Printf("[sync-proxy] backend dial failed: %v", err)
+			}
+			return
+		}
+		defer backendConn.Close()
+
+		log.Printf("[sync-proxy] connected %s -> %s", r.RemoteAddr, backendURL.Host)
+
+		errc := make(chan error, 2)
+
+		// client → backend
+		go func() {
+			errc <- pumpFrames(clientConn, backendConn)
+		}()
+
+		// backend → client
+		go func() {
+			errc <- pumpFrames(backendConn, clientConn)
+		}()
+
+		// Wait for either direction to close
+		<-errc
 	}, nil
+}
+
+// pumpFrames copies WebSocket frames from src to dst until an error or close.
+func pumpFrames(src, dst *websocket.Conn) error {
+	for {
+		msgType, reader, err := src.NextReader()
+		if err != nil {
+			return err
+		}
+		writer, err := dst.NextWriter(msgType)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(writer, reader); err != nil {
+			return err
+		}
+		if err := writer.Close(); err != nil {
+			return err
+		}
+	}
 }
 
 // __END_OF_FILE_MARKER__
