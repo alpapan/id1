@@ -285,6 +285,46 @@ func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, 
 	return token.SignedString(privateKey)
 }
 
+// ValidateRS256JWT verifies an RS256 JWT signed by id1's own signing key.
+// Used by sovereign register endpoints to authenticate re-registration requests.
+// Returns jwt.RegisteredClaims (not the custom auth.Claims struct) because ORCID
+// JWTs don't carry the Username field — only Subject (ORCID iD) matters here.
+func ValidateRS256JWT(tokenStr string, kvStore KeyValueStore) (jwt.RegisteredClaims, error) {
+	pubPEM, err := kvStore.CmdGet(pubKeyPath)
+	if err != nil || len(pubPEM) == 0 {
+		return jwt.RegisteredClaims{}, fmt.Errorf("no signing public key found")
+	}
+
+	block, _ := pem.Decode(pubPEM)
+	if block == nil {
+		return jwt.RegisteredClaims{}, fmt.Errorf("failed to decode public key PEM")
+	}
+
+	pubKeyIface, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return jwt.RegisteredClaims{}, fmt.Errorf("failed to parse public key: %w", err)
+	}
+	rsaPubKey, ok := pubKeyIface.(*rsa.PublicKey)
+	if !ok {
+		return jwt.RegisteredClaims{}, fmt.Errorf("public key is not RSA")
+	}
+
+	var claims jwt.RegisteredClaims
+	token, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return rsaPubKey, nil
+	})
+	if err != nil {
+		return claims, fmt.Errorf("JWT validation failed: %w", err)
+	}
+	if !token.Valid {
+		return claims, fmt.Errorf("JWT is not valid")
+	}
+	return claims, nil
+}
+
 // rotateSigningKey moves current key to _system/priv/jwt-signing-key-prev and
 // _system/pub/jwt-signing-key-prev, then generates a new current key.
 // Previous key remains in JWKS for 1-hour overlap to allow in-flight JWTs to validate.

@@ -227,4 +227,40 @@ func TestHandleDemoUser(t *testing.T) {
 	})
 }
 
+func TestValidateRS256JWT(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	t.Run("valid JWT returns correct claims", func(t *testing.T) {
+		tokenStr, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+		require.NoError(t, err)
+
+		claims, err := ValidateRS256JWT(tokenStr, kv)
+		require.NoError(t, err)
+		assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
+	})
+
+	t.Run("garbage token fails", func(t *testing.T) {
+		_, err := ValidateRS256JWT("garbage.token.here", kv)
+		assert.Error(t, err)
+	})
+
+	t.Run("expired token fails", func(t *testing.T) {
+		expiredClaims := jwt.RegisteredClaims{
+			Issuer:    jwtIssuer,
+			Subject:   "0000-0001-2345-6789",
+			Audience:  jwt.ClaimStrings{jwtAudience},
+			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
+		}
+		expiredToken := jwt.NewWithClaims(jwt.SigningMethodRS256, expiredClaims)
+		expiredToken.Header["kid"] = keyID
+		expiredStr, _ := expiredToken.SignedString(privKey)
+
+		_, err := ValidateRS256JWT(expiredStr, kv)
+		assert.Error(t, err)
+	})
+}
+
 // __END_OF_FILE_MARKER__
