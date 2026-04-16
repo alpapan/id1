@@ -161,6 +161,19 @@ func main() {
 	http.HandleFunc("/auth/sovereign/register/commit", id1.HandleRegisterCommit(id1KVStore))
 	fmt.Println("Registered /auth/sovereign/register/{begin,commit} two-phase key registration")
 
+	// Device list + revocation (requires RS256 JWT)
+	http.HandleFunc("/auth/sovereign/devices", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodOptions:
+			id1.HandleListDevices(id1KVStore)(w, r)
+		case http.MethodDelete:
+			id1.HandleDeleteDevice(id1KVStore)(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	fmt.Println("Registered /auth/sovereign/devices device list + revocation")
+
 	// Test-only endpoint for issuing JWTs (guarded by ENV=test)
 	if os.Getenv("ENV") == "test" {
 		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
