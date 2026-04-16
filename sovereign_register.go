@@ -16,6 +16,8 @@ const pubKeyTTL = "604800"  // 7 days — refreshed on every login
 // RegisterBeginRequest is the JSON body for POST /auth/sovereign/register/begin.
 type RegisterBeginRequest struct {
 	PublicKeyPEM string `json:"publicKeyPem"`
+	DeviceId     string `json:"deviceId"`
+	DeviceName   string `json:"deviceName"`
 }
 
 // RegisterBeginResponse is returned on successful begin.
@@ -29,6 +31,8 @@ type RegisterBeginResponse struct {
 type RegisterCommitRequest struct {
 	RegistrationToken string `json:"registrationToken"`
 	Nonce             string `json:"nonce"`
+	DeviceId          string `json:"deviceId"`
+	DeviceName        string `json:"deviceName"`
 }
 
 // HandleRegisterBegin returns an HTTP handler for Phase 1 of sovereign key registration.
@@ -66,10 +70,13 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing publicKeyPem", http.StatusBadRequest)
 			return
 		}
+		if req.DeviceId == "" {
+			http.Error(w, "Missing deviceId", http.StatusBadRequest)
+			return
+		}
 
-		// Check if user already has an active key
-		existingKey, err := CmdGet(KK(orcidId, "pub", "key")).Exec()
-		keyExists := err == nil && len(existingKey) > 0
+		// Check if user already has any registered device key
+		keyExists := idExists(orcidId)
 
 		if keyExists {
 			// Re-registration: require RS256 JWT proving ownership
@@ -139,9 +146,9 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 // HandleRegisterCommit returns an HTTP handler for Phase 2 of sovereign key registration.
 //
 // Verifies the decrypted nonce proves private key possession, then promotes the
-// pending key to active at {id}/pub/key.
+// pending key to active at {id}/pub/keys/{deviceId}.
 //
-// Idempotent: if pub/key already exists and pending is gone, returns 200 OK.
+// Idempotent: if pub/keys/{deviceId} already exists and pending is gone, returns 200 OK.
 func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cors(&w)
@@ -165,6 +172,10 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Invalid JSON body", http.StatusBadRequest)
 			return
 		}
+		if req.DeviceId == "" {
+			http.Error(w, "Missing deviceId", http.StatusBadRequest)
+			return
+		}
 
 		pendingKeyPath := KK(orcidId, "priv", "pending", req.RegistrationToken+".key")
 		pendingNoncePath := KK(orcidId, "priv", "pending", req.RegistrationToken+".nonce")
@@ -172,8 +183,8 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 		// Read pending key
 		pendingPEM, err := CmdGet(pendingKeyPath).Exec()
 		if err != nil || len(pendingPEM) == 0 {
-			// Idempotent: if pub/key already exists, the commit already went through
-			activeKey, activeErr := CmdGet(KK(orcidId, "pub", "key")).Exec()
+			// Idempotent: if pub/keys/{deviceId} already exists, the commit already went through
+			activeKey, activeErr := CmdGet(KK(orcidId, "pub", "keys", req.DeviceId)).Exec()
 			if activeErr == nil && len(activeKey) > 0 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
@@ -213,10 +224,15 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Promote: set pub/key = pending PEM with 7-day TTL (refreshed on each login)
-		if _, err := CmdSet(KK(orcidId, "pub", "key"), map[string]string{"x-id": orcidId, "ttl": pubKeyTTL}, pendingPEM).Exec(); err != nil {
+		// Promote: set pub/keys/{deviceId} = pending PEM with 7-day TTL (refreshed on each login)
+		if _, err := CmdSet(KK(orcidId, "pub", "keys", req.DeviceId), map[string]string{"x-id": orcidId, "ttl": pubKeyTTL}, pendingPEM).Exec(); err != nil {
 			http.Error(w, "Failed to activate key", http.StatusInternalServerError)
 			return
+		}
+
+		// Store device name (best-effort, no TTL — lives alongside the key)
+		if req.DeviceName != "" {
+			CmdSet(KK(orcidId, "pub", "keys", req.DeviceId+".name"), map[string]string{"x-id": orcidId}, []byte(req.DeviceName)).Exec()
 		}
 
 		// Clean up pending state (best-effort)

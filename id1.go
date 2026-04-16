@@ -58,14 +58,20 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		if !authOk {
 			if len(id) > 0 {
 				err403(w, "")
-			} else if pubKey, err := CmdGet(KK(req.Id, "pub", "key")).Exec(); err == nil {
-				if challenge, err := generateChallenge(req.Id, string(pubKey)); err == nil {
-					err401(w, challenge)
-				} else {
-					err500(w, err.Error())
-				}
 			} else {
-				err404(w, err.Error())
+				deviceId := r.URL.Query().Get("device")
+				if deviceId == "" {
+					deviceId = "default"
+				}
+				if pubKey, err := CmdGet(KK(req.Id, "pub", "keys", deviceId)).Exec(); err == nil {
+					if challenge, err := generateChallenge(req.Id, string(pubKey)); err == nil {
+						err401(w, challenge)
+					} else {
+						err500(w, err.Error())
+					}
+				} else {
+					err404(w, err.Error())
+				}
 			}
 			return
 		}

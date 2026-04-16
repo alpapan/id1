@@ -194,22 +194,24 @@ func TestScanAndProvisionIntegration(t *testing.T) {
 	// tmpDir/
 	//   0000-0001-0001-0001/
 	//     pub/
-	//       key
+	//       keys/
+	//         default
 	//   0000-0002-0002-0002/
 	//     pub/
-	//       key
+	//       keys/
+	//         default
 	//     priv/
 	//       nc-token  <- already provisioned
 
 	// User 1: unprovisioned (no nc-token).
-	user1Dir := filepath.Join(tmpDir, "0000-0001-0001-0001", "pub")
+	user1Dir := filepath.Join(tmpDir, "0000-0001-0001-0001", "pub", "keys")
 	os.MkdirAll(user1Dir, 0755)
-	os.WriteFile(filepath.Join(user1Dir, "key"), []byte("public-key-1"), 0644)
+	os.WriteFile(filepath.Join(user1Dir, "default"), []byte("public-key-1"), 0644)
 
 	// User 2: already provisioned.
-	user2Dir := filepath.Join(tmpDir, "0000-0002-0002-0002", "pub")
+	user2Dir := filepath.Join(tmpDir, "0000-0002-0002-0002", "pub", "keys")
 	os.MkdirAll(user2Dir, 0755)
-	os.WriteFile(filepath.Join(user2Dir, "key"), []byte("public-key-2"), 0644)
+	os.WriteFile(filepath.Join(user2Dir, "default"), []byte("public-key-2"), 0644)
 	tokenDir := filepath.Join(tmpDir, "0000-0002-0002-0002", "priv")
 	os.MkdirAll(tokenDir, 0755)
 	os.WriteFile(filepath.Join(tokenDir, "nc-token"), []byte("existing-token"), 0644)
@@ -276,10 +278,10 @@ func TestProvisionUserFullFlow(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	// Create user directory with pub/key.
-	userDir := filepath.Join(tmpDir, "0000-0003-0003-0003", "pub")
+	// Create user directory with pub/keys/default.
+	userDir := filepath.Join(tmpDir, "0000-0003-0003-0003", "pub", "keys")
 	os.MkdirAll(userDir, 0755)
-	os.WriteFile(filepath.Join(userDir, "key"), []byte("public-key-3"), 0644)
+	os.WriteFile(filepath.Join(userDir, "default"), []byte("public-key-3"), 0644)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

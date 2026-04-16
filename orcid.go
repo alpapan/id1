@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -235,10 +236,19 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refresh pub/key TTL if the user has a sovereign key registered.
-	// This extends the 7-day inactivity window on every ORCID login.
-	if existingKey, err := CmdGet(KK(orcidID, "pub", "key")).Exec(); err == nil && len(existingKey) > 0 {
-		CmdSet(KK(orcidID, "pub", "key"), map[string]string{"x-id": orcidID, "ttl": "604800"}, existingKey).Exec()
+	// Refresh TTL on ALL device keys for this user.
+	// ORCID proves user identity → all devices benefit.
+	keysDir := filepath.Join(dbpath, orcidID, "pub", "keys")
+	if entries, err := os.ReadDir(keysDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), ".name") {
+				continue
+			}
+			deviceKey := KK(orcidID, "pub", "keys", entry.Name())
+			if data, err := CmdGet(deviceKey).Exec(); err == nil && len(data) > 0 {
+				CmdSet(deviceKey, map[string]string{"x-id": orcidID, "ttl": "604800"}, data).Exec()
+			}
+		}
 	}
 
 	// Sign JWT with ORCID iD as subject

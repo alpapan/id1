@@ -2,6 +2,10 @@ package id1
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -16,9 +20,17 @@ func auth(id string, cmd Command) bool {
 }
 
 func idExists(id string) bool {
-	pubKey := KK(id, "pub", "key")
-	data, err := CmdGet(pubKey).Exec()
-	return err == nil && len(data) > 0
+	keysDir := filepath.Join(dbpath, id, "pub", "keys")
+	entries, err := os.ReadDir(keysDir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && !strings.HasSuffix(entry.Name(), ".name") {
+			return true
+		}
+	}
+	return false
 }
 
 type Claims struct {

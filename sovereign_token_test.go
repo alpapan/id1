@@ -19,8 +19,8 @@ import (
 )
 
 // testSovereignSetup generates an RSA key pair, registers the public key
-// in the KV store, and returns the private key.
-func testSovereignSetup(t *testing.T, userID string) *rsa.PrivateKey {
+// in the KV store at pub/keys/{deviceId}, and returns the private key.
+func testSovereignSetup(t *testing.T, userID, deviceId string) *rsa.PrivateKey {
 	t.Helper()
 
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -37,8 +37,8 @@ func testSovereignSetup(t *testing.T, userID string) *rsa.PrivateKey {
 		Bytes: pubBytes,
 	})
 
-	// Register the public key in the KV store
-	key := KK(userID, "pub", "key")
+	// Register the public key at per-device path
+	key := KK(userID, "pub", "keys", deviceId)
 	if _, err := CmdSet(key, map[string]string{"x-id": userID}, pubPEM).Exec(); err != nil {
 		t.Fatal(err)
 	}
@@ -68,13 +68,14 @@ func TestHandleSovereignToken_ValidSignature(t *testing.T) {
 	}
 
 	userID := "service"
-	privKey := testSovereignSetup(t, userID)
+	deviceId := "default"
+	privKey := testSovereignSetup(t, userID, deviceId)
 
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	payload := userID + ":" + timestamp
 	signature := signSovereignPayload(t, privKey, payload)
 
-	body := `{"id":"` + userID + `","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
+	body := `{"id":"` + userID + `","deviceId":"` + deviceId + `","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -127,7 +128,8 @@ func TestHandleSovereignToken_WrongKey(t *testing.T) {
 	kvStore := ID1KeyValueStore{}
 
 	userID := "service-wrong"
-	_ = testSovereignSetup(t, userID)
+	deviceId := "default"
+	_ = testSovereignSetup(t, userID, deviceId)
 
 	// Sign with a DIFFERENT key pair
 	wrongKey, _ := rsa.GenerateKey(rand.Reader, 2048)
@@ -135,7 +137,7 @@ func TestHandleSovereignToken_WrongKey(t *testing.T) {
 	payload := userID + ":" + timestamp
 	signature := signSovereignPayload(t, wrongKey, payload)
 
-	body := `{"id":"` + userID + `","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
+	body := `{"id":"` + userID + `","deviceId":"` + deviceId + `","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/token", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
@@ -151,14 +153,15 @@ func TestHandleSovereignToken_ExpiredTimestamp(t *testing.T) {
 	kvStore := ID1KeyValueStore{}
 
 	userID := "service-expired"
-	privKey := testSovereignSetup(t, userID)
+	deviceId := "default"
+	privKey := testSovereignSetup(t, userID, deviceId)
 
 	// Timestamp 10 minutes ago — outside ±5 min window
 	timestamp := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
 	payload := userID + ":" + timestamp
 	signature := signSovereignPayload(t, privKey, payload)
 
-	body := `{"id":"` + userID + `","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
+	body := `{"id":"` + userID + `","deviceId":"` + deviceId + `","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/token", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
@@ -178,7 +181,7 @@ func TestHandleSovereignToken_UnknownID(t *testing.T) {
 	payload := "nonexistent-user:" + timestamp
 	signature := signSovereignPayload(t, privKey, payload)
 
-	body := `{"id":"nonexistent-user","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
+	body := `{"id":"nonexistent-user","deviceId":"default","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/token", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 

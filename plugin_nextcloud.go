@@ -116,9 +116,10 @@ func (p *NextcloudProvisioner) scanAndProvision() {
 			continue
 		}
 
-		// Check if this ORCID ID has a public key registered.
-		pubKeyPath := filepath.Join(dbpath, orcidId, "pub", "key")
-		if _, err := os.Stat(pubKeyPath); err != nil {
+		// Check if this ORCID ID has any device key registered.
+		pubKeysDir := filepath.Join(dbpath, orcidId, "pub", "keys")
+		entries, err := os.ReadDir(pubKeysDir)
+		if err != nil || len(entries) == 0 {
 			continue
 		}
 

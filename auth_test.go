@@ -13,37 +13,32 @@ func setupAuthTest(t *testing.T) {
 
 func TestAuthOwnerCanSetOwnPublicKey(t *testing.T) {
 	setupAuthTest(t)
-	testid1PubKey := K("testid1/pub/key")
-	if _, err := NewCommand(Set, K("testid1/pub/key"), map[string]string{}, []byte("..........")).Exec(); err != nil {
-		t.Fatalf("setup failed to set initial key: %v", err)
-	}
+	// Multi-device: keys at pub/keys/{deviceId}
+	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
+	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
-	if !auth("testid1", NewCommand(Set, testid1PubKey, map[string]string{}, []byte{})) {
-		t.Errorf("testid1 should be authorized to set own public key")
+	if !auth("testid1", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{})) {
+		t.Errorf("testid1 should be authorized to set own device key")
 	}
 }
 
 func TestAuthNonOwnerCannotSetOthersKey(t *testing.T) {
 	setupAuthTest(t)
-	testid1PubKey := K("testid1/pub/key")
-	if _, err := NewCommand(Set, K("testid1/pub/key"), map[string]string{}, []byte("..........")).Exec(); err != nil {
-		t.Fatalf("setup failed to set initial key: %v", err)
-	}
+	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
+	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
-	if auth("testid2", NewCommand(Set, testid1PubKey, map[string]string{}, []byte{})) {
-		t.Errorf("testid2 should not be authorized to modify testid1's public key")
+	if auth("testid2", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{})) {
+		t.Errorf("testid2 should not be authorized to modify testid1's device key")
 	}
 }
 
 func TestAuthAnonymousCanReadPublicKeys(t *testing.T) {
 	setupAuthTest(t)
-	testid1PubKey := K("testid1/pub/key")
-	if _, err := NewCommand(Set, K("testid1/pub/key"), map[string]string{}, []byte("..........")).Exec(); err != nil {
-		t.Fatalf("setup failed to set initial key: %v", err)
-	}
+	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
+	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
-	if !auth("", NewCommand(Get, testid1PubKey, map[string]string{}, []byte{})) {
-		t.Errorf("anonymous user should be authorized to read public keys")
+	if !auth("", NewCommand(Get, testid1DeviceKey, map[string]string{}, []byte{})) {
+		t.Errorf("anonymous user should be authorized to read public device keys")
 	}
 }
 
@@ -59,17 +54,49 @@ func TestParseClaims(t *testing.T) {
 
 func TestIdExists(t *testing.T) {
 	setupAuthTest(t)
-	testidPubKey := K("testid1/pub/key")
-	if _, err := NewCommand(Set, testidPubKey, map[string]string{}, []byte("..........")).Exec(); err != nil {
+	// Multi-device: keys live at pub/keys/{deviceId}
+	deviceKey := KK("testid1", "pub", "keys", "default")
+	if _, err := CmdSet(deviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec(); err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
 
 	if !idExists("testid1") {
-		t.Errorf("idExists should return true for testid1 after setting its public key")
+		t.Errorf("idExists should return true for testid1 after setting a device key")
 	}
 
 	if idExists("testid123") {
 		t.Errorf("idExists should return false for non-existent testid123")
+	}
+}
+
+func TestIdExistsMultiDevice(t *testing.T) {
+	setupAuthTest(t)
+
+	orcid := "0000-0001-2345-6789"
+
+	// No keys registered — should be false
+	if idExists(orcid) {
+		t.Errorf("idExists should return false when no keys exist")
+	}
+
+	// Register a device key at pub/keys/device-1
+	CmdSet(KK(orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-DATA")).Exec()
+	if !idExists(orcid) {
+		t.Errorf("idExists should return true when a device key exists at pub/keys/device-1")
+	}
+
+	// Register a second device — still true
+	CmdSet(KK(orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-DATA-2")).Exec()
+	if !idExists(orcid) {
+		t.Errorf("idExists should return true with multiple device keys")
+	}
+
+	// Metadata-only (.name files) should not count
+	setupAuthTest(t)
+	orcid2 := "0000-0002-0000-0001"
+	CmdSet(KK(orcid2, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid2}, []byte("My Browser")).Exec()
+	if idExists(orcid2) {
+		t.Errorf("idExists should return false when only .name metadata files exist")
 	}
 }
 

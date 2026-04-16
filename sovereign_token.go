@@ -17,6 +17,7 @@ import (
 // sovereignTokenRequest is the JSON body for POST /auth/sovereign/token.
 type sovereignTokenRequest struct {
 	ID        string `json:"id"`
+	DeviceId  string `json:"deviceId"`
 	Timestamp string `json:"timestamp"`
 	Signature string `json:"signature"`
 }
@@ -55,6 +56,9 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			err400(w, "id, timestamp, and signature are required")
 			return
 		}
+		if req.DeviceId == "" {
+			req.DeviceId = "default"
+		}
 
 		// Parse and validate timestamp
 		ts, err := time.Parse(time.RFC3339, req.Timestamp)
@@ -68,8 +72,8 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Load the registered public key
-		pubKeyPEM, err := CmdGet(KK(req.ID, "pub", "key")).Exec()
+		// Load the registered public key for this device
+		pubKeyPEM, err := CmdGet(KK(req.ID, "pub", "keys", req.DeviceId)).Exec()
 		if err != nil || len(pubKeyPEM) == 0 {
 			err404(w, "no public key registered for this id")
 			return
@@ -96,9 +100,10 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Signature valid — refresh pub/key TTL (7-day inactivity window)
-		if existingKey, err := CmdGet(KK(req.ID, "pub", "key")).Exec(); err == nil && len(existingKey) > 0 {
-			CmdSet(KK(req.ID, "pub", "key"), map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).Exec()
+		// Signature valid — refresh this device's TTL (7-day inactivity window)
+		deviceKey := KK(req.ID, "pub", "keys", req.DeviceId)
+		if existingKey, err := CmdGet(deviceKey).Exec(); err == nil && len(existingKey) > 0 {
+			CmdSet(deviceKey, map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).Exec()
 		}
 
 		// Issue RS256 JWT

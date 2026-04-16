@@ -121,7 +121,8 @@ func (t *Session) handleCommands() {
 			authOk := auth(t.Id, cmd)
 
 			if !authOk {
-				if pubKey, err := CmdGet(KK(t.Id, "pub", "key")).Exec(); err == nil {
+				// Use "default" device for WebSocket challenge-response
+				if pubKey, err := CmdGet(KK(t.Id, "pub", "keys", "default")).Exec(); err == nil {
 					if challenge, err := generateChallenge(t.Id, string(pubKey)); err == nil {
 						t.CmdOut <- CmdSet(KK(t.Id, "auth"), map[string]string{}, []byte(challenge))
 					} else {
@@ -129,7 +130,6 @@ func (t *Session) handleCommands() {
 					}
 				} else {
 					log.Println(err)
-					t.CmdOut <- CmdDel(KK(t.Id, "pub", "key"))
 				}
 				continue
 			}
