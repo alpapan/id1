@@ -83,6 +83,14 @@ go test ./... -v
 
 mTLS-specific tests live in `tls_config_test.go` and `mtls_connectivity_test.go`.
 
+### WebSocket proxying
+
+**`httputil.ReverseProxy` does NOT work for WebSocket.** It passes the HTTP 101 Upgrade
+but does not relay bidirectional frames — connections appear to succeed then immediately
+disconnect. The `/sync` proxy uses `gorilla/websocket` with a `pumpFrames` goroutine pair
+(`sync_proxy.go`). Only `/sync` needs this — `/nextcloud/*` is plain HTTP and uses
+`ReverseProxy` correctly.
+
 ## Commit submodule changes from here
 
 `cd apps/backend/containers/id1 && git add <file> && git commit -m "feat(id1): …"`
