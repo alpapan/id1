@@ -40,6 +40,11 @@ type RegisterCommitRequest struct {
 // Returns encrypted nonce as challenge (RSA-OAEP with the pending public key).
 func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cors(&w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -138,6 +143,11 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 // Idempotent: if pub/key already exists and pending is gone, returns 200 OK.
 func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cors(&w)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
