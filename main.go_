@@ -156,6 +156,11 @@ func main() {
 	http.HandleFunc("/auth/sovereign/token", id1.HandleSovereignToken(id1KVStore))
 	fmt.Println("Registered /auth/sovereign/token sovereign key endpoint")
 
+	// Two-phase sovereign key registration
+	http.HandleFunc("/auth/sovereign/register/begin", id1.HandleRegisterBegin(id1KVStore))
+	http.HandleFunc("/auth/sovereign/register/commit", id1.HandleRegisterCommit(id1KVStore))
+	fmt.Println("Registered /auth/sovereign/register/{begin,commit} two-phase key registration")
+
 	// Test-only endpoint for issuing JWTs (guarded by ENV=test)
 	if os.Getenv("ENV") == "test" {
 		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
