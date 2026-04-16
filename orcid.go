@@ -235,6 +235,12 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refresh pub/key TTL if the user has a sovereign key registered.
+	// This extends the 7-day inactivity window on every ORCID login.
+	if existingKey, err := CmdGet(KK(orcidID, "pub", "key")).Exec(); err == nil && len(existingKey) > 0 {
+		CmdSet(KK(orcidID, "pub", "key"), map[string]string{"x-id": orcidID, "ttl": "604800"}, existingKey).Exec()
+	}
+
 	// Sign JWT with ORCID iD as subject
 	jwtToken, err := signJWT(orcidID, privKey, keyID)
 	if err != nil {

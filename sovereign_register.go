@@ -11,6 +11,7 @@ import (
 )
 
 const pendingKeyTTL = "3600" // 1 hour
+const pubKeyTTL = "604800"  // 7 days — refreshed on every login
 
 // RegisterBeginRequest is the JSON body for POST /auth/sovereign/register/begin.
 type RegisterBeginRequest struct {
@@ -212,8 +213,8 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Promote: set pub/key = pending PEM
-		if _, err := CmdSet(KK(orcidId, "pub", "key"), map[string]string{"x-id": orcidId}, pendingPEM).Exec(); err != nil {
+		// Promote: set pub/key = pending PEM with 7-day TTL (refreshed on each login)
+		if _, err := CmdSet(KK(orcidId, "pub", "key"), map[string]string{"x-id": orcidId, "ttl": pubKeyTTL}, pendingPEM).Exec(); err != nil {
 			http.Error(w, "Failed to activate key", http.StatusInternalServerError)
 			return
 		}

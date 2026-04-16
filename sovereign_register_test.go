@@ -232,3 +232,41 @@ func TestRegisterCommitIdempotent(t *testing.T) {
 	HandleRegisterCommit(kv)(commitRec2, commitReq2)
 	assert.Equal(t, http.StatusOK, commitRec2.Code, "idempotent retry should return 200")
 }
+
+func TestRegisterCommitSetsTTL(t *testing.T) {
+	kv := setupTestKVStore(t)
+	GetOrCreateSigningKey(kv)
+
+	privKey, pubPEM := testGenerateRSAKeyPair(t)
+	orcid := "0000-0001-2345-6789"
+
+	// Phase 1: begin
+	body, _ := json.Marshal(RegisterBeginRequest{PublicKeyPEM: pubPEM})
+	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	HandleRegisterBegin(kv)(rec, req)
+
+	var beginResp RegisterBeginResponse
+	json.Unmarshal(rec.Body.Bytes(), &beginResp)
+
+	challengeBytes, _ := base64.StdEncoding.DecodeString(beginResp.Challenge)
+	nonce, _ := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, challengeBytes, nil)
+
+	// Phase 2: commit
+	commitBody, _ := json.Marshal(RegisterCommitRequest{
+		RegistrationToken: beginResp.RegistrationToken,
+		Nonce:             base64.StdEncoding.EncodeToString(nonce),
+	})
+	commitReq := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/commit?id="+orcid, bytes.NewReader(commitBody))
+	commitReq.Header.Set("Content-Type", "application/json")
+	commitRec := httptest.NewRecorder()
+	HandleRegisterCommit(kv)(commitRec, commitReq)
+	require.Equal(t, http.StatusOK, commitRec.Code)
+
+	// Verify TTL was set: the .ttl.key file should exist in the pub directory
+	ttlPath := KK(orcid, "pub", ".ttl.key")
+	ttlData, err := CmdGet(ttlPath).Exec()
+	assert.NoError(t, err, "TTL metadata file should exist after commit")
+	assert.NotEmpty(t, ttlData, "TTL metadata should contain the .after path")
+}

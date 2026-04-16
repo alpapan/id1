@@ -96,7 +96,12 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Signature valid — issue RS256 JWT
+		// Signature valid — refresh pub/key TTL (7-day inactivity window)
+		if existingKey, err := CmdGet(KK(req.ID, "pub", "key")).Exec(); err == nil && len(existingKey) > 0 {
+			CmdSet(KK(req.ID, "pub", "key"), map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).Exec()
+		}
+
+		// Issue RS256 JWT
 		keyID, privKey, err := GetOrCreateSigningKey(kvStore)
 		if err != nil {
 			err500(w, "failed to get signing key")
