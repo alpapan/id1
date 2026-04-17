@@ -422,6 +422,54 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword 
 	return token, nil
 }
 
+// HandleNcToken returns an HTTP handler for GET /internal/nc-token?orcid=<X>.
+// It requires header X-ID1-Internal-Secret to match the configured secret.
+// On success, returns 200 with JSON {"token": "<plaintext app password>"}.
+//
+// The handler is stateless: on each call it derives the user's Nextcloud login
+// password from (orcid, derivationKey), ensures the user exists, and mints a
+// fresh app token. id1 does not persist the result — the caller (backend) is
+// responsible for caching.
+func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-ID1-Internal-Secret") != internalSecret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		orcid := r.URL.Query().Get("orcid")
+		if orcid == "" {
+			http.Error(w, "orcid required", http.StatusBadRequest)
+			return
+		}
+		if !orcidPattern.MatchString(orcid) {
+			http.Error(w, "malformed orcid", http.StatusBadRequest)
+			return
+		}
+
+		pw, err := DeriveNextcloudPassword(derivationKey, orcid)
+		if err != nil {
+			http.Error(w, "derive failed", http.StatusInternalServerError)
+			return
+		}
+
+		ctx := r.Context()
+		if err := nc.EnsureUserExists(ctx, orcid, pw); err != nil {
+			fmt.Printf("nc-token: EnsureUserExists failed for %s: %v\n", orcid, err)
+			http.Error(w, "nextcloud unavailable", http.StatusBadGateway)
+			return
+		}
+		token, err := nc.MintAppToken(ctx, orcid, pw)
+		if err != nil {
+			fmt.Printf("nc-token: MintAppToken failed for %s: %v\n", orcid, err)
+			http.Error(w, "nextcloud unavailable", http.StatusBadGateway)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"token":%q}`, token)
+	}
+}
+
 // DeriveNextcloudPassword returns a deterministic Nextcloud login password for
 // an ORCID user, computed as "NC_" + base64url(HMAC-SHA256(derivationKey, orcid)).
 // The NC_ prefix matches the format produced by generateRandomPassword(), which

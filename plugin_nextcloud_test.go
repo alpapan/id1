@@ -764,4 +764,102 @@ func TestNextcloudClient_MintAppToken_OCSNon200(t *testing.T) {
 	assert.Contains(t, err.Error(), "OCS error 403")
 }
 
+// ---------------------------------------------------------------------------
+// HandleNcToken — HTTP handler for GET /internal/nc-token?orcid=<X>.
+// ---------------------------------------------------------------------------
+
+// fakeNextcloud starts an httptest.Server that handles the two OCS calls
+// (EnsureUserExists + MintAppToken). Returns the URL and a cleanup func.
+func fakeNextcloud(t *testing.T, _expectedPw, tokenToReturn string) (string, func()) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/ocs/v2.php/cloud/users":
+			fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":100,"status":"ok","message":"OK"},"data":{}}}`)
+		case "/ocs/v2.php/core/getapppassword":
+			fmt.Fprintf(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"%s"}}}`, tokenToReturn)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return srv.URL, srv.Close
+}
+
+func TestHandleNcToken_HappyPath(t *testing.T) {
+	ncURL, cleanup := fakeNextcloud(t, "any", "MINTED-TOKEN")
+	defer cleanup()
+
+	handler := HandleNcToken(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret")
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	assert.Equal(t, "MINTED-TOKEN", body["token"])
+}
+
+func TestHandleNcToken_MissingOrcid(t *testing.T) {
+	handler := HandleNcToken(&NextcloudClient{}, []byte("test-key"), "internal-secret")
+
+	req := httptest.NewRequest("GET", "/internal/nc-token", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+}
+
+func TestHandleNcToken_MalformedOrcid(t *testing.T) {
+	handler := HandleNcToken(&NextcloudClient{}, []byte("test-key"), "internal-secret")
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=not-an-orcid", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+}
+
+func TestHandleNcToken_MissingInternalSecret(t *testing.T) {
+	handler := HandleNcToken(&NextcloudClient{}, []byte("test-key"), "internal-secret")
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	// no X-ID1-Internal-Secret header
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestHandleNcToken_WrongInternalSecret(t *testing.T) {
+	handler := HandleNcToken(&NextcloudClient{}, []byte("test-key"), "internal-secret")
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "wrong")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestHandleNcToken_NextcloudDown(t *testing.T) {
+	// Point at a closed server to force connection failure.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret")
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadGateway, rr.Code)
+}
+
 // __END_OF_FILE_MARKER__
