@@ -139,9 +139,28 @@ func (p *NextcloudProvisioner) scanAndProvision() {
 // provisionUser creates a Nextcloud user and generates an app password,
 // then stores the app password in the id1 key store.
 func (p *NextcloudProvisioner) provisionUser(orcidId string) error {
-	initialPassword := generateRandomPassword()
-	if initialPassword == "" {
-		return fmt.Errorf("failed to generate initial password")
+	// Load or generate password. On retry after partial failure, the staging
+	// password already exists — reuse it so createAppPassword authenticates
+	// with the same password that createUser originally stored in Nextcloud.
+	stagingKey := KK(orcidId, "priv", "nc-staging-password")
+	stagingPath := filepath.Join(dbpath, stagingKey.String())
+
+	var initialPassword string
+	if data, err := os.ReadFile(stagingPath); err == nil && len(data) > 0 {
+		initialPassword = string(data)
+	} else {
+		initialPassword = generateRandomPassword()
+		if initialPassword == "" {
+			return fmt.Errorf("failed to generate initial password")
+		}
+		// Persist before any Nextcloud call — crash-safe.
+		dir := filepath.Dir(stagingPath)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("failed to create staging dir: %w", err)
+		}
+		if err := os.WriteFile(stagingPath, []byte(initialPassword), 0o600); err != nil {
+			return fmt.Errorf("failed to persist staging password: %w", err)
+		}
 	}
 
 	if err := p.createUser(orcidId, initialPassword); err != nil {
@@ -156,6 +175,11 @@ func (p *NextcloudProvisioner) provisionUser(orcidId string) error {
 	tokenKey := KK(orcidId, "priv", "nc-token")
 	if _, err := CmdSet(tokenKey, map[string]string{"x-id": orcidId}, []byte(appPassword)).Exec(); err != nil {
 		return fmt.Errorf("failed to persist nc-token for %s: %w", orcidId, err)
+	}
+
+	// Clean up staging password after successful provisioning.
+	if err := os.Remove(stagingPath); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("NextcloudProvisioner: warning: failed to clean up staging password for %s: %v\n", orcidId, err)
 	}
 
 	return nil

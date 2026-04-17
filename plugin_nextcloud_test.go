@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -428,6 +429,99 @@ func TestNewNextcloudProvisioner(t *testing.T) {
 	}
 	if p.password != "provisioner-secret" {
 		t.Errorf("expected password 'provisioner-secret', got: %s", p.password)
+	}
+}
+
+// TestProvisionUserRetryUsesSamePassword verifies that when provisioning fails
+// after createUser succeeds but createAppPassword fails, a retry uses the same
+// staging password instead of generating a new one.
+func TestProvisionUserRetryUsesSamePassword(t *testing.T) {
+	origDbpath := dbpath
+	tmpDir := t.TempDir()
+	dbpath = tmpDir
+	defer func() { dbpath = origDbpath }()
+
+	orcidId := "0009-0002-8023-3658"
+	keysDir := filepath.Join(tmpDir, orcidId, "pub", "keys")
+	if err := os.MkdirAll(keysDir, 0o755); err != nil {
+		t.Fatalf("failed to create keysDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "key1"), []byte("pk"), 0o644); err != nil {
+		t.Fatalf("failed to write key file: %v", err)
+	}
+
+	var passwords []string
+	callCount := 0
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.Contains(r.URL.Path, "/cloud/users") {
+			r.ParseForm()
+			passwords = append(passwords, r.FormValue("password"))
+			callCount++
+			localCount := callCount
+
+			if localCount == 1 {
+				json.NewEncoder(w).Encode(OCSResponse{OCS: OCSData{Meta: OCSMeta{Statuscode: 100}}})
+			} else {
+				json.NewEncoder(w).Encode(OCSResponse{OCS: OCSData{Meta: OCSMeta{Statuscode: 102}}})
+			}
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "/core/getapppassword") {
+			localCount := callCount
+			if localCount == 1 {
+				json.NewEncoder(w).Encode(OCSResponse{OCS: OCSData{Meta: OCSMeta{Statuscode: 500, Message: "transient"}}})
+			} else {
+				json.NewEncoder(w).Encode(OCSResponse{OCS: OCSData{
+					Meta: OCSMeta{Statuscode: 200},
+					Data: map[string]interface{}{"apppassword": "app-token-xyz"},
+				}})
+			}
+			return
+		}
+	}))
+	defer server.Close()
+
+	p := &NextcloudProvisioner{
+		nextcloudURL: server.URL,
+		username:     "admin",
+		password:     "secret",
+	}
+
+	err := p.provisionUser(orcidId)
+	if err == nil {
+		t.Fatal("first attempt should fail (app password error)")
+	}
+
+	stagingKey := KK(orcidId, "priv", "nc-staging-password")
+	stagingPath := filepath.Join(dbpath, stagingKey.String())
+	if _, statErr := os.Stat(stagingPath); statErr != nil {
+		t.Fatalf("staging password file should exist after failed attempt: %v", statErr)
+	}
+
+	err = p.provisionUser(orcidId)
+	if err != nil {
+		t.Fatalf("second attempt should succeed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(passwords) != 2 {
+		t.Fatalf("expected 2 createUser calls, got %d", len(passwords))
+	}
+	if passwords[0] != passwords[1] {
+		t.Errorf("retry must reuse the same password, got %q then %q", passwords[0], passwords[1])
+	}
+
+	if _, statErr := os.Stat(stagingPath); !os.IsNotExist(statErr) {
+		t.Error("staging password should be deleted after successful provisioning")
 	}
 }
 
