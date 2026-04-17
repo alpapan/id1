@@ -11,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestGenerateRandomPassword verifies that the password generator produces
@@ -581,6 +584,54 @@ func TestScanAndProvisionRespectsBackoff(t *testing.T) {
 	if secondCount != 1 {
 		t.Errorf("second scan should skip user due to backoff, but made %d total requests", secondCount)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// DeriveNextcloudPassword — HMAC-SHA256 based deterministic password derivation.
+// ---------------------------------------------------------------------------
+
+func TestDeriveNextcloudPassword_Deterministic(t *testing.T) {
+	key := []byte("test-derivation-key")
+	orcid := "0009-0002-8023-3658"
+	pw1, err := DeriveNextcloudPassword(key, orcid)
+	require.NoError(t, err)
+	pw2, err := DeriveNextcloudPassword(key, orcid)
+	require.NoError(t, err)
+	assert.Equal(t, pw1, pw2, "same inputs must produce same output")
+}
+
+func TestDeriveNextcloudPassword_DifferentKeys(t *testing.T) {
+	orcid := "0009-0002-8023-3658"
+	pw1, err := DeriveNextcloudPassword([]byte("key1"), orcid)
+	require.NoError(t, err)
+	pw2, err := DeriveNextcloudPassword([]byte("key2"), orcid)
+	require.NoError(t, err)
+	assert.NotEqual(t, pw1, pw2, "different keys must produce different outputs")
+}
+
+func TestDeriveNextcloudPassword_DifferentOrcids(t *testing.T) {
+	key := []byte("test-derivation-key")
+	pw1, err := DeriveNextcloudPassword(key, "0009-0002-8023-3658")
+	require.NoError(t, err)
+	pw2, err := DeriveNextcloudPassword(key, "0000-0002-1825-0097")
+	require.NoError(t, err)
+	assert.NotEqual(t, pw1, pw2, "different orcids must produce different outputs")
+}
+
+func TestDeriveNextcloudPassword_NCPrefix(t *testing.T) {
+	pw, err := DeriveNextcloudPassword([]byte("test-derivation-key"), "0009-0002-8023-3658")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(pw, "NC_"), "derived password must start with NC_ prefix")
+}
+
+func TestDeriveNextcloudPassword_EmptyKey(t *testing.T) {
+	_, err := DeriveNextcloudPassword([]byte{}, "0009-0002-8023-3658")
+	assert.Error(t, err, "empty derivation key must return error")
+}
+
+func TestDeriveNextcloudPassword_EmptyOrcid(t *testing.T) {
+	_, err := DeriveNextcloudPassword([]byte("test-key"), "")
+	assert.Error(t, err, "empty orcid must return error")
 }
 
 // __END_OF_FILE_MARKER__

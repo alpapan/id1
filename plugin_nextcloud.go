@@ -1,7 +1,9 @@
 package id1
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -313,6 +315,27 @@ func generateRandomPassword() string {
 		return ""
 	}
 	return fmt.Sprintf("NC_%s", strings.TrimRight(base64.URLEncoding.EncodeToString(b), "="))
+}
+
+// DeriveNextcloudPassword returns a deterministic Nextcloud login password for
+// an ORCID user, computed as "NC_" + base64url(HMAC-SHA256(derivationKey, orcid)).
+// The NC_ prefix matches the format produced by generateRandomPassword(), which
+// is known to satisfy Nextcloud's password character-class requirements.
+//
+// The bash rotation script (ops/host-cron/curatorium-rotate-nc-key.sh) MUST produce
+// byte-identical output for the same (key, orcid). Any divergence silently breaks
+// every user on rotation.
+func DeriveNextcloudPassword(derivationKey []byte, orcid string) (string, error) {
+	if len(derivationKey) == 0 {
+		return "", fmt.Errorf("derivation key must not be empty")
+	}
+	if orcid == "" {
+		return "", fmt.Errorf("orcid must not be empty")
+	}
+	mac := hmac.New(sha256.New, derivationKey)
+	mac.Write([]byte(orcid))
+	digest := mac.Sum(nil)
+	return "NC_" + base64.RawURLEncoding.EncodeToString(digest), nil
 }
 
 // __END_OF_FILE_MARKER__
