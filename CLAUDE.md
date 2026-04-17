@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working in the id1 submodule.
 
 ## What id1 is (upstream)
 
-id1 is a standalone Go backend — a 9 MB binary providing a generic key/value store with
+id1 is a standalone Go backend, a 9 MB binary providing a generic key/value store with
 RSA-keyed identity, JWT authentication, pub/sub, and HTTP bridge. See `README.md` for the
 upstream API and command language.
 
@@ -13,7 +13,7 @@ upstream API and command language.
 This repo is vendored as `apps/backend/containers/id1` inside the Curatorium monorepo
 (typically `~/software/curatorium`). Inside Curatorium, id1 plays one specific role:
 
-**id1 is the Curatorium auth router — the only publicly exposed service.**
+**id1 is the Curatorium auth router, the only publicly exposed service.**
 All external traffic (browser, LAN, `auth.curatorium.app` via Cloudflare Tunnel) enters
 through id1. Everything else (Starlette API, PostgreSQL, sync server) is ClusterIP-internal.
 
@@ -31,17 +31,17 @@ through id1. Everything else (Starlette API, PostgreSQL, sync server) is Cluster
    `storage` events; see the frontend's `AuthProvider.tsx` for the listener.)
 4. The Curatorium Starlette backend (sibling `containers/starlette`) validates the JWT
    against id1's JWKS endpoint at `id1-router:8080/pub/jwks.json`. RS256 public-key
-   verification only — no shared HMAC for JWT validation.
+   verification only, no shared HMAC for JWT validation.
 
 ### Key files for the Curatorium integration
 
-- `jwt_signing.go` — RS256 signing, JWKS thumbprint computation.
-- `orcid.go` — ORCID OAuth callback handler.
-- `sovereign_token.go` — sovereign-key challenge/response for machine-to-machine auth
+- `jwt_signing.go`, RS256 signing, JWKS thumbprint computation.
+- `orcid.go`, ORCID OAuth callback handler.
+- `sovereign_token.go`, sovereign-key challenge/response for machine-to-machine auth
   (e.g. SLURM BLAST jobs using `~/.config/curatorium/blast_service.pem` on the host).
-- `tls_config.go` — SNI-based `GetCertificate` for mTLS. When `MTLS_ENABLED=true`, certs
+- `tls_config.go`, SNI-based `GetCertificate` for mTLS. When `MTLS_ENABLED=true`, certs
   are mounted from Kubernetes Secrets.
-- `/auth/test_user?orcid=XXXX-XXXX-XXXX-XXXX` — test-only endpoint, enabled **only when
+- `/auth/test_user?orcid=XXXX-XXXX-XXXX-XXXX`, test-only endpoint, enabled **only when
   `ENV=test`**. Used by Playwright E2E tests via `authenticateTestUser(page)` in the
   frontend submodule.
 
@@ -86,9 +86,9 @@ mTLS-specific tests live in `tls_config_test.go` and `mtls_connectivity_test.go`
 ### WebSocket proxying
 
 **`httputil.ReverseProxy` does NOT work for WebSocket.** It passes the HTTP 101 Upgrade
-but does not relay bidirectional frames — connections appear to succeed then immediately
+but does not relay bidirectional frames, connections appear to succeed then immediately
 disconnect. The `/sync` proxy uses `gorilla/websocket` with a `pumpFrames` goroutine pair
-(`sync_proxy.go`). Only `/sync` needs this — `/nextcloud/*` is plain HTTP and uses
+(`sync_proxy.go`). Only `/sync` needs this, `/nextcloud/*` is plain HTTP and uses
 `ReverseProxy` correctly.
 
 ## Commit submodule changes from here
