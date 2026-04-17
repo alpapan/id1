@@ -378,6 +378,50 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 	}
 }
 
+// MintAppToken calls Nextcloud's getapppassword endpoint as the given user
+// (BasicAuth with the user's derived login password) and returns the plaintext
+// app token. Expects OCS statuscode 200 for success.
+func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword string) (string, error) {
+	endpoint := c.URL + "/ocs/v2.php/core/getapppassword?format=json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("OCS-APIREQUEST", "true")
+	req.SetBasicAuth(orcid, userPassword)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", fmt.Errorf("Nextcloud rejected credentials (401)")
+	}
+
+	var ocsResult OCSResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
+		return "", fmt.Errorf("decode OCS response: %w", err)
+	}
+	if ocsResult.OCS.Meta.Statuscode != 200 {
+		return "", fmt.Errorf("OCS error %d: %s", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message)
+	}
+	data, ok := ocsResult.OCS.Data.(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("unexpected OCS data format")
+	}
+	token, ok := data["apppassword"].(string)
+	if !ok {
+		return "", fmt.Errorf("apppassword not in response")
+	}
+	return token, nil
+}
+
 // DeriveNextcloudPassword returns a deterministic Nextcloud login password for
 // an ORCID user, computed as "NC_" + base64url(HMAC-SHA256(derivationKey, orcid)).
 // The NC_ prefix matches the format produced by generateRandomPassword(), which

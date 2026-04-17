@@ -716,4 +716,52 @@ func TestNextcloudClient_EnsureUserExists_OCSError(t *testing.T) {
 	assert.Contains(t, err.Error(), "OCS error 101")
 }
 
+// ---------------------------------------------------------------------------
+// NextcloudClient.MintAppToken — OCS getapppassword call as the user.
+// ---------------------------------------------------------------------------
+
+func TestNextcloudClient_MintAppToken_Success(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/ocs/v2.php/core/getapppassword", r.URL.Path)
+		assert.Equal(t, "true", r.Header.Get("OCS-APIREQUEST"))
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"PLAINTEXT-TOKEN-abc123"}}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL}
+	token, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	require.NoError(t, err)
+	assert.Equal(t, "PLAINTEXT-TOKEN-abc123", token)
+	assert.NotEmpty(t, gotAuth, "Basic Auth header must be set")
+}
+
+func TestNextcloudClient_MintAppToken_BadPassword(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL}
+	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "wrong")
+
+	require.Error(t, err)
+}
+
+func TestNextcloudClient_MintAppToken_OCSNon200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":403,"status":"failure","message":"forbidden"},"data":null}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL}
+	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OCS error 403")
+}
+
 // __END_OF_FILE_MARKER__
