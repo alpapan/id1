@@ -1,6 +1,7 @@
 package id1
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
@@ -127,9 +128,9 @@ func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 	}
 }
 
-// TestMTLSConnectivity_NextcloudCreateUser tests that NextcloudProvisioner.createUser()
+// TestMTLSConnectivity_NextcloudEnsureUserExists tests that NextcloudClient.EnsureUserExists
 // correctly calls Nextcloud API when MTLS is enabled.
-func TestMTLSConnectivity_NextcloudCreateUser(t *testing.T) {
+func TestMTLSConnectivity_NextcloudEnsureUserExists(t *testing.T) {
 	certFile, keyFile, caFile := generateTestCerts(t)
 	t.Setenv("MTLS_ENABLED", "true")
 	t.Setenv("SSL_CERTFILE", certFile)
@@ -154,21 +155,20 @@ func TestMTLSConnectivity_NextcloudCreateUser(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := &NextcloudProvisioner{
-		nextcloudURL: server.URL,
-		username:     "admin",
-		password:     "admin-secret",
+	c := &NextcloudClient{
+		URL:      server.URL,
+		Username: "admin",
+		Password: "admin-secret",
 	}
 
-	err := p.createUser("test-user", "password")
-	if err != nil {
-		t.Fatalf("createUser failed: %v", err)
+	if err := c.EnsureUserExists(context.Background(), "test-user", "password"); err != nil {
+		t.Fatalf("EnsureUserExists failed: %v", err)
 	}
 }
 
-// TestMTLSConnectivity_NextcloudCreateAppPassword tests that NextcloudProvisioner.createAppPassword()
+// TestMTLSConnectivity_NextcloudMintAppToken tests that NextcloudClient.MintAppToken
 // correctly calls Nextcloud API when MTLS is enabled.
-func TestMTLSConnectivity_NextcloudCreateAppPassword(t *testing.T) {
+func TestMTLSConnectivity_NextcloudMintAppToken(t *testing.T) {
 	certFile, keyFile, caFile := generateTestCerts(t)
 	t.Setenv("MTLS_ENABLED", "true")
 	t.Setenv("SSL_CERTFILE", certFile)
@@ -193,15 +193,11 @@ func TestMTLSConnectivity_NextcloudCreateAppPassword(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := &NextcloudProvisioner{
-		nextcloudURL: server.URL,
-		username:     "admin",
-		password:     "admin-secret",
-	}
+	c := &NextcloudClient{URL: server.URL}
 
-	token, err := p.createAppPassword("test-orcid", "user-pass")
+	token, err := c.MintAppToken(context.Background(), "test-orcid", "user-pass")
 	if err != nil {
-		t.Fatalf("createAppPassword failed: %v", err)
+		t.Fatalf("MintAppToken failed: %v", err)
 	}
 
 	if token != "test-token-xyz" {

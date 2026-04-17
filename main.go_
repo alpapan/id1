@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -151,6 +152,24 @@ func main() {
 	http.HandleFunc("/pub/jwks.json", id1.HandleJWKS(id1KVStore))
 	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
 
+	// Nextcloud app-token minting — internal endpoint, requires X-ID1-Internal-Secret.
+	// NC_DERIVATION_KEY is stored as a hex string (openssl rand -hex 32); we hex-decode
+	// here so the raw 32 bytes match what the bash rotation script computes via
+	// `openssl dgst -macopt hexkey:$NEW_KEY` (which hex-decodes internally). A mismatch
+	// here would silently produce different passwords in Go vs bash.
+	if derivationKeyHex := os.Getenv("NC_DERIVATION_KEY"); derivationKeyHex != "" {
+		derivationKey, err := hex.DecodeString(derivationKeyHex)
+		if err != nil {
+			log.Fatalf("NC_DERIVATION_KEY must be hex-encoded: %v", err)
+		}
+		internalSecret := os.Getenv("ID1_SHARED_SECRET")
+		ncClient := id1.NewNextcloudClient()
+		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret))
+		fmt.Println("Registered /internal/nc-token endpoint")
+	} else {
+		fmt.Println("NC_DERIVATION_KEY not set; /internal/nc-token endpoint disabled")
+	}
+
 	// Sovereign key token endpoint: issues RS256 JWTs to service accounts
 	// that prove private key ownership via RSA-SHA256 signature.
 	http.HandleFunc("/auth/sovereign/token", id1.HandleSovereignToken(id1KVStore))
@@ -201,15 +220,6 @@ func main() {
 
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", mainHandler)
-
-	// Gate on the credentials, not NEXTCLOUD_URL. The URL is always set as an
-	// inline env var in the k8s deployment; the credentials are secrets that
-	// must be explicitly provided. Missing credentials → provisioner disabled.
-	if os.Getenv("NC_PROVISIONER_USER") != "" && os.Getenv("NC_PROVISIONER_PASSWORD") != "" {
-		provisioner := id1.NewNextcloudProvisioner()
-		provisioner.StartProvisioner()
-		fmt.Println("Nextcloud provisioner started (polling every 30 seconds)")
-	}
 
 	fmt.Printf("Starting server on port %s\n", port)
 	tlsConfig, err := id1.BuildTLSConfig()
