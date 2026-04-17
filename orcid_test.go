@@ -693,13 +693,24 @@ func (m *MockFailingKeyValueStore) CmdSet(key string, value []byte) error {
 }
 
 // TestOrcidCallbackSigningKeyFailure verifies that HandleCallback returns HTTP 500
-// when GetOrCreateSigningKey fails (e.g., KV store unavailable).
+// when GetOrCreateSigningKey fails. Under Shape B, the path-1 failure case is
+// ID1_JWT_PRIVATE_KEY set without ID1_JWT_KEY_ID.
 func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
-	// Use a mock KV store that simulates failure
-	failingKV := &MockFailingKeyValueStore{
-		failOnGet: true,
-		failOnSet: true,
-	}
+	// Reset memory cache so env var path is reached (not the cache).
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+	t.Cleanup(func() {
+		_memKeyMu.Lock()
+		_memKeyID = ""
+		_memPrivKey = nil
+		_memKeyMu.Unlock()
+	})
+
+	// Trigger path-1 error: private key env var set but key ID missing.
+	t.Setenv("ID1_JWT_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xHn/ygWep4T\n-----END RSA PRIVATE KEY-----\n")
+	t.Setenv("ID1_JWT_KEY_ID", "") // empty → GetOrCreateSigningKey returns error
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth/token" {
@@ -713,7 +724,6 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	// Create handler with failing KV store
 	h := &OrcidHandler{
 		oauth2Config: &oauth2.Config{
 			ClientID:     "test",
@@ -725,7 +735,7 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 			},
 		},
 		frontendURL: "http://localhost:19001",
-		kvStore:     failingKV,
+		kvStore:     &MockFailingKeyValueStore{failOnGet: true, failOnSet: true},
 		stateStore:  map[string]stateEntry{"state1": {created: time.Now()}},
 		stateTTL:    5 * time.Minute,
 	}
@@ -734,7 +744,6 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.HandleCallback(rec, req)
 
-	// Verify: Should return 500 when key signing fails
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("Expected 500 Internal Server Error, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -761,10 +770,23 @@ func (m *MockCorruptKeyValueStore) CmdSet(key string, value []byte) error {
 }
 
 // TestOrcidCallbackSignJWTFailure verifies that HandleCallback returns HTTP 500
-// when JWT signing fails.
+// when GetOrCreateSigningKey fails due to an invalid env-var private key PEM.
 func TestOrcidCallbackSignJWTFailure(t *testing.T) {
-	// Use a KV store that returns invalid private key data
-	corruptKV := &MockCorruptKeyValueStore{}
+	// Reset memory cache so env var path is reached.
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+	t.Cleanup(func() {
+		_memKeyMu.Lock()
+		_memKeyID = ""
+		_memPrivKey = nil
+		_memKeyMu.Unlock()
+	})
+
+	// Trigger path-1 parse error: env var set with invalid PEM.
+	t.Setenv("ID1_JWT_PRIVATE_KEY", "not-a-valid-pem-block")
+	t.Setenv("ID1_JWT_KEY_ID", "some-kid")
 
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth/token" {
@@ -789,7 +811,7 @@ func TestOrcidCallbackSignJWTFailure(t *testing.T) {
 			},
 		},
 		frontendURL: "http://localhost:19001",
-		kvStore:     corruptKV,
+		kvStore:     &MockCorruptKeyValueStore{},
 		stateStore:  map[string]stateEntry{"state1": {created: time.Now()}},
 		stateTTL:    5 * time.Minute,
 	}

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -134,6 +135,15 @@ const (
 	jwtExpirationHours = 1
 )
 
+// _memKey caches the generated signing key in memory when KV storage is unavailable
+// (no emptyDir under Shape B). All requests within a pod's lifetime use the same key;
+// the next restart picks up the key from ID1_JWT_PRIVATE_KEY (patched into K8s Secret).
+var (
+	_memKeyMu   sync.Mutex
+	_memKeyID   string
+	_memPrivKey *rsa.PrivateKey
+)
+
 // GetOrCreateSigningKey returns the id1 JWT signing key, preferring the env
 // var populated from the curatorium-secrets Secret, then falling back to the
 // KV store (legacy transitional path), then generating + persisting if absent
@@ -159,6 +169,16 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 		}
 		return keyID, privKey, nil
 	}
+
+	// 1.5. In-memory cache — populated by path 3 when KV is unavailable (no emptyDir).
+	// Ensures the same key is used for all requests within this pod's lifetime.
+	_memKeyMu.Lock()
+	if _memPrivKey != nil {
+		id, key := _memKeyID, _memPrivKey
+		_memKeyMu.Unlock()
+		return id, key, nil
+	}
+	_memKeyMu.Unlock()
 
 	// 2. Fallback: KV store (legacy path for installs predating env-var primacy).
 	privPEM, err := kvStore.CmdGet(privKeyPath)
@@ -193,15 +213,21 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 		Bytes: pubBytes,
 	})
 
-	// Store keys
+	// Store keys in KV (non-fatal: KV may be unavailable under Shape B with no emptyDir).
 	if err := kvStore.CmdSet(privKeyPath, privPEM); err != nil {
-		return "", nil, fmt.Errorf("failed to store private key: %w", err)
+		fmt.Printf("warning: failed to store private key in KV (no emptyDir?): %v\n", err)
 	}
 	if err := kvStore.CmdSet(pubKeyPath, pubPEM); err != nil {
-		return "", nil, fmt.Errorf("failed to store public key: %w", err)
+		fmt.Printf("warning: failed to store public key in KV (no emptyDir?): %v\n", err)
 	}
 
 	keyID := computeKeyID(&privateKey.PublicKey)
+
+	// Cache in memory so all requests within this pod's lifetime sign with the same key.
+	_memKeyMu.Lock()
+	_memKeyID = keyID
+	_memPrivKey = privateKey
+	_memKeyMu.Unlock()
 
 	// Store key to Kubernetes Secret for test access
 	if err := storeKeyToKubeSecret(privPEM, keyID); err != nil {
@@ -444,13 +470,29 @@ func getJWKS(kvStore KeyValueStore) ([]byte, error) {
 			})
 		}
 	} else {
-		// Legacy path: read current public key from KV store.
-		currentPubPEM, err := kvStore.CmdGet(pubKeyPath)
-		if err == nil && len(currentPubPEM) > 0 {
-			if jwk, err := pemToJWK(currentPubPEM); err == nil {
-				jwk.Use = "sig"
-				jwk.Alg = "RS256"
-				jwks.Keys = append(jwks.Keys, *jwk)
+		// Memory cache: populated under Shape B when KV is unavailable.
+		_memKeyMu.Lock()
+		memKey := _memPrivKey
+		memID := _memKeyID
+		_memKeyMu.Unlock()
+		if memKey != nil && memID != "" {
+			jwks.Keys = append(jwks.Keys, JWK{
+				Kty: "RSA",
+				Kid: memID,
+				Use: "sig",
+				Alg: "RS256",
+				N:   base64.RawURLEncoding.EncodeToString(memKey.N.Bytes()),
+				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(memKey.E)).Bytes()),
+			})
+		} else {
+			// Legacy path: read current public key from KV store.
+			currentPubPEM, err := kvStore.CmdGet(pubKeyPath)
+			if err == nil && len(currentPubPEM) > 0 {
+				if jwk, err := pemToJWK(currentPubPEM); err == nil {
+					jwk.Use = "sig"
+					jwk.Alg = "RS256"
+					jwks.Keys = append(jwks.Keys, *jwk)
+				}
 			}
 		}
 	}

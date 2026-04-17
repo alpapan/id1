@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,7 +23,18 @@ func setupTestKVStore(t *testing.T) KeyValueStore {
 	tmpDir := t.TempDir()
 	originalDbpath := dbpath
 	dbpath = tmpDir
-	t.Cleanup(func() { dbpath = originalDbpath })
+	// Reset the in-memory key cache so each test starts with a clean slate.
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+	t.Cleanup(func() {
+		dbpath = originalDbpath
+		_memKeyMu.Lock()
+		_memKeyID = ""
+		_memPrivKey = nil
+		_memKeyMu.Unlock()
+	})
 	return ID1KeyValueStore{}
 }
 
@@ -333,6 +345,67 @@ func TestGetOrCreateSigningKey_EnvInvalidPEMErrors(t *testing.T) {
 	kv := &memoryKV{}
 	_, _, err := GetOrCreateSigningKey(kv)
 	require.Error(t, err)
+}
+
+// failingKVStore simulates KV store unavailability (no emptyDir under Shape B).
+type failingKVStore struct{}
+
+func (f *failingKVStore) CmdGet(key string) ([]byte, error) {
+	return nil, fmt.Errorf("no storage")
+}
+func (f *failingKVStore) CmdSet(key string, value []byte) error {
+	return fmt.Errorf("no storage")
+}
+
+func TestGetOrCreateSigningKey_KVUnavailableUsesMemoryCache(t *testing.T) {
+	// Reset memory cache at start and in cleanup (package-level state).
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+	t.Cleanup(func() {
+		_memKeyMu.Lock()
+		_memKeyID = ""
+		_memPrivKey = nil
+		_memKeyMu.Unlock()
+	})
+
+	store := &failingKVStore{}
+
+	keyID1, key1, err := GetOrCreateSigningKey(store)
+	if err != nil {
+		t.Fatalf("expected no error even with failing KV, got: %v", err)
+	}
+	if keyID1 == "" {
+		t.Fatal("expected non-empty keyID")
+	}
+
+	// Second call must return the same key (memory cache, not re-generate).
+	keyID2, key2, err := GetOrCreateSigningKey(store)
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if keyID1 != keyID2 {
+		t.Errorf("expected same keyID across calls, got %q vs %q", keyID1, keyID2)
+	}
+	if key1 != key2 {
+		t.Error("expected same private key pointer from memory cache")
+	}
+
+	// JWKS must include the memory-cached key so the backend can validate JWTs.
+	jwksBytes, err := getJWKS(store)
+	if err != nil {
+		t.Fatalf("getJWKS failed: %v", err)
+	}
+	var jwks JWKS
+	if err := json.Unmarshal(jwksBytes, &jwks); err != nil {
+		t.Fatalf("invalid JWKS JSON: %v", err)
+	}
+	if len(jwks.Keys) == 0 {
+		t.Error("expected JWKS to contain the memory-cached key")
+	} else if jwks.Keys[0].Kid != keyID1 {
+		t.Errorf("JWKS kid %q does not match generated key id %q", jwks.Keys[0].Kid, keyID1)
+	}
 }
 
 // __END_OF_FILE_MARKER__
