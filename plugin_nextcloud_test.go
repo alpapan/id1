@@ -1,10 +1,13 @@
 package id1
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -660,6 +663,57 @@ func TestNewNextcloudClient_MissingEnvReturnsZeros(t *testing.T) {
 	assert.Equal(t, "", c.URL)
 	assert.Equal(t, "", c.Username)
 	assert.Equal(t, "", c.Password)
+}
+
+// ---------------------------------------------------------------------------
+// NextcloudClient.EnsureUserExists — idempotent OCS user-creation call.
+// ---------------------------------------------------------------------------
+
+func TestNextcloudClient_EnsureUserExists_Created(t *testing.T) {
+	var gotPayload url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/ocs/v2.php/cloud/users", r.URL.Path)
+		assert.Equal(t, "true", r.Header.Get("OCS-APIREQUEST"))
+		body, _ := io.ReadAll(r.Body)
+		gotPayload, _ = url.ParseQuery(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":100,"status":"ok","message":"OK"},"data":{}}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	require.NoError(t, err)
+	assert.Equal(t, "0009-0002-8023-3658", gotPayload.Get("userid"))
+	assert.Equal(t, "NC_derivedPw", gotPayload.Get("password"))
+}
+
+func TestNextcloudClient_EnsureUserExists_AlreadyExists(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":102,"status":"failure","message":"User already exists"},"data":null}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	assert.NoError(t, err, "102 (already exists) must be treated as success")
+}
+
+func TestNextcloudClient_EnsureUserExists_OCSError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":101,"status":"failure","message":"Invalid input"},"data":null}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OCS error 101")
 }
 
 // __END_OF_FILE_MARKER__

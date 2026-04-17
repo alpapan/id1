@@ -1,6 +1,7 @@
 package id1
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -335,6 +336,45 @@ func NewNextcloudClient() *NextcloudClient {
 		URL:      os.Getenv("NEXTCLOUD_URL"),
 		Username: os.Getenv("NC_PROVISIONER_USER"),
 		Password: os.Getenv("NC_PROVISIONER_PASSWORD"),
+	}
+}
+
+// EnsureUserExists ensures a Nextcloud user with the given ORCID and derived
+// password exists. Accepts OCS statuscode 100 (created) and 102 (already
+// exists) as success. Returns error for any other OCS status or HTTP failure.
+func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password string) error {
+	endpoint := c.URL + "/ocs/v2.php/cloud/users?format=json"
+	formData := url.Values{
+		"userid":   {orcid},
+		"password": {password},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("OCS-APIREQUEST", "true")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(c.Username, c.Password)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var ocsResult OCSResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
+		return fmt.Errorf("decode OCS response: %w", err)
+	}
+	switch ocsResult.OCS.Meta.Statuscode {
+	case 100, 102:
+		return nil
+	default:
+		return fmt.Errorf("OCS error %d: %s", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message)
 	}
 }
 
