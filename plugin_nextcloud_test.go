@@ -115,6 +115,21 @@ func TestNextcloudClient_EnsureUserExists_Created(t *testing.T) {
 	assert.Equal(t, "NC_derivedPw", gotPayload.Get("password"))
 }
 
+// Nextcloud 32 OCS v2 returns statuscode 200 on successful user creation
+// (older OCS v1 convention was 100). Both must be accepted.
+func TestNextcloudClient_EnsureUserExists_Created200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"0009-0002-8023-3658"}}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	assert.NoError(t, err, "OCS v2 statuscode 200 must be treated as success")
+}
+
 func TestNextcloudClient_EnsureUserExists_AlreadyExists(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -140,6 +155,55 @@ func TestNextcloudClient_EnsureUserExists_OCSError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OCS error 101")
+}
+
+// Known OCS statuscodes from the Provisioning API should be annotated with
+// a human-readable hint so log readers don't have to look up the code.
+func TestNextcloudClient_EnsureUserExists_KnownErrorCodesAreExplained(t *testing.T) {
+	cases := []struct {
+		code        int
+		hintPortion string
+	}{
+		{101, "invalid input"},
+		{103, "unknown error"},
+		{104, "group does not exist"},
+		{107, "password"},
+		{109, "failed to create user"},
+		{111, "invalid email"},
+		{113, "invalid quota"},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("code_%d", tc.code), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"ocs":{"meta":{"statuscode":%d,"status":"failure","message":"server msg"},"data":null}}`, tc.code)
+			}))
+			defer server.Close()
+
+			c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+			err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("%d", tc.code), "error should contain OCS code")
+			assert.Contains(t, err.Error(), "server msg", "error should contain server message")
+			assert.Contains(t, strings.ToLower(err.Error()), tc.hintPortion, "error should contain OCS hint")
+		})
+	}
+}
+
+func TestNextcloudClient_EnsureUserExists_UnknownCodeFallsBackToGenericHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":999,"status":"failure","message":"odd"},"data":null}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "999")
+	assert.Contains(t, err.Error(), "odd")
 }
 
 // ---------------------------------------------------------------------------

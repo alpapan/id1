@@ -19,6 +19,40 @@ import (
 // where X is a digit (last character may also be 'X' checksum).
 var orcidPattern = regexp.MustCompile(`^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$`)
 
+// ocsProvisioningHints maps known OCS Provisioning API statuscodes to
+// human-readable hints. Used to annotate error messages so operators can
+// diagnose failures without looking up the code in Nextcloud docs.
+// Reference: https://docs.nextcloud.com/server/latest/admin_manual/configuration_user/instruction_set_for_users.html
+var ocsProvisioningHints = map[int]string{
+	101: "invalid input (check userid format and password policy)",
+	103: "unknown error while adding user",
+	104: "group does not exist",
+	105: "insufficient privileges for group",
+	106: "no group specified (required for subadmins)",
+	107: "password policy violation (e.g. common password, too short)",
+	108: "password generation failed",
+	109: "failed to create user (database insert error)",
+	110: "required email address is missing",
+	111: "invalid email address",
+	112: "invalid language",
+	113: "invalid quota value",
+}
+
+// ocsAuthHints maps known OCS core/getapppassword statuscodes to hints.
+var ocsAuthHints = map[int]string{
+	403: "forbidden (credentials rejected or session-based auth required)",
+	997: "unauthorised (basic auth failed)",
+}
+
+// formatOCSError returns a diagnostic error wrapping (code, message, hint).
+// hints is the applicable code→hint map (provisioning vs auth).
+func formatOCSError(endpoint string, code int, message string, hints map[int]string) error {
+	if hint, ok := hints[code]; ok {
+		return fmt.Errorf("OCS error %d at %s: %s (%s)", code, endpoint, message, hint)
+	}
+	return fmt.Errorf("OCS error %d at %s: %s", code, endpoint, message)
+}
+
 // OCSResponse represents the OCS API response format used by Nextcloud.
 type OCSResponse struct {
 	OCS OCSData `json:"ocs"`
@@ -59,8 +93,8 @@ func NewNextcloudClient() *NextcloudClient {
 }
 
 // EnsureUserExists ensures a Nextcloud user with the given ORCID and derived
-// password exists. Accepts OCS statuscode 100 (created) and 102 (already
-// exists) as success. Returns error for any other OCS status or HTTP failure.
+// password exists. Accepts OCS statuscodes 100 (v1 "created"), 200 (v2 "OK"),
+// and 102 ("already exists") as success. Returns error for any other status.
 func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password string) error {
 	endpoint := c.URL + "/ocs/v2.php/cloud/users?format=json"
 	formData := url.Values{
@@ -90,10 +124,10 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 		return fmt.Errorf("decode OCS response: %w", err)
 	}
 	switch ocsResult.OCS.Meta.Statuscode {
-	case 100, 102:
+	case 100, 102, 200:
 		return nil
 	default:
-		return fmt.Errorf("OCS error %d: %s", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message)
+		return formatOCSError("/cloud/users", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsProvisioningHints)
 	}
 }
 
@@ -128,7 +162,7 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword 
 		return "", fmt.Errorf("decode OCS response: %w", err)
 	}
 	if ocsResult.OCS.Meta.Statuscode != 200 {
-		return "", fmt.Errorf("OCS error %d: %s", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message)
+		return "", formatOCSError("/core/getapppassword", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsAuthHints)
 	}
 	data, ok := ocsResult.OCS.Data.(map[string]interface{})
 	if !ok {
