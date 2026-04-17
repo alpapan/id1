@@ -134,12 +134,33 @@ const (
 	jwtExpirationHours = 1
 )
 
-// GetOrCreateSigningKey loads RSA-2048 key from KV store or creates new one.
-// Stores private key at _system/priv/jwt-signing-key (PEM).
-// Stores public key at _system/pub/jwt-signing-key (PEM).
-// Returns (keyID, privateKey, error). Key ID is SHA-256 JWK Thumbprint (RFC 7638).
+// GetOrCreateSigningKey returns the id1 JWT signing key, preferring the env
+// var populated from the curatorium-secrets Secret, then falling back to the
+// KV store (legacy transitional path), then generating + persisting if absent
+// everywhere. Returns (keyID, privateKey, error). Key ID is SHA-256 JWK
+// Thumbprint (RFC 7638).
+//
+// Priority order:
+//  1. ID1_JWT_PRIVATE_KEY env var (PEM) + ID1_JWT_KEY_ID env var — new primary
+//  2. KV store (_system/priv/jwt-signing-key) — legacy fallback
+//  3. Generate new key, store in both KV + patch curatorium-secrets
 func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, error) {
-	// Try to load existing private key
+	// 1. Prefer env vars populated from curatorium-secrets.
+	// This makes JWT keys survive an id1 pod restart without needing the KV
+	// store on persistent storage — the K8s Secret is the durable ground truth.
+	if envPEM := os.Getenv("ID1_JWT_PRIVATE_KEY"); envPEM != "" {
+		keyID := os.Getenv("ID1_JWT_KEY_ID")
+		if keyID == "" {
+			return "", nil, fmt.Errorf("ID1_JWT_PRIVATE_KEY set but ID1_JWT_KEY_ID empty")
+		}
+		privKey, err := parsePrivateKey([]byte(envPEM))
+		if err != nil {
+			return "", nil, fmt.Errorf("parse ID1_JWT_PRIVATE_KEY: %w", err)
+		}
+		return keyID, privKey, nil
+	}
+
+	// 2. Fallback: KV store (legacy path for installs predating env-var primacy).
 	privPEM, err := kvStore.CmdGet(privKeyPath)
 	if err == nil && len(privPEM) > 0 {
 		privKey, err := parsePrivateKey(privPEM)
@@ -147,7 +168,7 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 			keyID := computeKeyID(&privKey.PublicKey)
 			return keyID, privKey, nil
 		}
-		// If parsing fails, generate new key
+		// If parsing fails, generate new key below.
 	}
 
 	// Generate new RSA-2048 key pair

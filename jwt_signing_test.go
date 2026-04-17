@@ -1,7 +1,11 @@
 package id1
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -261,6 +265,74 @@ func TestValidateRS256JWT(t *testing.T) {
 		_, err := ValidateRS256JWT(expiredStr, kv)
 		assert.Error(t, err)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// K8s-Secret-primary JWT key loading (Task 8).
+// ---------------------------------------------------------------------------
+
+// memoryKV is a test double implementing KeyValueStore with in-memory storage.
+type memoryKV struct {
+	store map[string][]byte
+}
+
+func (m *memoryKV) CmdGet(key string) ([]byte, error) {
+	if m.store == nil {
+		return nil, nil
+	}
+	return m.store[key], nil
+}
+
+func (m *memoryKV) CmdSet(key string, value []byte) error {
+	if m.store == nil {
+		m.store = map[string][]byte{}
+	}
+	m.store[key] = value
+	return nil
+}
+
+func TestGetOrCreateSigningKey_ReadsFromEnvFirst(t *testing.T) {
+	// Generate a key, PEM-encode it (matches what curatorium-secrets provides).
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	privDER := x509.MarshalPKCS1PrivateKey(privKey)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: privDER})
+	keyID := computeKeyID(&privKey.PublicKey)
+
+	t.Setenv("ID1_JWT_PRIVATE_KEY", string(privPEM))
+	t.Setenv("ID1_JWT_KEY_ID", keyID)
+
+	// Use an empty KV store so we know the key came from env.
+	kv := &memoryKV{}
+
+	gotKeyID, gotKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	assert.Equal(t, keyID, gotKeyID, "key ID must match env")
+	assert.Equal(t, privKey.N.String(), gotKey.N.String(), "RSA modulus must match env-loaded key")
+}
+
+func TestGetOrCreateSigningKey_EnvPrivateKeyWithoutKeyIDErrors(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	privDER := x509.MarshalPKCS1PrivateKey(privKey)
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: privDER})
+
+	t.Setenv("ID1_JWT_PRIVATE_KEY", string(privPEM))
+	t.Setenv("ID1_JWT_KEY_ID", "")
+
+	kv := &memoryKV{}
+	_, _, err = GetOrCreateSigningKey(kv)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ID1_JWT_KEY_ID")
+}
+
+func TestGetOrCreateSigningKey_EnvInvalidPEMErrors(t *testing.T) {
+	t.Setenv("ID1_JWT_PRIVATE_KEY", "not-a-pem-block")
+	t.Setenv("ID1_JWT_KEY_ID", "some-kid")
+
+	kv := &memoryKV{}
+	_, _, err := GetOrCreateSigningKey(kv)
+	require.Error(t, err)
 }
 
 // __END_OF_FILE_MARKER__
