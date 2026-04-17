@@ -634,4 +634,32 @@ func TestDeriveNextcloudPassword_EmptyOrcid(t *testing.T) {
 	assert.Error(t, err, "empty orcid must return error")
 }
 
+// ---------------------------------------------------------------------------
+// NextcloudClient type — stateless HTTP client for Nextcloud OCS API.
+// ---------------------------------------------------------------------------
+
+func TestNewNextcloudClient_ReadsEnv(t *testing.T) {
+	t.Setenv("NEXTCLOUD_URL", "http://test.example")
+	t.Setenv("NC_PROVISIONER_USER", "admin")
+	t.Setenv("NC_PROVISIONER_PASSWORD", "secret")
+
+	c := NewNextcloudClient()
+
+	assert.Equal(t, "http://test.example", c.URL)
+	assert.Equal(t, "admin", c.Username)
+	assert.Equal(t, "secret", c.Password)
+}
+
+func TestNewNextcloudClient_MissingEnvReturnsZeros(t *testing.T) {
+	t.Setenv("NEXTCLOUD_URL", "")
+	t.Setenv("NC_PROVISIONER_USER", "")
+	t.Setenv("NC_PROVISIONER_PASSWORD", "")
+
+	c := NewNextcloudClient()
+
+	assert.Equal(t, "", c.URL)
+	assert.Equal(t, "", c.Username)
+	assert.Equal(t, "", c.Password)
+}
+
 // __END_OF_FILE_MARKER__

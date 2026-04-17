@@ -317,6 +317,27 @@ func generateRandomPassword() string {
 	return fmt.Sprintf("NC_%s", strings.TrimRight(base64.URLEncoding.EncodeToString(b), "="))
 }
 
+// NextcloudClient is a minimal HTTP client for Nextcloud's OCS API.
+// It is stateless apart from its configured admin credentials and is safe
+// to share across goroutines (no mutable state once constructed).
+type NextcloudClient struct {
+	URL      string
+	Username string
+	Password string
+}
+
+// NewNextcloudClient reads configuration from environment variables
+// (NEXTCLOUD_URL, NC_PROVISIONER_USER, NC_PROVISIONER_PASSWORD). Returns a
+// client with empty fields if variables are unset; callers that require all
+// fields must check for zero values.
+func NewNextcloudClient() *NextcloudClient {
+	return &NextcloudClient{
+		URL:      os.Getenv("NEXTCLOUD_URL"),
+		Username: os.Getenv("NC_PROVISIONER_USER"),
+		Password: os.Getenv("NC_PROVISIONER_PASSWORD"),
+	}
+}
+
 // DeriveNextcloudPassword returns a deterministic Nextcloud login password for
 // an ORCID user, computed as "NC_" + base64url(HMAC-SHA256(derivationKey, orcid)).
 // The NC_ prefix matches the format produced by generateRandomPassword(), which
