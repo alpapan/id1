@@ -419,20 +419,43 @@ type JWKS struct {
 
 // getJWKS returns JSON Web Key Set with current and previous public keys.
 // Served at GET /pub/jwks.json.
+//
+// Under Shape B the JWT key is sourced from the ID1_JWT_PRIVATE_KEY env var
+// populated from K8s Secret; the KV store may be empty (or unwritable if
+// the /mnt emptyDir was removed). In that case we derive the public JWK
+// directly from the env-loaded private key so the JWKS endpoint still
+// publishes the current signer. The KV paths remain the fallback for the
+// legacy path and for the rotation-overlap "previous" key.
 func getJWKS(kvStore KeyValueStore) ([]byte, error) {
 	jwks := JWKS{Keys: []JWK{}}
 
-	// Get current public key
-	currentPubPEM, err := kvStore.CmdGet(pubKeyPath)
-	if err == nil && len(currentPubPEM) > 0 {
-		if jwk, err := pemToJWK(currentPubPEM); err == nil {
-			jwk.Use = "sig"
-			jwk.Alg = "RS256"
-			jwks.Keys = append(jwks.Keys, *jwk)
+	// Prefer env-loaded private key (Shape B primary path): derive public JWK
+	// directly rather than looking it up in the (possibly empty) KV store.
+	if envPEM := os.Getenv("ID1_JWT_PRIVATE_KEY"); envPEM != "" {
+		keyID := os.Getenv("ID1_JWT_KEY_ID")
+		if privKey, err := parsePrivateKey([]byte(envPEM)); err == nil && keyID != "" {
+			jwks.Keys = append(jwks.Keys, JWK{
+				Kty: "RSA",
+				Kid: keyID,
+				Use: "sig",
+				Alg: "RS256",
+				N:   base64.RawURLEncoding.EncodeToString(privKey.N.Bytes()),
+				E:   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes()),
+			})
+		}
+	} else {
+		// Legacy path: read current public key from KV store.
+		currentPubPEM, err := kvStore.CmdGet(pubKeyPath)
+		if err == nil && len(currentPubPEM) > 0 {
+			if jwk, err := pemToJWK(currentPubPEM); err == nil {
+				jwk.Use = "sig"
+				jwk.Alg = "RS256"
+				jwks.Keys = append(jwks.Keys, *jwk)
+			}
 		}
 	}
 
-	// Get previous public key (for rotation overlap)
+	// Previous public key (for rotation overlap) always comes from KV.
 	prevPubPEM, err := kvStore.CmdGet(pubKeyPrevPath)
 	if err == nil && len(prevPubPEM) > 0 {
 		if jwk, err := pemToJWK(prevPubPEM); err == nil {
