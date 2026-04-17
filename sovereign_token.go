@@ -41,6 +41,11 @@ const maxTimestampSkew = 5 * time.Minute
 // RSASSA-PKCS1-v1_5 + SHA-256. This is what `openssl dgst -sha256 -sign` produces.
 func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			cors(&w)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -119,8 +124,8 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
 		cors(&w)
+		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"jwt":%q}`, jwtToken)
 	}
 }
