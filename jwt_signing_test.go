@@ -347,6 +347,74 @@ func TestGetOrCreateSigningKey_EnvInvalidPEMErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestValidateRS256JWT_UsesEnvVarPublicKey(t *testing.T) {
+	// Reset memory cache so env var path is the only source.
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+	t.Cleanup(func() {
+		_memKeyMu.Lock()
+		_memKeyID = ""
+		_memPrivKey = nil
+		_memKeyMu.Unlock()
+	})
+
+	// Generate a key and install it via env var (Shape B path).
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	privPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privKey),
+	})
+	keyID := computeKeyID(&privKey.PublicKey)
+	t.Setenv("ID1_JWT_PRIVATE_KEY", string(privPEM))
+	t.Setenv("ID1_JWT_KEY_ID", keyID)
+
+	// Sign a JWT with that key.
+	tokenStr, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	require.NoError(t, err)
+
+	// Validate against an EMPTY KV store — validation must use the env var.
+	emptyKV := &memoryKV{}
+	claims, err := ValidateRS256JWT(tokenStr, emptyKV)
+	require.NoError(t, err, "validation must succeed via env var public key when KV is empty")
+	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
+}
+
+func TestValidateRS256JWT_UsesMemoryCachePublicKey(t *testing.T) {
+	// Reset memory cache
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+	t.Cleanup(func() {
+		_memKeyMu.Lock()
+		_memKeyID = ""
+		_memPrivKey = nil
+		_memKeyMu.Unlock()
+	})
+
+	// Populate the in-memory cache (simulating path 3 fallback).
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	keyID := computeKeyID(&privKey.PublicKey)
+	_memKeyMu.Lock()
+	_memKeyID = keyID
+	_memPrivKey = privKey
+	_memKeyMu.Unlock()
+
+	// Sign a JWT with the cached key.
+	tokenStr, err := signJWT("0000-0001-5555-6666", privKey, keyID)
+	require.NoError(t, err)
+
+	// Validate against an empty KV store — must use memory cache.
+	emptyKV := &memoryKV{}
+	claims, err := ValidateRS256JWT(tokenStr, emptyKV)
+	require.NoError(t, err)
+	assert.Equal(t, "0000-0001-5555-6666", claims.Subject)
+}
+
 // failingKVStore simulates KV store unavailability (no emptyDir under Shape B).
 type failingKVStore struct{}
 

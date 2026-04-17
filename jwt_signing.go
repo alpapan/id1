@@ -336,24 +336,49 @@ func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, 
 // Used by sovereign register endpoints to authenticate re-registration requests.
 // Returns jwt.RegisteredClaims (not the custom auth.Claims struct) because ORCID
 // JWTs don't carry the Username field — only Subject (ORCID iD) matters here.
+//
+// Public key source priority (mirrors GetOrCreateSigningKey / getJWKS):
+//  1. ID1_JWT_PRIVATE_KEY env var (Shape B primary — K8s Secret)
+//  2. In-memory cache (path-3 fallback when KV was unavailable)
+//  3. KV store pubKeyPath (legacy)
 func ValidateRS256JWT(tokenStr string, kvStore KeyValueStore) (jwt.RegisteredClaims, error) {
-	pubPEM, err := kvStore.CmdGet(pubKeyPath)
-	if err != nil || len(pubPEM) == 0 {
-		return jwt.RegisteredClaims{}, fmt.Errorf("no signing public key found")
+	var rsaPubKey *rsa.PublicKey
+
+	// 1. Env var (Shape B primary)
+	if envPEM := os.Getenv("ID1_JWT_PRIVATE_KEY"); envPEM != "" {
+		if privKey, err := parsePrivateKey([]byte(envPEM)); err == nil {
+			rsaPubKey = &privKey.PublicKey
+		}
 	}
 
-	block, _ := pem.Decode(pubPEM)
-	if block == nil {
-		return jwt.RegisteredClaims{}, fmt.Errorf("failed to decode public key PEM")
+	// 2. In-memory cache
+	if rsaPubKey == nil {
+		_memKeyMu.Lock()
+		if _memPrivKey != nil {
+			rsaPubKey = &_memPrivKey.PublicKey
+		}
+		_memKeyMu.Unlock()
 	}
 
-	pubKeyIface, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return jwt.RegisteredClaims{}, fmt.Errorf("failed to parse public key: %w", err)
-	}
-	rsaPubKey, ok := pubKeyIface.(*rsa.PublicKey)
-	if !ok {
-		return jwt.RegisteredClaims{}, fmt.Errorf("public key is not RSA")
+	// 3. Legacy KV fallback
+	if rsaPubKey == nil {
+		pubPEM, err := kvStore.CmdGet(pubKeyPath)
+		if err != nil || len(pubPEM) == 0 {
+			return jwt.RegisteredClaims{}, fmt.Errorf("no signing public key found")
+		}
+		block, _ := pem.Decode(pubPEM)
+		if block == nil {
+			return jwt.RegisteredClaims{}, fmt.Errorf("failed to decode public key PEM")
+		}
+		pubKeyIface, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return jwt.RegisteredClaims{}, fmt.Errorf("failed to parse public key: %w", err)
+		}
+		var ok bool
+		rsaPubKey, ok = pubKeyIface.(*rsa.PublicKey)
+		if !ok {
+			return jwt.RegisteredClaims{}, fmt.Errorf("public key is not RSA")
+		}
 	}
 
 	var claims jwt.RegisteredClaims
