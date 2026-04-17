@@ -28,6 +28,8 @@ type NextcloudProvisioner struct {
 	password      string
 	provisionedMu sync.Mutex
 	provisioned   map[string]bool
+	backoffUntil  map[string]time.Time  // per-user backoff expiry
+	failCount     map[string]int        // per-user consecutive failure count
 }
 
 // NewNextcloudProvisioner creates a new NextcloudProvisioner from environment variables.
@@ -38,6 +40,8 @@ func NewNextcloudProvisioner() *NextcloudProvisioner {
 		username:     os.Getenv("NC_PROVISIONER_USER"),
 		password:     os.Getenv("NC_PROVISIONER_PASSWORD"),
 		provisioned:  make(map[string]bool),
+		backoffUntil: make(map[string]time.Time),
+		failCount:    make(map[string]int),
 	}
 }
 
@@ -104,6 +108,14 @@ func (p *NextcloudProvisioner) scanAndProvision() {
 		}
 		p.provisionedMu.Unlock()
 
+		// Skip if in backoff period after prior failure.
+		p.provisionedMu.Lock()
+		if until, ok := p.backoffUntil[orcidId]; ok && time.Now().Before(until) {
+			p.provisionedMu.Unlock()
+			continue
+		}
+		p.provisionedMu.Unlock()
+
 		// Idempotency check: if nc-token already exists, skip provisioning.
 		// This makes the provisioner safe to re-run after pod restart.
 		tokenKey := KK(orcidId, "priv", "nc-token")
@@ -127,11 +139,27 @@ func (p *NextcloudProvisioner) scanAndProvision() {
 		fmt.Printf("NextcloudProvisioner: provisioning user %s\n", orcidId)
 		if err := p.provisionUser(orcidId); err != nil {
 			fmt.Printf("NextcloudProvisioner: failed to provision %s: %v\n", orcidId, err)
+			p.provisionedMu.Lock()
+			if p.failCount != nil {
+				p.failCount[orcidId]++
+			}
+			if p.backoffUntil != nil && p.failCount != nil {
+				// Exponential: 2^0=1m, 2^1=2m, 2^2=4m, 2^3=8m, 2^4=16m, 2^5+=30m cap
+				delay := time.Duration(1<<min(p.failCount[orcidId]-1, 5)) * time.Minute
+				if delay > 30*time.Minute {
+					delay = 30 * time.Minute
+				}
+				p.backoffUntil[orcidId] = time.Now().Add(delay)
+				fmt.Printf("NextcloudProvisioner: backing off %s for %v (attempt %d)\n", orcidId, delay, p.failCount[orcidId])
+			}
+			p.provisionedMu.Unlock()
 			continue
 		}
 
 		p.provisionedMu.Lock()
 		p.provisioned[orcidId] = true
+		delete(p.backoffUntil, orcidId)
+		delete(p.failCount, orcidId)
 		p.provisionedMu.Unlock()
 	}
 }

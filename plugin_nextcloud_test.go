@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestGenerateRandomPassword verifies that the password generator produces
@@ -522,6 +523,63 @@ func TestProvisionUserRetryUsesSamePassword(t *testing.T) {
 
 	if _, statErr := os.Stat(stagingPath); !os.IsNotExist(statErr) {
 		t.Error("staging password should be deleted after successful provisioning")
+	}
+}
+
+// TestScanAndProvisionRespectsBackoff verifies that when provisioning fails,
+// the provisioner skips the user during the backoff period.
+func TestScanAndProvisionRespectsBackoff(t *testing.T) {
+	origDbpath := dbpath
+	tmpDir := t.TempDir()
+	dbpath = tmpDir
+	defer func() { dbpath = origDbpath }()
+
+	orcidId := "0001-0002-0003-0004"
+	keysDir := filepath.Join(tmpDir, orcidId, "pub", "keys")
+	if err := os.MkdirAll(keysDir, 0o755); err != nil {
+		t.Fatalf("failed to create keysDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "key1"), []byte("pk"), 0o644); err != nil {
+		t.Fatalf("failed to write key file: %v", err)
+	}
+
+	var mu sync.Mutex
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		// Always fail with 429
+		json.NewEncoder(w).Encode(OCSResponse{OCS: OCSData{Meta: OCSMeta{Statuscode: 429, Message: "Reached maximum delay"}}})
+	}))
+	defer server.Close()
+
+	p := &NextcloudProvisioner{
+		nextcloudURL: server.URL,
+		username:     "admin",
+		password:     "secret",
+		provisioned:  make(map[string]bool),
+		backoffUntil: make(map[string]time.Time),
+		failCount:    make(map[string]int),
+	}
+
+	// First scan: attempts provisioning, fails, sets backoff
+	p.scanAndProvision()
+	mu.Lock()
+	firstCount := requestCount
+	mu.Unlock()
+	if firstCount != 1 {
+		t.Errorf("first scan should make 1 request, got %d", firstCount)
+	}
+
+	// Second scan immediately after: should skip due to backoff
+	p.scanAndProvision()
+	mu.Lock()
+	secondCount := requestCount
+	mu.Unlock()
+	if secondCount != 1 {
+		t.Errorf("second scan should skip user due to backoff, but made %d total requests", secondCount)
 	}
 }
 
