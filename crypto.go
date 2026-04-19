@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/crypto.go
+//
+// group: auth
+// tags: cryptography, rsa, hmac, hashing
+// summary: Cryptographic utilities for RSA key operations, HMAC signing, and hash generation.
+// Provides key pair generation, signature operations, and secure random token creation.
+//
+//
+
 package id1
 
 import (

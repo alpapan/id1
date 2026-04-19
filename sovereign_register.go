@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/sovereign_register.go
+//
+// group: auth
+// tags: sovereign-keys, registration, device-keys
+// summary: Sovereign device key registration and management.
+// Two-phase (begin/commit) protocol for registering cryptographic device identities.
+//
+//
+
 package id1
 
 import (

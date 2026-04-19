@@ -1,3 +1,13 @@
+// apps/backend/containers/id1/jwt_signing.go
+//
+// group: jwt
+// tags: jwt, signing, rs256, jwks
+// summary: RS256 JWT signing and JWKS generation for authentication.
+// Provides JWT signing with RSA keys, JWKS endpoint for public key distribution,
+// and token validation for Curatorium backend.
+//
+//
+
 package id1
 
 import (

@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/ws_handler.go
+//
+// group: server
+// tags: websocket, pubsub, events
+// summary: WebSocket handler for pub/sub command notifications.
+// Manages subscriptions and broadcasts changes to connected clients.
+//
+//
+
 package id1
 
 import (

@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/resp.go
+//
+// group: models
+// tags: http, responses, serialization
+// summary: HTTP response type definitions and JSON serialization for operation results.
+//
+//
+
 package id1
 
 import (

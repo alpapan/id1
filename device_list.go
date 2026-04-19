@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/device_list.go
+//
+// group: auth
+// tags: sovereign-keys, devices, listing
+// summary: Device enumeration for sovereign key identities.
+// Returns list of registered device keys for an ORCID identity.
+//
+//
+
 package id1
 
 import (

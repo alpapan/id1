@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd_list.go
+//
+// group: server
+// tags: storage, filesystem, list-operation, directory
+// summary: List operation handler for enumerating keys in a namespace.
+// Recursively traverses filesystem and returns directory contents with metadata.
+//
+//
+
 package id1
 
 import (

@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/device_list_test.go
+//
+// group: auth
+// tags: sovereign-keys, devices, testing
+// summary: Tests for device enumeration and listing.
+//
+//
+
 package id1
 
 import (

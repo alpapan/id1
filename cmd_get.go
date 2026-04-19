@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd_get.go
+//
+// group: server
+// tags: storage, filesystem, get-operation
+// summary: Get operation handler for retrieving key/value entries.
+// Reads data from filesystem and handles directory listing.
+//
+//
+
 package id1
 
 import (

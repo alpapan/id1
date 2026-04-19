@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/id1.go
+//
+// group: server
+// tags: http, server, websocket, pubsub
+// summary: Main HTTP server and WebSocket listener for id1 router.
+// Initializes pub/sub system, sets up HTTP handlers, and manages server lifecycle.
+//
+//
+
 package id1
 
 import (

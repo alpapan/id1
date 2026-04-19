@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/sovereign_token_test.go
+//
+// group: auth
+// tags: sovereign-keys, challenge-response, testing
+// summary: Tests for sovereign key challenge-response authentication.
+//
+//
+
 package id1
 
 import (

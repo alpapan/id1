@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/req.go
+//
+// group: models
+// tags: http, requests, parsing
+// summary: HTTP request type definitions and parsing for key/value operations.
+// Handles JSON unmarshaling and validation for all command types.
+//
+//
+
 package id1
 
 import (

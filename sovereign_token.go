@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/sovereign_token.go
+//
+// group: auth
+// tags: sovereign-keys, challenge-response, jwt
+// summary: Sovereign key challenge-response authentication for machine-to-machine JWT generation.
+// Validates device keys and issues RS256 tokens for service accounts (e.g. SLURM jobs).
+//
+//
+
 package id1
 
 import (

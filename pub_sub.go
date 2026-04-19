@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/pub_sub.go
+//
+// group: utils
+// tags: pubsub, events, channels
+// summary: Publish-subscribe system for command change notifications.
+// Manages subscriptions and broadcasts command events to registered listeners.
+//
+//
+
 package id1
 
 import (

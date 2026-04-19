@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/dot_after_test.go
+//
+// group: server
+// tags: authorization, delegation, testing
+// summary: Tests for post-operation authorization validation.
+//
+//
+
 package id1
 
 import (

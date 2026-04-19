@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd_set.go
+//
+// group: server
+// tags: storage, filesystem, set-operation
+// summary: Set operation handler for updating key/value entries.
+// Writes and overwrites data to filesystem with timestamp tracking.
+//
+//
+
 package id1
 
 import (

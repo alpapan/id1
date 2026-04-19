@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/sync_proxy.go
+//
+// group: middleware
+// tags: websocket, proxy, automerge, sync
+// summary: WebSocket proxy for real-time collaborative sync server.
+// Relays bidirectional frames between browser and Automerge sync backend.
+//
+//
+
 package id1
 
 import (

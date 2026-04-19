@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd_mov.go
+//
+// group: server
+// tags: storage, filesystem, move-operation, rename
+// summary: Move operation handler for renaming and relocating key/value entries.
+// Moves data between key paths with directory management.
+//
+//
+
 package id1
 
 import (

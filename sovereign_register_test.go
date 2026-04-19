@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/sovereign_register_test.go
+//
+// group: auth
+// tags: sovereign-keys, registration, testing
+// summary: Tests for sovereign device key registration protocol.
+//
+//
+
 package id1
 
 import (

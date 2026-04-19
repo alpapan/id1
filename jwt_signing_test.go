@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/jwt_signing_test.go
+//
+// group: jwt
+// tags: jwt, signing, rs256, testing
+// summary: Tests for RS256 JWT signing and JWKS generation.
+//
+//
+
 package id1
 
 import (

@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/pub_sub_test.go
+//
+// group: utils
+// tags: pubsub, events, testing
+// summary: Tests for publish-subscribe event system.
+//
+//
+
 package id1
 
 import (

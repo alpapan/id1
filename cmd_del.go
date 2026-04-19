@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd_del.go
+//
+// group: server
+// tags: storage, filesystem, delete-operation
+// summary: Delete operation handler for removing key/value entries.
+// Removes data files and cleans up empty directories.
+//
+//
+
 package id1
 
 import (

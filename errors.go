@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/errors.go
+//
+// group: utils
+// tags: errors, exceptions
+// summary: Custom error definitions for authorization and storage operations.
+//
+//
+
 package id1
 
 import "errors"

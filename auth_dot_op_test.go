@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/auth_dot_op_test.go
+//
+// group: auth
+// tags: authentication, delegation, testing
+// summary: Tests for auth-dot-op permission delegation logic.
+//
+//
+
 package id1
 
 import (

@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/crypto_test.go
+//
+// group: auth
+// tags: cryptography, rsa, testing
+// summary: Tests for cryptographic utilities and key operations.
+//
+//
+
 package id1
 
 import (

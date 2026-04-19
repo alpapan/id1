@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/auth_dot_op.go
+//
+// group: auth
+// tags: authentication, authorization, delegation
+// summary: Auth-dot-op delegation pattern for inherited authorization.
+// Evaluates permission inheritance through owner path hierarchy.
+//
+//
+
 package id1
 
 import (

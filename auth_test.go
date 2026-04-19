@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/auth_test.go
+//
+// group: auth
+// tags: authentication, authorization, testing
+// summary: Tests for authorization logic and permission checking.
+//
+//
+
 package id1
 
 import (

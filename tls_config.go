@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/tls_config.go
+//
+// group: middleware
+// tags: tls, mtls, certificates, encryption
+// summary: TLS/mTLS configuration for HTTPS and mutual authentication.
+// Supports SNI-based certificate selection and client certificate validation.
+//
+//
+
 package id1
 
 import (

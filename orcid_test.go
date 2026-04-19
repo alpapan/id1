@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/orcid_test.go
+//
+// group: auth
+// tags: orcid, oauth, testing
+// summary: Tests for ORCID OAuth integration and token exchange.
+//
+//
+
 package id1
 
 import (

@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/k_test.go
+//
+// group: models
+// tags: keys, parsing, testing
+// summary: Tests for key structure parsing and validation.
+//
+//
+
 package id1
 
 import (

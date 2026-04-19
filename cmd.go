@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd.go
+//
+// group: models
+// tags: commands, operations, keys
+// summary: Command structure and parsing for key/value store operations.
+// Defines operation types (Get, Set, Del, etc.) and command metadata.
+//
+//
+
 package id1
 
 import (

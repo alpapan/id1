@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/plugin_nextcloud_test.go
+//
+// group: config
+// tags: nextcloud, integration, testing
+// summary: Tests for Nextcloud plugin and WebDAV integration.
+//
+//
+
 package id1
 
 import (

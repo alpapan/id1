@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/testmain_test.go
+//
+// group: utils
+// tags: testing, setup, fixtures
+// summary: Test setup and shared fixtures for integration tests.
+// Provides test utilities and common initialization logic.
+//
+//
+
 package id1
 
 import (

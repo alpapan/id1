@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd_add.go
+//
+// group: server
+// tags: storage, filesystem, add-operation
+// summary: Add operation handler for creating new key/value entries.
+// Writes data to filesystem with directory creation and collision prevention.
+//
+//
+
 package id1
 
 import (

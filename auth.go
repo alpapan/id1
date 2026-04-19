@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/auth.go
+//
+// group: auth
+// tags: authentication, authorization, ownership, permissions
+// summary: Core authorization logic for key/value store operations.
+// Evaluates command ownership, public access, and auth-dot-op directives.
+//
+//
+
 package id1
 
 import (

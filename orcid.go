@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/orcid.go
+//
+// group: auth
+// tags: orcid, oauth, authentication
+// summary: ORCID OAuth 2.0 integration for federated identity authentication.
+// Handles OAuth callback, token exchange, and ORCID profile data retrieval.
+//
+//
+
 package id1
 
 import (

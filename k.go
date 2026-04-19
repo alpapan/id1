@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/k.go
+//
+// group: models
+// tags: keys, hierarchy, segments
+// summary: Key structure and path parsing for hierarchical key namespace.
+// Parses and validates Id1Key paths with owner, name, and segment components.
+//
+//
+
 package id1
 
 import (

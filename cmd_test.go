@@ -1,3 +1,11 @@
+// apps/backend/containers/id1/cmd_test.go
+//
+// group: models
+// tags: commands, operations, testing
+// summary: Tests for command parsing and operation structures.
+//
+//
+
 package id1
 
 import (

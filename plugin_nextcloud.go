@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/plugin_nextcloud.go
+//
+// group: config
+// tags: nextcloud, plugin, integration, webdav
+// summary: Nextcloud integration plugin for WebDAV file synchronization.
+// Proxies Nextcloud requests with HMAC-signed authentication.
+//
+//
+
 package id1
 
 import (

@@ -1,3 +1,12 @@
+// apps/backend/containers/id1/cmd_op.go
+//
+// group: models
+// tags: operations, enum
+// summary: Operation type enumeration for key/value store commands.
+// Defines Set, Get, Add, Del, Mov, and other operation constants.
+//
+//
+
 package id1
 
 type Op int
