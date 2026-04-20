@@ -41,7 +41,12 @@ const maxTimestampSkew = 5 * time.Minute
 //
 // Flow:
 //  1. Client POSTs {"id": "<userId>", "timestamp": "<RFC3339>", "signature": "<base64>"}
-//  2. Server loads public key from KV store at {id}/pub/key
+//  2. Server loads the registered public key. For ORCID users the key is at
+//     {id}/pub/keys/{deviceId} (multi-device, written by browser
+//     register/begin+commit). For machine/service identities (SLURM
+//     callbacks) the key is at {id}/pub/key (singular, written by the
+//     anonymous POST exemption in auth.go when the identity is new). The
+//     handler tries the multi-device path first, then the singular path.
 //  3. Server verifies RSA-SHA256 signature of "{id}:{timestamp}" using that key
 //  4. Server checks timestamp is within ±5 minutes of server time
 //  5. Server issues RS256 JWT with sub={id} (same signJWT used by ORCID/test endpoints)
@@ -86,11 +91,20 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Load the registered public key for this device
-		pubKeyPEM, err := CmdGet(KK(req.ID, "pub", "keys", req.DeviceId)).Exec()
+		// Load the registered public key. Prefer the multi-device path
+		// ({id}/pub/keys/{deviceId}) used by ORCID browser registrations; fall
+		// back to the singular path ({id}/pub/key) used by service/machine
+		// identities bootstrapped via the anonymous POST exemption in auth.go.
+		multiDevicePath := KK(req.ID, "pub", "keys", req.DeviceId)
+		usedSingularFallback := false
+		pubKeyPEM, err := CmdGet(multiDevicePath).Exec()
 		if err != nil || len(pubKeyPEM) == 0 {
-			err404(w, "no public key registered for this id")
-			return
+			usedSingularFallback = true
+			pubKeyPEM, err = CmdGet(KK(req.ID, "pub", "key")).Exec()
+			if err != nil || len(pubKeyPEM) == 0 {
+				err404(w, "no public key registered for this id")
+				return
+			}
 		}
 
 		// Parse the PEM public key
@@ -114,10 +128,14 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Signature valid — refresh this device's TTL (7-day inactivity window)
-		deviceKey := KK(req.ID, "pub", "keys", req.DeviceId)
-		if existingKey, err := CmdGet(deviceKey).Exec(); err == nil && len(existingKey) > 0 {
-			CmdSet(deviceKey, map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).Exec()
+		// Signature valid — refresh TTL only on the multi-device path. The
+		// singular service-identity path has no TTL by design (it's the
+		// anonymous-bootstrap path; expiring it would silently lock out SLURM
+		// services between active periods).
+		if !usedSingularFallback {
+			if existingKey, err := CmdGet(multiDevicePath).Exec(); err == nil && len(existingKey) > 0 {
+				CmdSet(multiDevicePath, map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).Exec()
+			}
 		}
 
 		// Issue RS256 JWT

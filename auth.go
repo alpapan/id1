@@ -29,6 +29,13 @@ func auth(id string, cmd Command) bool {
 }
 
 func idExists(id string) bool {
+	// Singular service-identity path: {id}/pub/key (bootstrapped via the
+	// anonymous POST exemption below, read as a fallback by HandleSovereignToken).
+	singularPath := filepath.Join(dbpath, id, "pub", "key")
+	if info, err := os.Stat(singularPath); err == nil && !info.IsDir() {
+		return true
+	}
+	// Multi-device ORCID path: {id}/pub/keys/{deviceId} files in a directory.
 	keysDir := filepath.Join(dbpath, id, "pub", "keys")
 	entries, err := os.ReadDir(keysDir)
 	if err != nil {

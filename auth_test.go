@@ -119,3 +119,51 @@ MIGJAoGBANDSsusgXGowG2Dsm2pCWyGbIEEGwsRgoKbUPx2JuVI0NWEvTrEmPfqa
 H23ACLwetp4XMgZEYLmuS3PkA/HuQiUkYPElKEmfuO2jQ6F4/mHy6UkOsP9PMXwl
 ff02vCJ43hBFIJdgchDSywHIb4F1hv6ap6PlrYMGwvIJ6gln9GIdAgMBAAE=
 -----END RSA PUBLIC KEY-----`
+
+// TestIdExists_SingularPubKey verifies that idExists returns true when only
+// the singular {id}/pub/key file is populated. This closes an anonymous
+// overwrite gap that would otherwise let an attacker forge service JWTs once
+// HandleSovereignToken starts falling back to the singular path.
+func TestIdExists_SingularPubKey(t *testing.T) {
+	setupAuthTest(t)
+
+	if idExists("service") {
+		t.Fatal("precondition failed: service must not exist yet")
+	}
+
+	// Write only at the singular path, not under pub/keys/.
+	singularKey := KK("service", "pub", "key")
+	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).Exec(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !idExists("service") {
+		t.Error("idExists should return true when only {id}/pub/key is populated")
+	}
+}
+
+// TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap verifies that once
+// a service identity has bootstrapped at {id}/pub/key, a second anonymous
+// POST to the same path is rejected — preventing an attacker from overwriting
+// the service key and minting forged JWTs.
+func TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap(t *testing.T) {
+	setupAuthTest(t)
+
+	singularKey := KK("service", "pub", "key")
+
+	// Bootstrap: first anonymous POST to service/pub/key is allowed because
+	// the identity doesn't exist yet (isNewIdClaim && !exists).
+	if !auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{})) {
+		t.Fatal("bootstrap anonymous POST should be authorized when service does not exist")
+	}
+
+	// Seed the singular key to simulate a successful bootstrap.
+	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).Exec(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second anonymous POST — must now be rejected.
+	if auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{})) {
+		t.Error("anonymous overwrite should be rejected once service identity exists")
+	}
+}
