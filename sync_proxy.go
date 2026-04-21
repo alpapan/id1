@@ -45,7 +45,9 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 	}
 
 	clientUpgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin:     func(r *http.Request) bool { return true },
+		ReadBufferSize:  65536,
+		WriteBufferSize: 65536,
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {

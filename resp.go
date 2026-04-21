@@ -17,6 +17,8 @@ func cors(rw *http.ResponseWriter) {
 	w.Header().Add("Access-Control-Allow-Origin", "*")
 	w.Header().Add("Access-Control-Allow-Methods", "GET, PUT, PATCH, POST, DELETE, OPTIONS")
 	w.Header().Add("Access-Control-Allow-Headers", "*, Authorization")
+	w.Header().Add("Access-Control-Max-Age", "0")
+	w.Header().Add("Vary", "Origin")
 }
 
 func ok200(rw http.ResponseWriter, data []byte) {
