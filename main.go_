@@ -227,7 +227,11 @@ func main() {
 		log.Fatalf("Failed to build TLS config: %v", err)
 	}
 	if tlsConfig != nil {
-		server := &http.Server{Addr: "0.0.0.0:" + port, TLSConfig: tlsConfig}
+		server := &http.Server{
+			Addr:      "0.0.0.0:" + port,
+			TLSConfig: tlsConfig,
+			ErrorLog:  log.New(id1.NewHandshakeEOFFilter(os.Stderr), "", log.LstdFlags),
+		}
 		fmt.Println("Starting with TLS enabled")
 		// Empty strings: GetCertificate in TLSConfig handles all cert selection via SNI.
 		if err := server.ListenAndServeTLS("", ""); err != nil {
