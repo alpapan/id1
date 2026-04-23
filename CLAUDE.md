@@ -14,8 +14,9 @@ This repo is vendored as `apps/backend/containers/id1` inside the Curatorium mon
 (typically `~/software/curatorium`). Inside Curatorium, id1 plays one specific role:
 
 **id1 is the Curatorium auth router, the only publicly exposed service.**
-All external traffic (browser, LAN, `auth.curatorium.app` via Cloudflare Tunnel) enters
-through id1. Everything else (Starlette API, PostgreSQL, sync server) is ClusterIP-internal.
+All external traffic enters through Traefik at the CURATORIUM_DOMAIN (e.g. `demo.curatorium.app`);
+Traefik path-routes `/auth/*`, `/pub/jwks.json`, `/internal/*`, and `/nextcloud` to id1's ClusterIP.
+Everything else (Starlette API, PostgreSQL, sync server) is ClusterIP-internal.
 
 ### Curatorium-specific auth flow
 
