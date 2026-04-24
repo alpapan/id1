@@ -11,11 +11,13 @@
 package id1
 
 import (
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -29,6 +31,31 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// bootID is the per-process identifier minted at package init and embedded
+// as the id1_boot_id claim in every JWT issued by signJWT(). It lets
+// curatorium-backend distinguish "same id1 pod continuing" (kid unchanged,
+// bootID unchanged) from "id1 pod restarted with persisted key" (kid
+// unchanged but bootID differs). The Apollo user-provisioning bridge uses
+// this signal to re-sync the user's role on every pod restart without
+// forcing a JWT signing-key rotation.
+//
+// 16 random bytes -> 32 lowercase hex chars. Initialisation failure falls
+// back to a deterministic empty placeholder rather than panicking; callers
+// treat "" as "no restart signal available" and err on the side of
+// re-syncing, so an init-time fallback is safe.
+var bootID = func() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(buf)
+}()
+
+// BootID returns the process-level id1 boot identifier. Exported for tests
+// and for any internal caller that wants to compare against a JWT's
+// id1_boot_id claim without decoding a token.
+func BootID() string { return bootID }
 
 // KeyValueStore defines the interface for key-value storage operations.
 // It mirrors id1's existing CmdGet and CmdSet function signatures.
@@ -332,15 +359,29 @@ func parsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
-// signJWT issues RS256 JWT with claims: iss, sub, aud="curatorium-backend", iat, exp=iat+3600, kid.
+// id1TokenClaims extends jwt.RegisteredClaims with id1_boot_id so the
+// on-wire JSON keeps the standard claim encodings (aud as array, etc.)
+// untouched and only adds one extra key.
+type id1TokenClaims struct {
+	BootID string `json:"id1_boot_id"`
+	jwt.RegisteredClaims
+}
+
+// signJWT issues RS256 JWT with standard claims plus id1_boot_id.
+// Claims: iss, sub, aud="curatorium-backend", iat, exp=iat+3600, id1_boot_id; header kid.
+// The id1_boot_id claim is non-standard and used by curatorium-backend's
+// Apollo token-exchange to detect pod restarts (see BootID doc comment).
 func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
 	now := time.Now()
-	claims := jwt.RegisteredClaims{
-		Issuer:    jwtIssuer,
-		Subject:   orcidID,
-		Audience:  jwt.ClaimStrings{jwtAudience},
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour * jwtExpirationHours)),
+	claims := id1TokenClaims{
+		BootID: bootID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    jwtIssuer,
+			Subject:   orcidID,
+			Audience:  jwt.ClaimStrings{jwtAudience},
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour * jwtExpirationHours)),
+		},
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)

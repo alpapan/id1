@@ -594,4 +594,47 @@ func TestHandleTestUser(t *testing.T) {
 	})
 }
 
+// TestSignJWT_IncludesBootID verifies that every signed JWT carries a
+// non-empty id1_boot_id claim that is stable within one process lifetime.
+// The claim lets curatorium-backend detect id1 pod restarts (role re-sync
+// trigger in the Apollo user-provisioning bridge — see
+// apps/backend/containers/apollo/.../exchangeCuratoriumToken()).
+func TestSignJWT_IncludesBootID(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	tokenA, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	require.NoError(t, err)
+	tokenB, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	require.NoError(t, err)
+
+	// Parse into MapClaims so we can read the custom id1_boot_id claim.
+	parse := func(s string) jwt.MapClaims {
+		claims := jwt.MapClaims{}
+		parsed, err := jwt.ParseWithClaims(s, claims, func(token *jwt.Token) (interface{}, error) {
+			return &privKey.PublicKey, nil
+		})
+		require.NoError(t, err)
+		require.True(t, parsed.Valid)
+		return claims
+	}
+	ca := parse(tokenA)
+	cb := parse(tokenB)
+
+	bootA, ok := ca["id1_boot_id"].(string)
+	require.True(t, ok, "id1_boot_id claim missing or not a string in tokenA")
+	bootB, ok := cb["id1_boot_id"].(string)
+	require.True(t, ok, "id1_boot_id claim missing or not a string in tokenB")
+
+	assert.NotEmpty(t, bootA, "id1_boot_id must be non-empty")
+	assert.Equal(t, 32, len(bootA), "id1_boot_id must be 32-char hex (16 random bytes)")
+	assert.Regexp(t, "^[0-9a-f]{32}$", bootA, "id1_boot_id must be lowercase hex")
+	assert.Equal(t, bootA, bootB, "id1_boot_id must be stable across calls in one process")
+
+	// BootID is also accessible via the exported BootID() helper so
+	// callers (and tests) need not decode a token to learn it.
+	assert.Equal(t, bootA, BootID(), "BootID() must return the same value signJWT embeds")
+}
+
 // __END_OF_FILE_MARKER__
