@@ -560,6 +560,28 @@ func TestHandleTestUser(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 		}
+		var resp map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		_, privKey, err := GetOrCreateSigningKey(kvStore)
+		if err != nil {
+			t.Fatalf("failed to get signing key: %v", err)
+		}
+		token, parseErr := jwt.ParseWithClaims(resp["jwt"], &jwt.RegisteredClaims{}, func(tok *jwt.Token) (interface{}, error) {
+			return &privKey.PublicKey, nil
+		})
+		if parseErr != nil {
+			t.Fatalf("default-ORCID JWT should be cryptographically valid: %v", parseErr)
+		}
+		claims, ok := token.Claims.(*jwt.RegisteredClaims)
+		if !ok {
+			t.Fatal("claims should be RegisteredClaims")
+		}
+		const defaultORCID = "0000-0002-1825-0097"
+		if claims.Subject != defaultORCID {
+			t.Errorf("expected default ORCID %q as subject, got %q", defaultORCID, claims.Subject)
+		}
 	})
 
 	t.Run("POST returns 405", func(t *testing.T) {

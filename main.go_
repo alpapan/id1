@@ -200,7 +200,8 @@ func main() {
 		fmt.Printf("Registered /auth/test_user (ENV=%s)\n", os.Getenv("ENV"))
 	}
 
-	// Demo JWT endpoint — issues JWT for the seeded demo_user (ENV=test guard, same as test_user)
+	// Demo JWT endpoint — ENV=test only (unlike test_user which also allows ENV=dev).
+	// Serves the public demo page; keeping this test-only prevents accidental exposure on dev.
 	if os.Getenv("ENV") == "test" {
 		http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))
 		fmt.Println("Registered /auth/unauth_demo demo JWT endpoint (ENV=test)")
