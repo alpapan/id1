@@ -68,8 +68,15 @@ func HandleJWKS(kvStore KeyValueStore) http.HandlerFunc {
 	}
 }
 
+// IsDevOrTestEnv reports whether env is a non-production environment where
+// test-helper endpoints such as /auth/test_user may be safely registered.
+// Only the exact strings "test" and "dev" are permitted; comparison is case-sensitive.
+func IsDevOrTestEnv(env string) bool {
+	return env == "test" || env == "dev"
+}
+
 // HandleTestUser returns an HTTP handler that issues a test JWT.
-// This endpoint is only registered when ENV=test.
+// This endpoint is only registered when ENV=test or ENV=dev.
 // It uses the same signing infrastructure as the ORCID callback.
 func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

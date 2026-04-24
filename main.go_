@@ -193,10 +193,11 @@ func main() {
 	})
 	fmt.Println("Registered /auth/sovereign/devices device list + revocation")
 
-	// Test-only endpoint for issuing JWTs (guarded by ENV=test)
-	if os.Getenv("ENV") == "test" {
+	// Test-helper endpoint for issuing JWTs — registered in ENV=test and ENV=dev only.
+	// Guard logic is in id1.IsDevOrTestEnv (jwt_signing.go).
+	if id1.IsDevOrTestEnv(os.Getenv("ENV")) {
 		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
-		fmt.Println("Registered /auth/test_user test endpoint (ENV=test)")
+		fmt.Printf("Registered /auth/test_user (ENV=%s)\n", os.Getenv("ENV"))
 	}
 
 	// Demo JWT endpoint — issues JWT for the seeded demo_user (ENV=test guard, same as test_user)

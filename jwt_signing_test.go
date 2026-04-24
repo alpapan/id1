@@ -484,4 +484,92 @@ func TestGetOrCreateSigningKey_KVUnavailableUsesMemoryCache(t *testing.T) {
 	}
 }
 
+func TestIsDevOrTestEnv(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		{"test", true},
+		{"dev", true},
+		{"prod", false},
+		{"production", false},
+		{"demo", false},
+		{"staging", false},
+		{"", false},
+		{"Test", false},  // case-sensitive: "Test" ≠ "test"
+		{" test", false}, // no whitespace normalisation
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("env=%q", tc.env), func(t *testing.T) {
+			got := IsDevOrTestEnv(tc.env)
+			assert.Equal(t, tc.want, got, "IsDevOrTestEnv(%q)", tc.env)
+		})
+	}
+}
+
+func TestHandleTestUser(t *testing.T) {
+	kvStore := setupTestKVStore(t)
+	handler := HandleTestUser(kvStore)
+
+	t.Run("GET returns JWT for provided ORCID", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0001-0000-0001", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if resp["jwt"] == "" {
+			t.Fatal("expected non-empty jwt")
+		}
+		_, privKey, err := GetOrCreateSigningKey(kvStore)
+		if err != nil {
+			t.Fatalf("failed to get signing key: %v", err)
+		}
+		token, parseErr := jwt.ParseWithClaims(resp["jwt"], &jwt.RegisteredClaims{}, func(tok *jwt.Token) (interface{}, error) {
+			return &privKey.PublicKey, nil
+		})
+		if parseErr != nil {
+			t.Fatalf("JWT should be cryptographically valid: %v", parseErr)
+		}
+		claims, ok := token.Claims.(*jwt.RegisteredClaims)
+		if !ok {
+			t.Fatal("claims should be RegisteredClaims")
+		}
+		if claims.Subject != "0000-0001-0000-0001" {
+			t.Errorf("expected subject %q, got %q", "0000-0001-0000-0001", claims.Subject)
+		}
+	})
+
+	t.Run("GET with invalid ORCID returns 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=not-an-orcid", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET with no ORCID returns JWT with default ORCID", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/auth/test_user", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("POST returns 405", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/auth/test_user", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", w.Code)
+		}
+	})
+}
+
 // __END_OF_FILE_MARKER__
