@@ -200,12 +200,11 @@ func main() {
 		fmt.Printf("Registered /auth/test_user (ENV=%s)\n", os.Getenv("ENV"))
 	}
 
-	// Demo JWT endpoint — ENV=test only (unlike test_user which also allows ENV=dev).
-	// Serves the public demo page; keeping this test-only prevents accidental exposure on dev.
-	if os.Getenv("ENV") == "test" {
-		http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))
-		fmt.Println("Registered /auth/unauth_demo demo JWT endpoint (ENV=test)")
-	}
+	// Demo JWT endpoint — always registered (not guarded by ENV=test).
+	// Serves the public demo pages; the page-level auth guard (useAuth + router.push)
+	// determines whether the demo JWT is required or optional.
+	http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))
+	fmt.Println("Registered /auth/unauth_demo demo JWT endpoint")
 
 	// Set up Automerge sync proxy (must be registered before the catch-all handler)
 	syncServerAddr := os.Getenv("AUTOMERGE_SYNC_SERVER")
