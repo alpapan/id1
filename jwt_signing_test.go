@@ -594,6 +594,41 @@ func TestHandleTestUser(t *testing.T) {
 	})
 }
 
+// TestSignJWT_ServiceIdentityHasExtendedTTL verifies that JWTs signed with
+// subject "service" have a 24-hour TTL (86400 seconds), while ORCID user
+// JWTs retain the 1-hour (3600 second) default. This supports long-running
+// SLURM batch jobs that need a pre-baked JWT with a longer validity window.
+func TestSignJWT_ServiceIdentityHasExtendedTTL(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	// Test ORCID user JWT — should have 1 hour TTL
+	orcidID := "0000-0001-2345-6789"
+	orcidToken, err := signJWT(orcidID, privKey, keyID)
+	require.NoError(t, err)
+
+	orcidClaims := jwt.RegisteredClaims{}
+	_, err = jwt.ParseWithClaims(orcidToken, &orcidClaims, func(token *jwt.Token) (interface{}, error) {
+		return &privKey.PublicKey, nil
+	})
+	require.NoError(t, err)
+	orcidTTL := orcidClaims.ExpiresAt.Unix() - orcidClaims.IssuedAt.Unix()
+	assert.Equal(t, int64(3600), orcidTTL, "ORCID user JWT should have 1 hour (3600s) TTL")
+
+	// Test service identity JWT — should have 24 hour TTL
+	serviceToken, err := signJWT("service", privKey, keyID)
+	require.NoError(t, err)
+
+	serviceClaims := jwt.RegisteredClaims{}
+	_, err = jwt.ParseWithClaims(serviceToken, &serviceClaims, func(token *jwt.Token) (interface{}, error) {
+		return &privKey.PublicKey, nil
+	})
+	require.NoError(t, err)
+	serviceTTL := serviceClaims.ExpiresAt.Unix() - serviceClaims.IssuedAt.Unix()
+	assert.GreaterOrEqual(t, serviceTTL, int64(86400), "service identity JWT should have at least 24 hours (86400s) TTL")
+}
+
 // TestSignJWT_IncludesBootID verifies that every signed JWT carries a
 // non-empty id1_boot_id claim that is stable within one process lifetime.
 // The claim lets curatorium-backend detect id1 pod restarts (role re-sync

@@ -368,11 +368,20 @@ type id1TokenClaims struct {
 }
 
 // signJWT issues RS256 JWT with standard claims plus id1_boot_id.
-// Claims: iss, sub, aud="curatorium-backend", iat, exp=iat+3600, id1_boot_id; header kid.
+// Claims: iss, sub, aud="curatorium-backend", iat, exp=iat+ttl, id1_boot_id; header kid.
 // The id1_boot_id claim is non-standard and used by curatorium-backend's
 // Apollo token-exchange to detect pod restarts (see BootID doc comment).
+// Service identities (sub="service") receive a 24-hour TTL to support
+// long-running batch jobs; ORCID user JWTs (any other subject) get 1 hour.
 func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
 	now := time.Now()
+
+	// Branch on subject: service identities get 24-hour TTL, ORCID users get 1 hour
+	ttl := time.Hour * jwtExpirationHours
+	if orcidID == "service" {
+		ttl = 24 * time.Hour
+	}
+
 	claims := id1TokenClaims{
 		BootID: bootID,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -380,7 +389,7 @@ func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, 
 			Subject:   orcidID,
 			Audience:  jwt.ClaimStrings{jwtAudience},
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour * jwtExpirationHours)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
 
