@@ -383,7 +383,7 @@ func TestValidateRS256JWT_UsesEnvVarPublicKey(t *testing.T) {
 	tokenStr, err := signJWT("0000-0001-2345-6789", privKey, keyID)
 	require.NoError(t, err)
 
-	// Validate against an EMPTY KV store — validation must use the env var.
+	// Validate against an EMPTY KV store - validation must use the env var.
 	emptyKV := &memoryKV{}
 	claims, err := ValidateRS256JWT(tokenStr, emptyKV)
 	require.NoError(t, err, "validation must succeed via env var public key when KV is empty")
@@ -416,7 +416,7 @@ func TestValidateRS256JWT_UsesMemoryCachePublicKey(t *testing.T) {
 	tokenStr, err := signJWT("0000-0001-5555-6666", privKey, keyID)
 	require.NoError(t, err)
 
-	// Validate against an empty KV store — must use memory cache.
+	// Validate against an empty KV store - must use memory cache.
 	emptyKV := &memoryKV{}
 	claims, err := ValidateRS256JWT(tokenStr, emptyKV)
 	require.NoError(t, err)
@@ -496,7 +496,7 @@ func TestIsDevOrTestEnv(t *testing.T) {
 		{"demo", false},
 		{"staging", false},
 		{"", false},
-		{"Test", false},  // case-sensitive: "Test" ≠ "test"
+		{"Test", false},  // case-sensitive: "Test" != "test"
 		{" test", false}, // no whitespace normalisation
 	}
 	for _, tc := range cases {
@@ -603,7 +603,7 @@ func TestSignJWT_ServiceIdentityHasExtendedTTL(t *testing.T) {
 	keyID, privKey, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 
-	// Test ORCID user JWT — should have 1 hour TTL
+	// Test ORCID user JWT - should have 1 hour TTL
 	orcidID := "0000-0001-2345-6789"
 	orcidToken, err := signJWT(orcidID, privKey, keyID)
 	require.NoError(t, err)
@@ -616,7 +616,7 @@ func TestSignJWT_ServiceIdentityHasExtendedTTL(t *testing.T) {
 	orcidTTL := orcidClaims.ExpiresAt.Unix() - orcidClaims.IssuedAt.Unix()
 	assert.Equal(t, int64(3600), orcidTTL, "ORCID user JWT should have 1 hour (3600s) TTL")
 
-	// Test service identity JWT — should have 24 hour TTL
+	// Test service identity JWT - should have 24 hour TTL
 	serviceToken, err := signJWT("service", privKey, keyID)
 	require.NoError(t, err)
 
@@ -632,7 +632,7 @@ func TestSignJWT_ServiceIdentityHasExtendedTTL(t *testing.T) {
 // TestSignJWT_IncludesBootID verifies that every signed JWT carries a
 // non-empty id1_boot_id claim that is stable within one process lifetime.
 // The claim lets curatorium-backend detect id1 pod restarts (role re-sync
-// trigger in the Apollo user-provisioning bridge — see
+// trigger in the Apollo user-provisioning bridge - see
 // apps/backend/containers/apollo/.../exchangeCuratoriumToken()).
 func TestSignJWT_IncludesBootID(t *testing.T) {
 	kv := setupTestKVStore(t)

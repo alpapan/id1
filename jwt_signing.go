@@ -195,13 +195,13 @@ var (
 // Thumbprint (RFC 7638).
 //
 // Priority order:
-//  1. ID1_JWT_PRIVATE_KEY env var (PEM) + ID1_JWT_KEY_ID env var — new primary
-//  2. KV store (_system/priv/jwt-signing-key) — legacy fallback
+//  1. ID1_JWT_PRIVATE_KEY env var (PEM) + ID1_JWT_KEY_ID env var - new primary
+//  2. KV store (_system/priv/jwt-signing-key) - legacy fallback
 //  3. Generate new key, store in both KV + patch curatorium-secrets
 func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, error) {
 	// 1. Prefer env vars populated from curatorium-secrets.
 	// This makes JWT keys survive an id1 pod restart without needing the KV
-	// store on persistent storage — the K8s Secret is the durable ground truth.
+	// store on persistent storage - the K8s Secret is the durable ground truth.
 	if envPEM := os.Getenv("ID1_JWT_PRIVATE_KEY"); envPEM != "" {
 		keyID := os.Getenv("ID1_JWT_KEY_ID")
 		if keyID == "" {
@@ -214,7 +214,7 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 		return keyID, privKey, nil
 	}
 
-	// 1.5. In-memory cache — populated by path 3 when KV is unavailable (no emptyDir).
+	// 1.5. In-memory cache - populated by path 3 when KV is unavailable (no emptyDir).
 	// Ensures the same key is used for all requests within this pod's lifetime.
 	_memKeyMu.Lock()
 	if _memPrivKey != nil {
@@ -402,10 +402,10 @@ func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, 
 // ValidateRS256JWT verifies an RS256 JWT signed by id1's own signing key.
 // Used by sovereign register endpoints to authenticate re-registration requests.
 // Returns jwt.RegisteredClaims (not the custom auth.Claims struct) because ORCID
-// JWTs don't carry the Username field — only Subject (ORCID iD) matters here.
+// JWTs don't carry the Username field - only Subject (ORCID iD) matters here.
 //
 // Public key source priority (mirrors GetOrCreateSigningKey / getJWKS):
-//  1. ID1_JWT_PRIVATE_KEY env var (Shape B primary — K8s Secret)
+//  1. ID1_JWT_PRIVATE_KEY env var (Shape B primary - K8s Secret)
 //  2. In-memory cache (path-3 fallback when KV was unavailable)
 //  3. KV store pubKeyPath (legacy)
 func ValidateRS256JWT(tokenStr string, kvStore KeyValueStore) (jwt.RegisteredClaims, error) {
