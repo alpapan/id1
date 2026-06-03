@@ -190,7 +190,7 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword 
 //
 // The handler is stateless: on each call it derives the user's Nextcloud login
 // password from (orcid, derivationKey), ensures the user exists, and mints a
-// fresh app token. id1 does not persist the result — the caller (backend) is
+// fresh app token. id1 does not persist the result - the caller (backend) is
 // responsible for caching.
 func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

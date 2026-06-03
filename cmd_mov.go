@@ -20,7 +20,7 @@ func (t *Command) move() error {
 	oldKey := t.Key.String()
 	newKey := string(t.Data)
 
-	// Normalize the destination path FIRST — all checks operate on the
+	// Normalize the destination path FIRST - all checks operate on the
 	// resolved path to prevent bypasses like "alice/../bob/file".
 	dbpathClean := filepath.Clean(dbpath)
 	newPath := filepath.Clean(filepath.Join(dbpathClean, newKey))
@@ -31,7 +31,7 @@ func (t *Command) move() error {
 	}
 
 	// Extract the destination owner from the NORMALIZED relative path.
-	// This prevents "alice/../bob/file" from passing as "alice" — after
+	// This prevents "alice/../bob/file" from passing as "alice" - after
 	// normalization it resolves to "bob/file", and destID = "bob".
 	relPath, err := filepath.Rel(dbpathClean, newPath)
 	if err != nil {

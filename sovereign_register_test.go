@@ -273,7 +273,7 @@ func TestRegisterCommitIdempotent(t *testing.T) {
 	HandleRegisterCommit(kv)(commitRec, commitReq)
 	assert.Equal(t, http.StatusOK, commitRec.Code, "first commit")
 
-	// Second commit (idempotent — pending gone, pub/keys/{deviceId} exists)
+	// Second commit (idempotent - pending gone, pub/keys/{deviceId} exists)
 	commitReq2 := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/commit?id="+orcid, bytes.NewReader(commitBody))
 	commitReq2.Header.Set("Content-Type", "application/json")
 	commitRec2 := httptest.NewRecorder()
@@ -335,7 +335,7 @@ func TestRegisterTwoDevicesSameUser(t *testing.T) {
 
 	orcid := "0000-0001-2345-6789"
 
-	// Register device 1 (new user — no JWT needed)
+	// Register device 1 (new user - no JWT needed)
 	privKey1, pubPEM1 := testGenerateRSAKeyPair(t)
 	beginBody1, _ := json.Marshal(RegisterBeginRequest{
 		PublicKeyPEM: pubPEM1,

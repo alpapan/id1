@@ -101,7 +101,7 @@ func main() {
 	ctx := context.Background()
 
 	// Register the main KV handler first so that id1.Handle sets the package-level
-	// dbpath before GetOrCreateSigningKey runs — both use the same package variable.
+	// dbpath before GetOrCreateSigningKey runs - both use the same package variable.
 	mainHandler := id1.Handle(dbpath, ctx)
 
 	// Initialize KV store and JWT signing key at startup (BEFORE ORCID handler)
@@ -141,7 +141,7 @@ func main() {
 		}
 	}
 
-	// Health check — returns 200 with minimal status JSON. No identity information exposed.
+	// Health check - returns 200 with minimal status JSON. No identity information exposed.
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -152,7 +152,7 @@ func main() {
 	http.HandleFunc("/pub/jwks.json", id1.HandleJWKS(id1KVStore))
 	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
 
-	// Nextcloud app-token minting — internal endpoint, requires X-ID1-Internal-Secret.
+	// Nextcloud app-token minting - internal endpoint, requires X-ID1-Internal-Secret.
 	// NC_DERIVATION_KEY is stored as a hex string (openssl rand -hex 32); we hex-decode
 	// here so the raw 32 bytes match what the bash rotation script computes via
 	// `openssl dgst -macopt hexkey:$NEW_KEY` (which hex-decodes internally). A mismatch
@@ -193,14 +193,14 @@ func main() {
 	})
 	fmt.Println("Registered /auth/sovereign/devices device list + revocation")
 
-	// Test-helper endpoint for issuing JWTs — registered in ENV=test and ENV=dev only.
+	// Test-helper endpoint for issuing JWTs - registered in ENV=test and ENV=dev only.
 	// Guard logic is in id1.IsDevOrTestEnv (jwt_signing.go).
 	if id1.IsDevOrTestEnv(os.Getenv("ENV")) {
 		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
 		fmt.Printf("Registered /auth/test_user (ENV=%s)\n", os.Getenv("ENV"))
 	}
 
-	// Demo JWT endpoint — always registered (not guarded by ENV=test).
+	// Demo JWT endpoint - always registered (not guarded by ENV=test).
 	// Serves the public demo pages; the page-level auth guard (useAuth + router.push)
 	// determines whether the demo JWT is required or optional.
 	http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))

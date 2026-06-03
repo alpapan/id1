@@ -164,7 +164,7 @@ func TestHandleSovereignToken_ExpiredTimestamp(t *testing.T) {
 	deviceId := "default"
 	privKey := testSovereignSetup(t, userID, deviceId)
 
-	// Timestamp 10 minutes ago — outside ±5 min window
+	// Timestamp 10 minutes ago - outside ±5 min window
 	timestamp := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
 	payload := userID + ":" + timestamp
 	signature := signSovereignPayload(t, privKey, payload)
@@ -331,7 +331,7 @@ func TestHandleSovereignToken_PrefersMultiDevicePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Sign with multi-device key — must succeed.
+	// Sign with multi-device key - must succeed.
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	signature := signSovereignPayload(t, multiDevPriv, userID+":"+timestamp)
 
@@ -348,7 +348,7 @@ func TestHandleSovereignToken_PrefersMultiDevicePath(t *testing.T) {
 			rec.Code, rec.Body.String())
 	}
 
-	// Sign with singular key — must fail (multi-device is preferred, so the
+	// Sign with singular key - must fail (multi-device is preferred, so the
 	// signature won't match the multi-device public key).
 	singularSig := signSovereignPayload(t, singularPriv, userID+":"+timestamp)
 	body2 := `{"id":"` + userID + `","deviceId":"` + deviceId +

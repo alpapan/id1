@@ -28,7 +28,7 @@ import (
 func getFrontendURL() string {
 	port := os.Getenv("HTTP_FRONTEND_PORT")
 	if port == "" {
-		panic("HTTP_FRONTEND_PORT env var not set — ensure .env.test is loaded before running Go tests")
+		panic("HTTP_FRONTEND_PORT env var not set - ensure .env.test is loaded before running Go tests")
 	}
 	return fmt.Sprintf("http://localhost:%s", port)
 }
@@ -997,7 +997,7 @@ func TestHandleBegin_RejectsExternalRedirectURI(t *testing.T) {
 	// Handler must either: (a) return 400 Bad Request, or (b) fall back to frontendURL.
 	// In both cases the evil URL must NOT be the stored redirectURI.
 	if w.Code == http.StatusBadRequest {
-		// Case (a): rejected outright — no state entry should exist.
+		// Case (a): rejected outright - no state entry should exist.
 		h.stateMu.Lock()
 		defer h.stateMu.Unlock()
 		if len(h.stateStore) != 0 {
@@ -1008,15 +1008,15 @@ func TestHandleBegin_RejectsExternalRedirectURI(t *testing.T) {
 	if w.Code != http.StatusFound {
 		t.Fatalf("expected 302 (fallback) or 400 (reject), got %d", w.Code)
 	}
-	// Case (b): fallback — state entry must exist and redirect to frontendURL, NOT the evil URL.
+	// Case (b): fallback - state entry must exist and redirect to frontendURL, NOT the evil URL.
 	h.stateMu.Lock()
 	defer h.stateMu.Unlock()
 	if len(h.stateStore) == 0 {
-		t.Fatal("SECURITY: stateStore empty but handler returned 302 — no state to validate")
+		t.Fatal("SECURITY: stateStore empty but handler returned 302 - no state to validate")
 	}
 	for _, entry := range h.stateStore {
 		if entry.redirectURI == "https://evil.example.com/steal" {
-			t.Error("SECURITY: external redirect_uri stored verbatim — open redirect vulnerability")
+			t.Error("SECURITY: external redirect_uri stored verbatim - open redirect vulnerability")
 		}
 		if entry.redirectURI != frontendURL && entry.redirectURI != "" {
 			t.Errorf("SECURITY: expected fallback to %q or empty, got %q", frontendURL, entry.redirectURI)
@@ -1056,7 +1056,7 @@ func TestHandleBegin_RejectsSubdomainPrefixBypass(t *testing.T) {
 	}
 	for _, entry := range h.stateStore {
 		if entry.redirectURI == attackerURL {
-			t.Error("SECURITY: subdomain-prefix bypass succeeded — attacker URL was stored")
+			t.Error("SECURITY: subdomain-prefix bypass succeeded - attacker URL was stored")
 		}
 		if entry.redirectURI != frontendURL {
 			t.Errorf("SECURITY: expected fallback to %q, got %q", frontendURL, entry.redirectURI)

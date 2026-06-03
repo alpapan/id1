@@ -137,20 +137,20 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// SECURITY: Validate redirect_uri against allowed origins to prevent open redirect.
 		// Compare parsed URL origin (scheme + host + port), not string prefix.
-		// In dev, frontendURL may be empty — in that case, allow any localhost URI.
+		// In dev, frontendURL may be empty - in that case, allow any localhost URI.
 		parsedRedirect, rErr := url.Parse(redirectURI)
 		if rErr != nil {
-			// Malformed URL — fall back to frontendURL
+			// Malformed URL - fall back to frontendURL
 			redirectURI = h.frontendURL
 		} else if h.frontendURL != "" {
-			// frontendURL is configured — validate redirect_uri matches its origin
+			// frontendURL is configured - validate redirect_uri matches its origin
 			parsedFrontend, fErr := url.Parse(h.frontendURL)
 			if fErr != nil || parsedRedirect.Scheme != parsedFrontend.Scheme || parsedRedirect.Host != parsedFrontend.Host {
-				// Origin mismatch — fall back to frontendURL
+				// Origin mismatch - fall back to frontendURL
 				redirectURI = h.frontendURL
 			}
 		} else if parsedRedirect.Hostname() != "localhost" {
-			// No frontendURL configured — only allow localhost
+			// No frontendURL configured - only allow localhost
 			redirectURI = ""
 		}
 	}

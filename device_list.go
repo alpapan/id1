@@ -67,7 +67,7 @@ func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 		keysDir := filepath.Join(dbpath, orcidId, "pub", "keys")
 		entries, err := os.ReadDir(keysDir)
 		if err != nil {
-			// No keys directory — return empty list
+			// No keys directory - return empty list
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(DeviceListResponse{Devices: []DeviceInfo{}})
 			return

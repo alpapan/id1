@@ -20,7 +20,7 @@ import (
 )
 
 const pendingKeyTTL = "3600" // 1 hour
-const pubKeyTTL = "604800"  // 7 days — refreshed on every login
+const pubKeyTTL = "604800"  // 7 days - refreshed on every login
 
 // RegisterBeginRequest is the JSON body for POST /auth/sovereign/register/begin.
 type RegisterBeginRequest struct {
@@ -239,7 +239,7 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Store device name (best-effort, no TTL — lives alongside the key)
+		// Store device name (best-effort, no TTL - lives alongside the key)
 		if req.DeviceName != "" {
 			CmdSet(KK(orcidId, "pub", "keys", req.DeviceId+".name"), map[string]string{"x-id": orcidId}, []byte(req.DeviceName)).Exec()
 		}

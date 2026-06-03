@@ -24,7 +24,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// DeriveNextcloudPassword — HMAC-SHA256 based deterministic password derivation.
+// DeriveNextcloudPassword - HMAC-SHA256 based deterministic password derivation.
 // ---------------------------------------------------------------------------
 
 func TestDeriveNextcloudPassword_Deterministic(t *testing.T) {
@@ -72,7 +72,7 @@ func TestDeriveNextcloudPassword_EmptyOrcid(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NextcloudClient type — stateless HTTP client for Nextcloud OCS API.
+// NextcloudClient type - stateless HTTP client for Nextcloud OCS API.
 // ---------------------------------------------------------------------------
 
 func TestNewNextcloudClient_ReadsEnv(t *testing.T) {
@@ -100,7 +100,7 @@ func TestNewNextcloudClient_MissingEnvReturnsZeros(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NextcloudClient.EnsureUserExists — idempotent OCS user-creation call.
+// NextcloudClient.EnsureUserExists - idempotent OCS user-creation call.
 // ---------------------------------------------------------------------------
 
 func TestNextcloudClient_EnsureUserExists_Created(t *testing.T) {
@@ -215,7 +215,7 @@ func TestNextcloudClient_EnsureUserExists_UnknownCodeFallsBackToGenericHint(t *t
 }
 
 // ---------------------------------------------------------------------------
-// NextcloudClient.MintAppToken — OCS getapppassword call as the user.
+// NextcloudClient.MintAppToken - OCS getapppassword call as the user.
 // ---------------------------------------------------------------------------
 
 func TestNextcloudClient_MintAppToken_Success(t *testing.T) {
@@ -263,7 +263,7 @@ func TestNextcloudClient_MintAppToken_OCSNon200(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// HandleNcToken — HTTP handler for GET /internal/nc-token?orcid=<X>.
+// HandleNcToken - HTTP handler for GET /internal/nc-token?orcid=<X>.
 // ---------------------------------------------------------------------------
 
 // fakeNextcloud starts an httptest.Server that handles the two OCS calls

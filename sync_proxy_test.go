@@ -153,12 +153,12 @@ func TestSyncProxyUpstreamUnavailable(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(proxy.URL, "http")
 	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
-		// Upgrade itself failed — also acceptable
+		// Upgrade itself failed - also acceptable
 		return
 	}
 	defer client.Close()
 
-	// Connection was upgraded but backend is down — next read should fail
+	// Connection was upgraded but backend is down - next read should fail
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, _, err = client.ReadMessage()
 	if err == nil {

@@ -82,7 +82,7 @@ func TestIdExistsMultiDevice(t *testing.T) {
 
 	orcid := "0000-0001-2345-6789"
 
-	// No keys registered — should be false
+	// No keys registered - should be false
 	if idExists(orcid) {
 		t.Errorf("idExists should return false when no keys exist")
 	}
@@ -93,7 +93,7 @@ func TestIdExistsMultiDevice(t *testing.T) {
 		t.Errorf("idExists should return true when a device key exists at pub/keys/device-1")
 	}
 
-	// Register a second device — still true
+	// Register a second device - still true
 	CmdSet(KK(orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-DATA-2")).Exec()
 	if !idExists(orcid) {
 		t.Errorf("idExists should return true with multiple device keys")
@@ -144,7 +144,7 @@ func TestIdExists_SingularPubKey(t *testing.T) {
 
 // TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap verifies that once
 // a service identity has bootstrapped at {id}/pub/key, a second anonymous
-// POST to the same path is rejected — preventing an attacker from overwriting
+// POST to the same path is rejected - preventing an attacker from overwriting
 // the service key and minting forged JWTs.
 func TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap(t *testing.T) {
 	setupAuthTest(t)
@@ -162,7 +162,7 @@ func TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Second anonymous POST — must now be rejected.
+	// Second anonymous POST - must now be rejected.
 	if auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{})) {
 		t.Error("anonymous overwrite should be rejected once service identity exists")
 	}

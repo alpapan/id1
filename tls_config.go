@@ -48,7 +48,7 @@ func BuildTLSConfig() (*tls.Config, error) {
 	if leCertFile != "" && leKeyFile != "" {
 		loaded, err := tls.LoadX509KeyPair(leCertFile, leKeyFile)
 		if err != nil {
-			// LE cert is optional — log and continue with default only.
+			// LE cert is optional - log and continue with default only.
 			fmt.Printf("id1: warning: failed to load LE cert, using default only: %v\n", err)
 		} else {
 			leCert = &loaded

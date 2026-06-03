@@ -84,7 +84,7 @@ func generateSecretWithSalt(id, salt string) string {
 // derives the daily-rotating HMAC secret. Returns an error if the random salt
 // cannot be generated or persisted; callers must propagate the error and must
 // not fall back to a zero-byte salt (which would make all affected users share
-// identical secrets — a critical security vulnerability).
+// identical secrets - a critical security vulnerability).
 func generateSecret(id string) (string, error) {
 	saltKey := KK(id, "priv", "salt")
 	saltBytes, err := CmdGet(saltKey).Exec()

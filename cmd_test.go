@@ -352,7 +352,7 @@ func TestMoveRejectsCrossUserDestination(t *testing.T) {
 		t.Fatalf("Setup failed: %v", err)
 	}
 
-	// Attempt: move alice's file to bob's directory — must be rejected
+	// Attempt: move alice's file to bob's directory - must be rejected
 	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": "alice"}, []byte("bob/priv/stolen"))
 	_, err = cmd.Exec()
 	if err == nil {

@@ -128,7 +128,7 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Signature valid — refresh TTL only on the multi-device path. The
+		// Signature valid - refresh TTL only on the multi-device path. The
 		// singular service-identity path has no TTL by design (it's the
 		// anonymous-bootstrap path; expiring it would silently lock out SLURM
 		// services between active periods).

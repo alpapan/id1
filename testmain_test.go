@@ -74,7 +74,7 @@ func parseEnvFile(path string) {
 			(value[0] == '\'' && value[len(value)-1] == '\'')) {
 			value = value[1 : len(value)-1]
 		}
-		// Only set if not already present — explicit env overrides take precedence
+		// Only set if not already present - explicit env overrides take precedence
 		if _, exists := os.LookupEnv(key); !exists {
 			os.Setenv(key, value)
 		}
