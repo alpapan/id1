@@ -46,6 +46,82 @@ func setupTestKVStore(t *testing.T) KeyValueStore {
 	return ID1KeyValueStore{}
 }
 
+func TestSignJWT_SetsAuthTimeClaim(t *testing.T) {
+	kv := setupTestKVStore(t)
+	kid, priv, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	before := time.Now().Add(-2 * time.Second)
+	tokenStr, err := signJWT("0000-0001-2345-6789", priv, kid)
+	require.NoError(t, err)
+	after := time.Now().Add(2 * time.Second)
+
+	var claims id1TokenClaims
+	_, _, err = new(jwt.Parser).ParseUnverified(tokenStr, &claims)
+	require.NoError(t, err)
+	require.NotNil(t, claims.AuthTime, "auth_time claim missing")
+	assert.False(t, claims.AuthTime.Time.Before(before) || claims.AuthTime.Time.After(after),
+		"auth_time %v not ~now", claims.AuthTime.Time)
+}
+
+// End-to-end: a real issuer (HandleTestUser) must produce auth_time, proving no
+// issuer constructs claims manually and bypasses signJWT.
+func TestHandleTestUser_StampsAuthTime(t *testing.T) {
+	t.Setenv("ENV", "test")
+	kv := setupTestKVStore(t)
+	req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0001-2345-6789", nil)
+	rec := httptest.NewRecorder()
+	HandleTestUser(kv)(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var body struct {
+		JWT string `json:"jwt"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	var claims id1TokenClaims
+	_, _, err := new(jwt.Parser).ParseUnverified(body.JWT, &claims)
+	require.NoError(t, err)
+	require.NotNil(t, claims.AuthTime, "issuer did not stamp auth_time")
+}
+
+func TestValidateRS256JWTID1Claims_ReturnsAuthTime(t *testing.T) {
+	kv := setupTestKVStore(t)
+	kid, priv, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	authTime := time.Now().Add(-3 * time.Hour)
+	tokenStr, err := signJWTWithAuthTime("0000-0001-2345-6789", priv, kid, authTime)
+	require.NoError(t, err)
+
+	claims, err := ValidateRS256JWTID1Claims(tokenStr, kv)
+	require.NoError(t, err)
+	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
+	require.NotNil(t, claims.AuthTime)
+	assert.LessOrEqual(t, claims.AuthTime.Time.Sub(authTime).Abs(), time.Second, "auth_time not carried")
+}
+
+func TestValidateRS256JWTID1Claims_RejectsExpired(t *testing.T) {
+	kv := setupTestKVStore(t)
+	kid, priv, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	claims := id1TokenClaims{
+		BootID:   "x",
+		AuthTime: jwt.NewNumericDate(time.Now().Add(-30 * time.Minute)),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: jwtIssuer, Subject: "0000-0001-2345-6789",
+			Audience:  jwt.ClaimStrings{jwtAudience},
+			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
+		},
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = kid
+	expired, err := tok.SignedString(priv)
+	require.NoError(t, err)
+
+	_, err = ValidateRS256JWTID1Claims(expired, kv)
+	assert.Error(t, err, "expected expired token to be rejected")
+}
+
 func TestGetOrCreateSigningKey_CreatesKeyOnFirstCall(t *testing.T) {
 	kv := setupTestKVStore(t)
 	keyID, privKey, err := GetOrCreateSigningKey(kv)

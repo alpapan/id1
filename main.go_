@@ -175,6 +175,12 @@ func main() {
 	http.HandleFunc("/auth/sovereign/token", id1.HandleSovereignToken(id1KVStore))
 	fmt.Println("Registered /auth/sovereign/token sovereign key endpoint")
 
+	// Token-for-token refresh: re-mints a fresh 1h JWT from a still-valid one,
+	// capped at a 7-day session ceiling (auth_time). Not env-gated - production
+	// sessions renew through here. Reached publicly via Traefik's /auth/* prefix.
+	http.HandleFunc("/auth/refresh", id1.HandleRefresh(id1KVStore))
+	fmt.Println("Registered /auth/refresh token-renewal endpoint")
+
 	// Two-phase sovereign key registration
 	http.HandleFunc("/auth/sovereign/register/begin", id1.HandleRegisterBegin(id1KVStore))
 	http.HandleFunc("/auth/sovereign/register/commit", id1.HandleRegisterCommit(id1KVStore))

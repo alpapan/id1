@@ -363,7 +363,8 @@ func parsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 // on-wire JSON keeps the standard claim encodings (aud as array, etc.)
 // untouched and only adds one extra key.
 type id1TokenClaims struct {
-	BootID string `json:"id1_boot_id"`
+	BootID   string           `json:"id1_boot_id"`
+	AuthTime *jwt.NumericDate `json:"auth_time,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -374,6 +375,13 @@ type id1TokenClaims struct {
 // Service identities (sub="service") receive a 24-hour TTL to support
 // long-running batch jobs; ORCID user JWTs (any other subject) get 1 hour.
 func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
+	return signJWTWithAuthTime(orcidID, privateKey, keyID, time.Now())
+}
+
+// signJWTWithAuthTime issues a token carrying an explicit auth_time. The refresh
+// endpoint passes the original auth_time forward so the 7-day session ceiling is
+// measured from the real sovereign-key authentication, not from each renewal.
+func signJWTWithAuthTime(orcidID string, privateKey *rsa.PrivateKey, keyID string, authTime time.Time) (string, error) {
 	now := time.Now()
 
 	// Branch on subject: service identities get 24-hour TTL, ORCID users get 1 hour
@@ -383,7 +391,8 @@ func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, 
 	}
 
 	claims := id1TokenClaims{
-		BootID: bootID,
+		BootID:   bootID,
+		AuthTime: jwt.NewNumericDate(authTime),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    jwtIssuer,
 			Subject:   orcidID,
@@ -409,46 +418,77 @@ func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, 
 //  2. In-memory cache (path-3 fallback when KV was unavailable)
 //  3. KV store pubKeyPath (legacy)
 func ValidateRS256JWT(tokenStr string, kvStore KeyValueStore) (jwt.RegisteredClaims, error) {
-	var rsaPubKey *rsa.PublicKey
+	rsaPubKey, err := resolveSigningPublicKey(kvStore)
+	if err != nil {
+		return jwt.RegisteredClaims{}, err
+	}
 
+	var claims jwt.RegisteredClaims
+	token, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return rsaPubKey, nil
+	})
+	if err != nil {
+		return claims, fmt.Errorf("JWT validation failed: %w", err)
+	}
+	if !token.Valid {
+		return claims, fmt.Errorf("JWT is not valid")
+	}
+	return claims, nil
+}
+
+// resolveSigningPublicKey returns id1's current RSA public key from (in priority)
+// the ID1_JWT_PRIVATE_KEY env var, the in-memory cache, or the legacy KV store.
+func resolveSigningPublicKey(kvStore KeyValueStore) (*rsa.PublicKey, error) {
 	// 1. Env var (Shape B primary)
 	if envPEM := os.Getenv("ID1_JWT_PRIVATE_KEY"); envPEM != "" {
 		if privKey, err := parsePrivateKey([]byte(envPEM)); err == nil {
-			rsaPubKey = &privKey.PublicKey
+			return &privKey.PublicKey, nil
 		}
 	}
 
 	// 2. In-memory cache
-	if rsaPubKey == nil {
-		_memKeyMu.Lock()
-		if _memPrivKey != nil {
-			rsaPubKey = &_memPrivKey.PublicKey
-		}
+	_memKeyMu.Lock()
+	if _memPrivKey != nil {
+		pk := &_memPrivKey.PublicKey
 		_memKeyMu.Unlock()
+		return pk, nil
 	}
+	_memKeyMu.Unlock()
 
 	// 3. Legacy KV fallback
-	if rsaPubKey == nil {
-		pubPEM, err := kvStore.CmdGet(pubKeyPath)
-		if err != nil || len(pubPEM) == 0 {
-			return jwt.RegisteredClaims{}, fmt.Errorf("no signing public key found")
-		}
-		block, _ := pem.Decode(pubPEM)
-		if block == nil {
-			return jwt.RegisteredClaims{}, fmt.Errorf("failed to decode public key PEM")
-		}
-		pubKeyIface, err := x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
-			return jwt.RegisteredClaims{}, fmt.Errorf("failed to parse public key: %w", err)
-		}
-		var ok bool
-		rsaPubKey, ok = pubKeyIface.(*rsa.PublicKey)
-		if !ok {
-			return jwt.RegisteredClaims{}, fmt.Errorf("public key is not RSA")
-		}
+	pubPEM, err := kvStore.CmdGet(pubKeyPath)
+	if err != nil || len(pubPEM) == 0 {
+		return nil, fmt.Errorf("no signing public key found")
+	}
+	block, _ := pem.Decode(pubPEM)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode public key PEM")
+	}
+	pubKeyIface, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+	rsaPubKey, ok := pubKeyIface.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("public key is not RSA")
+	}
+	return rsaPubKey, nil
+}
+
+// ValidateRS256JWTID1Claims verifies signature + standard claims (incl. exp) and
+// returns the full id1 claim set, including auth_time. golang-jwt/jwt/v5 rejects
+// expired tokens by default. Claims unmarshalling is strict: a missing or
+// non-numeric auth_time deserialises to nil (the refresh handler rejects nil).
+func ValidateRS256JWTID1Claims(tokenStr string, kvStore KeyValueStore) (id1TokenClaims, error) {
+	rsaPubKey, err := resolveSigningPublicKey(kvStore)
+	if err != nil {
+		return id1TokenClaims{}, err
 	}
 
-	var claims jwt.RegisteredClaims
+	var claims id1TokenClaims
 	token, err := jwt.ParseWithClaims(tokenStr, &claims, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
