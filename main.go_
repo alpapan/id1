@@ -153,6 +153,8 @@ func main() {
 	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
 
 	// Nextcloud app-token minting - internal endpoint, requires X-ID1-Internal-Secret.
+	// C1: the bearer is ID1_INTERNAL_SECRET, kept distinct from the /data/* HMAC
+	// secret ID1_SHARED_SECRET so a leaked HMAC secret cannot mint NC tokens.
 	// NC_DERIVATION_KEY is stored as a hex string (openssl rand -hex 32); we hex-decode
 	// here so the raw 32 bytes match what the bash rotation script computes via
 	// `openssl dgst -macopt hexkey:$NEW_KEY` (which hex-decodes internally). A mismatch
@@ -162,7 +164,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("NC_DERIVATION_KEY must be hex-encoded: %v", err)
 		}
-		internalSecret := os.Getenv("ID1_SHARED_SECRET")
+		internalSecret := os.Getenv("ID1_INTERNAL_SECRET")
 		ncClient := id1.NewNextcloudClient()
 		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret))
 		fmt.Println("Registered /internal/nc-token endpoint")
