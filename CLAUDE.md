@@ -10,7 +10,7 @@ upstream API and command language.
 
 ## Monorepo Context
 
-This repo is vendored as `apps/backend/containers/id1` inside the Curatorium monorepo
+This repo is vendored as `apps/id1` (a top-level submodule) inside the Curatorium monorepo
 (typically `~/software/curatorium`). Inside Curatorium, id1 plays one specific role:
 
 **id1 is the Curatorium auth router, the only publicly exposed service.**
@@ -78,7 +78,7 @@ and Traefik passthrough wiring.
 ## Tests
 
 ```bash
-cd apps/backend/containers/id1
+cd apps/id1
 go test ./... -v
 ```
 
@@ -94,6 +94,6 @@ disconnect. The `/sync` proxy uses `gorilla/websocket` with a `pumpFrames` gorou
 
 ## Commit submodule changes from here
 
-`cd apps/backend/containers/id1 && git add <file> && git commit -m "feat(id1): …"`
+`cd apps/id1 && git add <file> && git commit -m "feat(id1): …"`
 The monorepo pins a specific commit of this submodule; bumping the pin requires a
-separate commit in the parent `apps/backend` submodule, and another in the monorepo root.
+separate commit in the Curatorium monorepo root.
