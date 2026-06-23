@@ -1,0 +1,38 @@
+# Enforce LF line endings repo-wide (repo blobs AND working tree) so they do not
+# depend on each developer's core.autocrlf. Git auto-detects binary vs text.
+* text=auto eol=lf
+
+# Windows-only scripts that require CRLF.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Explicit binary guards (never apply eol filters to these).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.bz2 binary
+*.7z binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.node binary
+*.wasm binary
+*.dmg binary
+*.AppImage binary
+*.bin binary
+*.bam binary
+*.bai binary
+*.cram binary
+*.crai binary
