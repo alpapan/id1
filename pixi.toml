@@ -1,0 +1,18 @@
+[workspace]
+name = "curatorium-id1"
+version = "0.0.1"
+description = "id1 auth router (Go) - pixi task runner for test + lint (host go toolchain)"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+# id1 is a pure-Go module (go.mod pins go 1.25). Like apollo's pixi tasks use the
+# host's nvm-provided Node, these tasks use the host `go` on PATH; go's
+# GOTOOLCHAIN=auto (the default) honours the go.mod-pinned version, fetching that
+# toolchain only when the host go is older. No conda `go` dependency - the env
+# stays empty and fast: this manifest is a task runner, not a build environment.
+[tasks]
+# `pixi run -m apps/id1/pixi.toml test`
+test = "go test ./..."
+
+# `pixi run -m apps/id1/pixi.toml lint`  (mirrors bin/lint.sh's id1 go-vet step)
+lint = "go vet ./..."
