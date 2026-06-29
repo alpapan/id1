@@ -60,20 +60,66 @@ func newTestOrcidHandler(tokenServerURL, frontendURL string) *OrcidHandler {
 		},
 		frontendURL: frontendURL,
 		kvStore:     mockKV,
-		stateStore:  make(map[string]stateEntry),
 		stateTTL:    5 * time.Minute,
 	}
 }
 
-// newTestOrcidHandlerWithState creates a test OrcidHandler with pre-populated state entries.
-// This avoids directly manipulating internal state fields in individual tests.
-func newTestOrcidHandlerWithState(tokenServerURL, frontendURL string, states map[string]stateEntry) *OrcidHandler {
-	h := newTestOrcidHandler(tokenServerURL, frontendURL)
-	h.stateMu.Lock()
-	for key, entry := range states {
-		h.stateStore[key] = entry
+// seedState persists a CSRF state entry directly into the id1 KV store, mirroring
+// what HandleBegin does. The caller MUST have pointed dbpath at a writable temp dir
+// (e.g. via newTestOrcidHandlerWithState, or `dbpath = t.TempDir()`) first.
+func seedState(t *testing.T, key string, entry stateEntry) {
+	t.Helper()
+	wire, err := json.Marshal(stateEntryWire{
+		Created:     entry.created,
+		Verifier:    entry.verifier,
+		RedirectURI: entry.redirectURI,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal seed state %q: %v", key, err)
 	}
-	h.stateMu.Unlock()
+	if _, err := CmdSet(KK(stateKeyPrefix, key), map[string]string{"x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+		t.Fatalf("failed to seed state %q: %v", key, err)
+	}
+}
+
+// readState reads a CSRF state entry back from the id1 KV store. ok is false when
+// the key is absent (consumed, expired-and-swept, or never written).
+func readState(t *testing.T, key string) (stateEntry, bool) {
+	t.Helper()
+	data, err := CmdGet(KK(stateKeyPrefix, key)).Exec()
+	if err != nil || len(data) == 0 {
+		return stateEntry{}, false
+	}
+	var wire stateEntryWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatalf("failed to unmarshal state %q: %v", key, err)
+	}
+	return stateEntry{created: wire.Created, verifier: wire.Verifier, redirectURI: wire.RedirectURI}, true
+}
+
+// stateFromRedirect extracts the `state` query parameter from a HandleBegin 302
+// Location header (URL-decoding the value, which may carry base64 `=` padding).
+func stateFromRedirect(t *testing.T, location string) string {
+	t.Helper()
+	u, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("failed to parse redirect Location %q: %v", location, err)
+	}
+	return u.Query().Get("state")
+}
+
+// newTestOrcidHandlerWithState creates a test OrcidHandler and seeds the given CSRF
+// state entries into a fresh temp-dir KV store (dbpath). It takes *testing.T so it
+// can point dbpath at t.TempDir() and restore it on cleanup.
+func newTestOrcidHandlerWithState(t *testing.T, tokenServerURL, frontendURL string, states map[string]stateEntry) *OrcidHandler {
+	t.Helper()
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+	h := newTestOrcidHandler(tokenServerURL, frontendURL)
+	for key, entry := range states {
+		seedState(t, key, entry)
+	}
 	return h
 }
 
@@ -83,7 +129,7 @@ func TestOrcidStateExpiry(t *testing.T) {
 	states := map[string]stateEntry{
 		"expired_state": {created: time.Now().Add(-6 * time.Minute)},
 	}
-	h := newTestOrcidHandlerWithState("", getFrontendURL(), states)
+	h := newTestOrcidHandlerWithState(t, "", getFrontendURL(), states)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=expired_state&code=any_code", nil)
 	rec := httptest.NewRecorder()
@@ -104,7 +150,7 @@ func TestOrcidStatePrune(t *testing.T) {
 		"stale_state": {created: time.Now().Add(-7 * time.Minute)},
 		"fresh_state": {created: time.Now().Add(-1 * time.Minute)},
 	}
-	h := newTestOrcidHandlerWithState("", getFrontendURL(), states)
+	h := newTestOrcidHandlerWithState(t, "", getFrontendURL(), states)
 
 	// HandleBegin should redirect successfully despite old state entries.
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid", nil)
@@ -122,6 +168,70 @@ func TestOrcidStatePrune(t *testing.T) {
 	}
 	if !strings.Contains(location, "state=") {
 		t.Error("expected state parameter in redirect URL")
+	}
+}
+
+// TestOrcidStateSurvivesPodRestart verifies that a CSRF state created by one
+// OrcidHandler instance can be validated by a DIFFERENT instance that shares the
+// same id1 KV store (dbpath) - i.e. an in-flight ORCID login survives an id1 pod
+// restart. The original in-memory-map implementation keeps state only in the
+// per-instance map, so the second handler (fresh map) returns 400 "invalid
+// state"; persisting state in the KV store makes the second handler complete the
+// login with a 302 + token.
+func TestOrcidStateSurvivesPodRestart(t *testing.T) {
+	// Shared id1 KV store on a temp dbpath; it outlives a simulated pod restart.
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+	kv := ID1KeyValueStore{}
+	if _, _, err := GetOrCreateSigningKey(kv); err != nil {
+		t.Fatalf("failed to initialize signing key: %v", err)
+	}
+
+	// Mock ORCID token endpoint returning a valid token with an orcid field.
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"access_token": "test-access-token",
+			"token_type":   "bearer",
+			"orcid":        "0000-0002-1825-0097",
+			"scope":        "/authenticate"
+		}`)
+	}))
+	defer mockServer.Close()
+
+	// Handler A begins the flow and writes the CSRF state.
+	handlerA := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
+	beginRec := httptest.NewRecorder()
+	handlerA.HandleBegin(beginRec, httptest.NewRequest(http.MethodGet, "/auth/orcid", nil))
+	if beginRec.Code != http.StatusFound {
+		t.Fatalf("HandleBegin: expected 302, got %d: %s", beginRec.Code, beginRec.Body.String())
+	}
+	loc, err := url.Parse(beginRec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("failed to parse HandleBegin redirect Location: %v", err)
+	}
+	state := loc.Query().Get("state")
+	if state == "" {
+		t.Fatal("HandleBegin redirect carried no state parameter")
+	}
+
+	// Simulated pod restart: a SEPARATE handler instance (fresh in-memory map),
+	// same KV store. It must still recognise the in-flight state.
+	handlerB := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
+	cbReq := httptest.NewRequest(http.MethodGet,
+		"/auth/orcid/callback?state="+url.QueryEscape(state)+"&code=test_code", nil)
+	cbRec := httptest.NewRecorder()
+	handlerB.HandleCallback(cbRec, cbReq)
+
+	// Load-bearing: the post-restart handler must COMPLETE the login (302 + token),
+	// not reject it with 400 "invalid state".
+	if cbRec.Code != http.StatusFound {
+		t.Fatalf("restart-survival: expected 302 from the post-restart handler, got %d: %s",
+			cbRec.Code, cbRec.Body.String())
+	}
+	if !strings.Contains(cbRec.Header().Get("Location"), "token=") {
+		t.Errorf("expected token= in redirect after restart, got: %s", cbRec.Header().Get("Location"))
 	}
 }
 
@@ -148,7 +258,7 @@ func TestOrcidCallback(t *testing.T) {
 	states := map[string]stateEntry{
 		"valid_state": {created: time.Now(), verifier: "test_verifier_12345"},
 	}
-	h := newTestOrcidHandlerWithState(mockServer.URL, getFrontendURL(), states)
+	h := newTestOrcidHandlerWithState(t, mockServer.URL, getFrontendURL(), states)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
@@ -194,7 +304,7 @@ func TestOrcidCallbackMissingCode(t *testing.T) {
 	states := map[string]stateEntry{
 		"valid_state": {created: time.Now()},
 	}
-	h := newTestOrcidHandlerWithState("", getFrontendURL(), states)
+	h := newTestOrcidHandlerWithState(t, "", getFrontendURL(), states)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state", nil)
 	rec := httptest.NewRecorder()
@@ -250,7 +360,7 @@ func TestOrcidCallbackInvalidFormat(t *testing.T) {
 	states := map[string]stateEntry{
 		"valid_state": {created: time.Now(), verifier: "test_verifier_12345"},
 	}
-	h := newTestOrcidHandlerWithState(mockServer.URL, getFrontendURL(), states)
+	h := newTestOrcidHandlerWithState(t, mockServer.URL, getFrontendURL(), states)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
@@ -285,7 +395,7 @@ func TestOrcidCallbackMissingOrcidField(t *testing.T) {
 	states := map[string]stateEntry{
 		"valid_state": {created: time.Now(), verifier: "test_verifier_12345"},
 	}
-	h := newTestOrcidHandlerWithState(mockServer.URL, getFrontendURL(), states)
+	h := newTestOrcidHandlerWithState(t, mockServer.URL, getFrontendURL(), states)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
@@ -374,7 +484,6 @@ func newTestOrcidHandlerWithKVStore(
 		},
 		frontendURL: frontendURL,
 		kvStore:     kvStore,
-		stateStore:  make(map[string]stateEntry),
 		stateTTL:    5 * time.Minute,
 	}
 }
@@ -423,14 +532,7 @@ func TestOrcidCallbackIssuingJWT(t *testing.T) {
 	h := newTestOrcidHandlerWithKVStore(mockOrcidTokenServer.URL, "http://localhost:19001", kv)
 
 	// Setup: Create valid state entry for this request
-	states := map[string]stateEntry{
-		"valid_state": {created: time.Now()},
-	}
-	h.stateMu.Lock()
-	for k, v := range states {
-		h.stateStore[k] = v
-	}
-	h.stateMu.Unlock()
+	seedState(t, "valid_state", stateEntry{created: time.Now()})
 
 	// Execute: Simulate ORCID callback with valid state and authorization code
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
@@ -557,14 +659,7 @@ func TestOrcidCallbackIssuingJWTWithoutFrontendURL(t *testing.T) {
 	// Create handler with NO frontend URL (empty string)
 	h := newTestOrcidHandlerWithKVStore(mockServer.URL, "", kv)
 
-	states := map[string]stateEntry{
-		"valid_state": {created: time.Now()},
-	}
-	h.stateMu.Lock()
-	for k, v := range states {
-		h.stateStore[k] = v
-	}
-	h.stateMu.Unlock()
+	seedState(t, "valid_state", stateEntry{created: time.Now()})
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
@@ -641,9 +736,7 @@ func TestOrcidCallbackJWTKeyIDMatches(t *testing.T) {
 	defer mockServer.Close()
 
 	h := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
-	h.stateMu.Lock()
-	h.stateStore["state1"] = stateEntry{created: time.Now()}
-	h.stateMu.Unlock()
+	seedState(t, "state1", stateEntry{created: time.Now()})
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code1", nil)
 	rec := httptest.NewRecorder()
@@ -720,6 +813,11 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 	t.Setenv("ID1_JWT_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xHn/ygWep4T\n-----END RSA PRIVATE KEY-----\n")
 	t.Setenv("ID1_JWT_KEY_ID", "") // empty → GetOrCreateSigningKey returns error
 
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+	seedState(t, "state1", stateEntry{created: time.Now()})
+
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth/token" {
 			w.Header().Set("Content-Type", "application/json")
@@ -744,7 +842,6 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 		},
 		frontendURL: "http://localhost:19001",
 		kvStore:     &MockFailingKeyValueStore{failOnGet: true, failOnSet: true},
-		stateStore:  map[string]stateEntry{"state1": {created: time.Now()}},
 		stateTTL:    5 * time.Minute,
 	}
 
@@ -796,6 +893,11 @@ func TestOrcidCallbackSignJWTFailure(t *testing.T) {
 	t.Setenv("ID1_JWT_PRIVATE_KEY", "not-a-valid-pem-block")
 	t.Setenv("ID1_JWT_KEY_ID", "some-kid")
 
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+	seedState(t, "state1", stateEntry{created: time.Now()})
+
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth/token" {
 			w.Header().Set("Content-Type", "application/json")
@@ -820,7 +922,6 @@ func TestOrcidCallbackSignJWTFailure(t *testing.T) {
 		},
 		frontendURL: "http://localhost:19001",
 		kvStore:     &MockCorruptKeyValueStore{},
-		stateStore:  map[string]stateEntry{"state1": {created: time.Now()}},
 		stateTTL:    5 * time.Minute,
 	}
 
@@ -864,9 +965,7 @@ func TestOrcidCallbackValidationBeforeJWT(t *testing.T) {
 	defer mockServer.Close()
 
 	h := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
-	h.stateMu.Lock()
-	h.stateStore["state1"] = stateEntry{created: time.Now()}
-	h.stateMu.Unlock()
+	seedState(t, "state1", stateEntry{created: time.Now()})
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code", nil)
 	rec := httptest.NewRecorder()
@@ -887,6 +986,9 @@ func TestOrcidCallbackValidationBeforeJWT(t *testing.T) {
 // Test: HandleBegin stores redirect_uri from query param.
 // Uses a test-only URI (no real port) since frontendURL validation is disabled (empty frontendURL).
 func TestHandleBegin_StoresRedirectURI(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
 	h := newTestOrcidHandler("", "")
 	testRedirect := getFrontendURL() + "/auth/callback"
 
@@ -899,20 +1001,22 @@ func TestHandleBegin_StoresRedirectURI(t *testing.T) {
 		t.Fatalf("expected 302, got %d", w.Code)
 	}
 
-	// Verify state entry stores redirect_uri
-	h.stateMu.Lock()
-	defer h.stateMu.Unlock()
-	for _, entry := range h.stateStore {
-		if entry.redirectURI != testRedirect {
-			t.Errorf("expected redirectURI %q, got %q", testRedirect, entry.redirectURI)
-		}
-		return // only one entry
+	// Verify the persisted state entry stores redirect_uri.
+	state := stateFromRedirect(t, w.Header().Get("Location"))
+	entry, ok := readState(t, state)
+	if !ok {
+		t.Fatal("no state entry found in KV store")
 	}
-	t.Fatal("no state entry found")
+	if entry.redirectURI != testRedirect {
+		t.Errorf("expected redirectURI %q, got %q", testRedirect, entry.redirectURI)
+	}
 }
 
 // Test: HandleBegin uses frontendURL as fallback when no redirect_uri
 func TestHandleBegin_FallbackToFrontendURL(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
 	frontendURL := getFrontendURL()
 	h := newTestOrcidHandler("", frontendURL)
 
@@ -924,15 +1028,14 @@ func TestHandleBegin_FallbackToFrontendURL(t *testing.T) {
 		t.Fatalf("expected 302, got %d", w.Code)
 	}
 
-	h.stateMu.Lock()
-	defer h.stateMu.Unlock()
-	for _, entry := range h.stateStore {
-		if entry.redirectURI != frontendURL {
-			t.Errorf("expected redirectURI %q, got %q", frontendURL, entry.redirectURI)
-		}
-		return
+	state := stateFromRedirect(t, w.Header().Get("Location"))
+	entry, ok := readState(t, state)
+	if !ok {
+		t.Fatal("no state entry found in KV store")
 	}
-	t.Fatal("no state entry found")
+	if entry.redirectURI != frontendURL {
+		t.Errorf("expected redirectURI %q, got %q", frontendURL, entry.redirectURI)
+	}
 }
 
 // Test: HandleCallback redirects to stored redirect_uri with token
@@ -951,18 +1054,19 @@ func TestHandleCallback_RedirectsToStoredRedirectURI(t *testing.T) {
 	}))
 	defer tokenServer.Close()
 
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
 	h := newTestOrcidHandler(tokenServer.URL, defaultFrontendURL)
 
 	// Pre-populate state with custom redirectURI
 	state := "test-state-redirect"
 	verifier := "test-verifier"
-	h.stateMu.Lock()
-	h.stateStore[state] = stateEntry{
+	seedState(t, state, stateEntry{
 		created:     time.Now(),
 		verifier:    verifier,
 		redirectURI: customRedirect,
-	}
-	h.stateMu.Unlock()
+	})
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/auth/orcid/callback?code=test-code&state="+state, nil)
@@ -985,6 +1089,9 @@ func TestHandleCallback_RedirectsToStoredRedirectURI(t *testing.T) {
 
 // Test: HandleBegin rejects redirect_uri that doesn't match allowed origins
 func TestHandleBegin_RejectsExternalRedirectURI(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
 	frontendURL := getFrontendURL()
 	h := newTestOrcidHandler("", frontendURL)
 
@@ -994,34 +1101,21 @@ func TestHandleBegin_RejectsExternalRedirectURI(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.HandleBegin(w, req)
 
-	// Handler must either: (a) return 400 Bad Request, or (b) fall back to frontendURL.
-	// In both cases the evil URL must NOT be the stored redirectURI.
-	if w.Code == http.StatusBadRequest {
-		// Case (a): rejected outright - no state entry should exist.
-		h.stateMu.Lock()
-		defer h.stateMu.Unlock()
-		if len(h.stateStore) != 0 {
-			t.Error("SECURITY: stateStore must be empty when request is rejected with 400")
-		}
-		return
-	}
+	// HandleBegin sanitizes a mismatched redirect_uri to frontendURL and still 302s;
+	// the evil URL must NEVER be the persisted redirectURI.
 	if w.Code != http.StatusFound {
-		t.Fatalf("expected 302 (fallback) or 400 (reject), got %d", w.Code)
+		t.Fatalf("expected 302 (fallback) for external redirect_uri, got %d", w.Code)
 	}
-	// Case (b): fallback - state entry must exist and redirect to frontendURL, NOT the evil URL.
-	h.stateMu.Lock()
-	defer h.stateMu.Unlock()
-	if len(h.stateStore) == 0 {
-		t.Fatal("SECURITY: stateStore empty but handler returned 302 - no state to validate")
+	state := stateFromRedirect(t, w.Header().Get("Location"))
+	entry, ok := readState(t, state)
+	if !ok {
+		t.Fatal("SECURITY: handler returned 302 but no state persisted - nothing to validate")
 	}
-	for _, entry := range h.stateStore {
-		if entry.redirectURI == "https://evil.example.com/steal" {
-			t.Error("SECURITY: external redirect_uri stored verbatim - open redirect vulnerability")
-		}
-		if entry.redirectURI != frontendURL && entry.redirectURI != "" {
-			t.Errorf("SECURITY: expected fallback to %q or empty, got %q", frontendURL, entry.redirectURI)
-		}
-		return
+	if entry.redirectURI == "https://evil.example.com/steal" {
+		t.Error("SECURITY: external redirect_uri stored verbatim - open redirect vulnerability")
+	}
+	if entry.redirectURI != frontendURL && entry.redirectURI != "" {
+		t.Errorf("SECURITY: expected fallback to %q or empty, got %q", frontendURL, entry.redirectURI)
 	}
 }
 
@@ -1031,6 +1125,9 @@ func TestHandleBegin_RejectsExternalRedirectURI(t *testing.T) {
 // If the code naively uses strings.HasPrefix, this bypass works.
 // This test ensures that proper URL parsing prevents this attack.
 func TestHandleBegin_RejectsSubdomainPrefixBypass(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
 	// Use a realistic frontend URL for production-like testing
 	frontendURL := "https://app.example.com"
 	h := newTestOrcidHandler("", frontendURL)
@@ -1048,20 +1145,178 @@ func TestHandleBegin_RejectsSubdomainPrefixBypass(t *testing.T) {
 		t.Fatalf("expected 302, got %d", w.Code)
 	}
 
-	// Verify the stored redirectURI is NOT the attacker's URL
-	h.stateMu.Lock()
-	defer h.stateMu.Unlock()
-	if len(h.stateStore) == 0 {
-		t.Fatal("no state entry found")
+	// Verify the persisted redirectURI is NOT the attacker's URL.
+	state := stateFromRedirect(t, w.Header().Get("Location"))
+	entry, ok := readState(t, state)
+	if !ok {
+		t.Fatal("no state entry found in KV store")
 	}
-	for _, entry := range h.stateStore {
-		if entry.redirectURI == attackerURL {
-			t.Error("SECURITY: subdomain-prefix bypass succeeded - attacker URL was stored")
-		}
-		if entry.redirectURI != frontendURL {
-			t.Errorf("SECURITY: expected fallback to %q, got %q", frontendURL, entry.redirectURI)
-		}
-		return
+	if entry.redirectURI == attackerURL {
+		t.Error("SECURITY: subdomain-prefix bypass succeeded - attacker URL was stored")
+	}
+	if entry.redirectURI != frontendURL {
+		t.Errorf("SECURITY: expected fallback to %q, got %q", frontendURL, entry.redirectURI)
+	}
+}
+
+// TestOrcidStateSingleUse verifies that a successful callback consumes the CSRF
+// state: the KV key is deleted and a replay of the same state is rejected.
+func TestOrcidStateSingleUse(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+	kv := ID1KeyValueStore{}
+	if _, _, err := GetOrCreateSigningKey(kv); err != nil {
+		t.Fatalf("failed to initialize signing key: %v", err)
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"t","token_type":"bearer","orcid":"0000-0002-1825-0097","scope":"/authenticate"}`)
+	}))
+	defer mockServer.Close()
+
+	h := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
+	seedState(t, "single_use_state", stateEntry{created: time.Now(), verifier: "v"})
+
+	// First callback succeeds and must consume the state.
+	req1 := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=single_use_state&code=c", nil)
+	rec1 := httptest.NewRecorder()
+	h.HandleCallback(rec1, req1)
+	if rec1.Code != http.StatusFound {
+		t.Fatalf("first callback: expected 302, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	// The state key must be gone from the KV store.
+	if _, ok := readState(t, "single_use_state"); ok {
+		t.Error("state key still present after successful callback - not single-use")
+	}
+
+	// A replay with the same (now-consumed) state must be rejected.
+	req2 := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=single_use_state&code=c", nil)
+	rec2 := httptest.NewRecorder()
+	h.HandleCallback(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("replay of consumed state: expected 400, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// TestOrcidStateGarbageCollectedByDotAfter verifies the TTL-scheduled delete is
+// authorized (correct x-id) and that dotAfter sweeps an expired state off disk. A
+// wrong x-id would leave the key undeleted, failing this test.
+func TestOrcidStateGarbageCollectedByDotAfter(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	// Seed a state with a 1-second TTL via the same path HandleBegin uses.
+	wire, err := json.Marshal(stateEntryWire{Created: time.Now(), Verifier: "v"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, err := CmdSet(KK(stateKeyPrefix, "gc_state"), map[string]string{"ttl": "1", "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+		t.Fatalf("seed with ttl: %v", err)
+	}
+	if _, ok := readState(t, "gc_state"); !ok {
+		t.Fatal("state should be present immediately after seeding")
+	}
+
+	// ttdMs = now + 1000 (cmd_set.go); dotAfter only fires once now > ttdMs.
+	time.Sleep(1100 * time.Millisecond)
+	dotAfter(dbpath)
+
+	if _, ok := readState(t, "gc_state"); ok {
+		t.Error("expired state was not garbage-collected by dotAfter (check x-id authorization)")
+	}
+}
+
+// TestOrcidStateSetErrorReturns500 verifies HandleBegin returns 500 when the KV
+// Set fails. State now uses package-level CmdSet (not the mockable kvStore), so a
+// read-only dbpath is the way to exercise this error path.
+func TestOrcidStateSetErrorReturns500(t *testing.T) {
+	originalDbpath := dbpath
+	roDir := t.TempDir()
+	if err := os.Chmod(roDir, 0o500); err != nil {
+		t.Skipf("cannot chmod temp dir read-only: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(roDir, 0o700) // restore so TempDir cleanup can remove it
+		dbpath = originalDbpath
+	})
+	// Root bypasses 0500; skip if the dir is still writable.
+	if f, err := os.CreateTemp(roDir, "probe"); err == nil {
+		f.Close()
+		t.Skip("dbpath is writable despite 0500 (likely running as root); cannot exercise Set failure")
+	}
+	dbpath = roDir
+
+	h := newTestOrcidHandler("", "http://localhost:19001")
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid", nil)
+	w := httptest.NewRecorder()
+	h.HandleBegin(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when KV Set fails, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestOrcidCallbackStateRejectsPathTraversal verifies that an attacker-controlled
+// `state` containing path-traversal sequences cannot reach (and delete) a KV entry
+// outside the _authstate namespace. The OAuth callback is public and unauthenticated;
+// without strict validation, `..` in state escapes via filepath.Join in CmdGet/CmdDel.
+func TestOrcidCallbackStateRejectsPathTraversal(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	// A victim KV entry outside the _authstate namespace (mirrors a device/signing key).
+	if _, err := CmdSet(K("victimkey"), map[string]string{"x-id": "victimkey"}, []byte("secret")).Exec(); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+
+	h := newTestOrcidHandler("", "http://localhost:19001")
+
+	// `state` traverses from `_authstate/` up to `victimkey`.
+	traversal := "../victimkey"
+	req := httptest.NewRequest(http.MethodGet,
+		"/auth/orcid/callback?state="+url.QueryEscape(traversal)+"&code=c", nil)
+	rec := httptest.NewRecorder()
+	h.HandleCallback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for traversal state, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// Load-bearing: the victim must NOT have been deleted by the callback.
+	if data, err := CmdGet(K("victimkey")).Exec(); err != nil || string(data) != "secret" {
+		t.Errorf("SECURITY: path-traversal state deleted/altered a file outside the namespace (err=%v, data=%q)", err, string(data))
+	}
+}
+
+// TestKVGetDelRejectDotDotSegments verifies that the KV get/del operations refuse a
+// key containing a ".." segment, mirroring (and strengthening) the containment guard
+// in move(). Defense-in-depth: a HasPrefix(dbpath) check alone would pass an in-root
+// cross-namespace key like "a/../b", which still deletes another namespace's data.
+func TestKVGetDelRejectDotDotSegments(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	// Victim INSIDE dbpath, in a different namespace (mirrors a device key).
+	if _, err := CmdSet(K("victimns/secret"), map[string]string{"x-id": "victimns"}, []byte("secret")).Exec(); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+
+	// A key that traverses cross-namespace via "..".
+	escapeKey := K("_authstate/../victimns/secret")
+
+	if _, err := CmdGet(escapeKey).Exec(); err == nil {
+		t.Error("SECURITY: CmdGet accepted a key with a .. segment (cross-namespace traversal)")
+	}
+	if _, err := CmdDel(escapeKey).Exec(); err == nil {
+		t.Error("SECURITY: CmdDel accepted a key with a .. segment (cross-namespace traversal)")
+	}
+	if data, err := CmdGet(K("victimns/secret")).Exec(); err != nil || string(data) != "secret" {
+		t.Errorf("SECURITY: cross-namespace traversal deleted the victim (err=%v data=%q)", err, string(data))
 	}
 }
 

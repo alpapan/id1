@@ -16,6 +16,9 @@ import (
 )
 
 func (t *Command) del() error {
+	if !keyWithinRoot(t.Key) {
+		return ErrForbidden
+	}
 	path := filepath.Join(dbpath, t.Key.String())
 	if stat, err := os.Stat(path); err != nil {
 		return ErrNotFound

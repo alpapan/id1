@@ -12,6 +12,7 @@ package id1
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -19,12 +20,19 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
 )
+
+// stateKeyPrefix is the id1 KV namespace for in-flight ORCID CSRF state. The
+// leading underscore cannot collide with an ORCID iD (which must match
+// orcidIDPattern) or a service identity, and it makes the Id segment of a state
+// key equal to stateKeyPrefix - so the TTL-scheduled delete self-authorizes in
+// dotAfter (auth(stateKeyPrefix, del) -> Key.Id == stateKeyPrefix).
+const stateKeyPrefix = "_authstate"
 
 // stateEntry records when a CSRF state token was created and the PKCE verifier.
 type stateEntry struct {
@@ -33,24 +41,36 @@ type stateEntry struct {
 	redirectURI string // post-JWT frontend redirect target
 }
 
+// stateEntryWire is the JSON-serialisable form of stateEntry persisted in the id1
+// KV store (stateEntry's fields are unexported). Persisting the state lets an
+// in-flight ORCID login survive an id1 pod restart - the in-memory map did not.
+type stateEntryWire struct {
+	Created     time.Time `json:"created"`
+	Verifier    string    `json:"verifier"`
+	RedirectURI string    `json:"redirect_uri"`
+}
+
 // orcidIDPattern validates ORCID iD format: XXXX-XXXX-XXXX-XXX[X|digit]
 var orcidIDPattern = regexp.MustCompile(`^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$`)
+
+// stateTokenPattern matches exactly the base64.URLEncoding output of generateState
+// (URL-safe alphabet + optional padding). Used to validate the attacker-controlled
+// `state` callback parameter before it is used as a KV key segment, so it cannot
+// contain "/" or "." path-traversal characters.
+var stateTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+={0,2}$`)
 
 // OrcidHandler handles the ORCID plain-OAuth2 authorization flow.
 // ORCID is plain OAuth2, not OIDC.
 //
-// The stateStore accumulates short-lived CSRF tokens. HandleBegin prunes
-// entries older than stateTTL before inserting a new one. HandleCallback
-// rejects states beyond stateTTL even if they remain in the map.
+// CSRF state is persisted in the id1 KV store (keyed under stateKeyPrefix) with a
+// stateTTL, not in process memory, so an in-flight login survives an id1 pod
+// restart. HandleCallback rejects states older than stateTTL as defense-in-depth
+// even before the dotAfter sweeper collects them.
 type OrcidHandler struct {
 	oauth2Config *oauth2.Config
 	frontendURL  string
 	kvStore      KeyValueStore
-	stateMu      sync.Mutex
-	// stateStore holds short-lived CSRF state tokens keyed by opaque string.
-	// Entries must be pruned after TTL (5 minutes) to prevent unbounded growth.
-	stateStore map[string]stateEntry
-	stateTTL   time.Duration // must be set to 5 * time.Minute
+	stateTTL     time.Duration // must be set to 5 * time.Minute
 }
 
 // NewOrcidHandler builds an OrcidHandler from environment variables.
@@ -92,7 +112,6 @@ func NewOrcidHandler(kvStore KeyValueStore) (*OrcidHandler, error) {
 		},
 		frontendURL: frontendURL,
 		kvStore:     kvStore,
-		stateStore:  make(map[string]stateEntry),
 		stateTTL:    5 * time.Minute,
 	}, nil
 }
@@ -107,20 +126,9 @@ func generateState() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// pruneExpiredStates removes state entries older than h.stateTTL.
-// Caller must hold h.stateMu.
-func (h *OrcidHandler) pruneExpiredStates() {
-	now := time.Now()
-	for k, v := range h.stateStore {
-		if now.Sub(v.created) > h.stateTTL {
-			delete(h.stateStore, k)
-		}
-	}
-}
-
 // HandleBegin starts the ORCID OAuth2 authorization flow. It generates a CSRF
-// state token, PKCE verifier, prunes expired states, stores the new state and verifier,
-// and redirects the browser to ORCID for authorization.
+// state token, PKCE verifier, persists the state and verifier in the id1 KV store
+// with a TTL, and redirects the browser to ORCID for authorization.
 func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 	state, err := generateState()
 	if err != nil {
@@ -155,14 +163,23 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.stateMu.Lock()
-	h.pruneExpiredStates()
-	h.stateStore[state] = stateEntry{
-		created:     time.Now(),
-		verifier:    verifier,
-		redirectURI: redirectURI,
+	wire, err := json.Marshal(stateEntryWire{
+		Created:     time.Now(),
+		Verifier:    verifier,
+		RedirectURI: redirectURI,
+	})
+	if err != nil {
+		http.Error(w, "internal error encoding auth state", http.StatusInternalServerError)
+		return
 	}
-	h.stateMu.Unlock()
+	// Persist the CSRF state in the id1 KV store with a TTL so an in-flight login
+	// survives an id1 pod restart. x-id == stateKeyPrefix so the TTL-scheduled
+	// delete self-authorizes in dotAfter.
+	ttlSeconds := strconv.Itoa(int(h.stateTTL.Seconds()))
+	if _, err := CmdSet(KK(stateKeyPrefix, state), map[string]string{"ttl": ttlSeconds, "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+		http.Error(w, "internal error storing auth state", http.StatusInternalServerError)
+		return
+	}
 
 	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
@@ -179,18 +196,32 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing state parameter", http.StatusBadRequest)
 		return
 	}
-
-	h.stateMu.Lock()
-	entry, ok := h.stateStore[state]
-	if ok {
-		delete(h.stateStore, state)
-	}
-	h.stateMu.Unlock()
-
-	if !ok {
+	// SECURITY: state is attacker-controlled and becomes a KV key segment below.
+	// Reject anything that is not the exact base64.URLEncoding charset generateState
+	// produces - this excludes "/" and "." so a crafted state cannot path-traverse
+	// out of the _authstate namespace into other KV keys via CmdGet/CmdDel.
+	if !stateTokenPattern.MatchString(state) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
+
+	stateKey := KK(stateKeyPrefix, state)
+	data, getErr := CmdGet(stateKey).Exec()
+	if getErr != nil || len(data) == 0 {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
+	// Single-use: consume the state immediately. Best-effort - if the delete fails
+	// the TTL sweeper (dotAfter) still collects it, and the created check below is a
+	// defense-in-depth backstop.
+	CmdDel(stateKey).Exec()
+
+	var wire stateEntryWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
+	entry := stateEntry{created: wire.Created, verifier: wire.Verifier, redirectURI: wire.RedirectURI}
 
 	if time.Since(entry.created) > h.stateTTL {
 		http.Error(w, "state expired", http.StatusBadRequest)
