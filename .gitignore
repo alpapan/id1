@@ -8,3 +8,4 @@ id1db
 
 # Audit trail written by bin/pre-commit-hook.sh - committed by design.
 !.audit/*.log
+**/.audit/**
