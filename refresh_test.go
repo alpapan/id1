@@ -65,8 +65,8 @@ func TestHandleRefresh_MissingAuthTime_401(t *testing.T) {
 	kid, priv, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 	claims := id1TokenClaims{BootID: "x", RegisteredClaims: jwt.RegisteredClaims{
-		Issuer: jwtIssuer, Subject: "0000-0001-2345-6789",
-		Audience:  jwt.ClaimStrings{jwtAudience},
+		Issuer: jwtIssuer(), Subject: "0000-0001-2345-6789",
+		Audience:  jwt.ClaimStrings{jwtAudience()},
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 	}} // no AuthTime

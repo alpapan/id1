@@ -174,10 +174,30 @@ const (
 	pubKeyPath         = "_system/pub/jwt-signing-key"
 	privKeyPrevPath    = "_system/priv/jwt-signing-key-prev"
 	pubKeyPrevPath     = "_system/pub/jwt-signing-key-prev"
-	jwtAudience        = "curatorium-backend"
-	jwtIssuer          = "http://id1-router:8080" // Internal Kubernetes DNS for id1
+	defaultJWTAudience = "curatorium-backend"
+	defaultJWTIssuer   = "http://id1-router:8080" // Internal Kubernetes DNS for id1
 	jwtExpirationHours = 1
 )
+
+// jwtAudience returns the JWT audience claim, overridable via ID1_JWT_AUDIENCE.
+// An empty/unset value falls back to the curatorium default, so curatorium is
+// byte-for-byte unaffected. A dedicated instance (e.g. annot8r_id1) sets this to
+// stamp its own audience instead of curatorium-backend.
+func jwtAudience() string {
+	if v := os.Getenv("ID1_JWT_AUDIENCE"); v != "" {
+		return v
+	}
+	return defaultJWTAudience
+}
+
+// jwtIssuer returns the JWT issuer claim, overridable via ID1_JWT_ISSUER.
+// An empty/unset value falls back to the curatorium default.
+func jwtIssuer() string {
+	if v := os.Getenv("ID1_JWT_ISSUER"); v != "" {
+		return v
+	}
+	return defaultJWTIssuer
+}
 
 // _memKey caches the generated signing key in memory when KV storage is unavailable
 // (no emptyDir under Shape B). All requests within a pod's lifetime use the same key;
@@ -394,9 +414,9 @@ func signJWTWithAuthTime(orcidID string, privateKey *rsa.PrivateKey, keyID strin
 		BootID:   bootID,
 		AuthTime: jwt.NewNumericDate(authTime),
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    jwtIssuer,
+			Issuer:    jwtIssuer(),
 			Subject:   orcidID,
-			Audience:  jwt.ClaimStrings{jwtAudience},
+			Audience:  jwt.ClaimStrings{jwtAudience()},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},

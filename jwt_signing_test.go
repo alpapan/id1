@@ -107,8 +107,8 @@ func TestValidateRS256JWTID1Claims_RejectsExpired(t *testing.T) {
 		BootID:   "x",
 		AuthTime: jwt.NewNumericDate(time.Now().Add(-30 * time.Minute)),
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer: jwtIssuer, Subject: "0000-0001-2345-6789",
-			Audience:  jwt.ClaimStrings{jwtAudience},
+			Issuer: jwtIssuer(), Subject: "0000-0001-2345-6789",
+			Audience:  jwt.ClaimStrings{jwtAudience()},
 			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
 		},
@@ -178,6 +178,56 @@ func TestSignJWT_RS256Valid(t *testing.T) {
 	assert.Equal(t, orcidID, claims.Subject)
 	assert.Equal(t, "curatorium-backend", claims.Audience[0])
 	assert.True(t, time.Now().Before(time.Unix(claims.ExpiresAt.Unix(), 0)))
+}
+
+// TestSignJWT_IssuerAudienceConfigurableViaEnv proves a minted token carries the
+// issuer/audience from ID1_JWT_ISSUER/ID1_JWT_AUDIENCE when those are set. This lets a
+// dedicated annot8r_id1 instance stamp its own audience (annot8r-uniprot) instead of
+// curatorium-backend, so the annot8r service can verify tokens minted for it specifically.
+func TestSignJWT_IssuerAudienceConfigurableViaEnv(t *testing.T) {
+	t.Setenv("ID1_JWT_ISSUER", "https://annot8r-id1.example")
+	t.Setenv("ID1_JWT_AUDIENCE", "annot8r-uniprot")
+
+	kv := setupTestKVStore(t)
+	keyID, privKey, _ := GetOrCreateSigningKey(kv)
+
+	tokenString, err := signJWT("service", privKey, keyID)
+	require.NoError(t, err)
+
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return &privKey.PublicKey, nil
+	})
+	require.NoError(t, err)
+	claims, ok := token.Claims.(*jwt.RegisteredClaims)
+	require.True(t, ok)
+
+	assert.Equal(t, "https://annot8r-id1.example", claims.Issuer)
+	require.NotEmpty(t, claims.Audience)
+	assert.Equal(t, "annot8r-uniprot", claims.Audience[0])
+}
+
+// TestSignJWT_IssuerAudienceDefaultWhenEnvUnset guards curatorium: with the env vars
+// unset, a minted token must carry the existing hardcoded defaults byte-for-byte.
+func TestSignJWT_IssuerAudienceDefaultWhenEnvUnset(t *testing.T) {
+	t.Setenv("ID1_JWT_ISSUER", "")
+	t.Setenv("ID1_JWT_AUDIENCE", "")
+
+	kv := setupTestKVStore(t)
+	keyID, privKey, _ := GetOrCreateSigningKey(kv)
+
+	tokenString, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	require.NoError(t, err)
+
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return &privKey.PublicKey, nil
+	})
+	require.NoError(t, err)
+	claims, ok := token.Claims.(*jwt.RegisteredClaims)
+	require.True(t, ok)
+
+	assert.Equal(t, "http://id1-router:8080", claims.Issuer)
+	require.NotEmpty(t, claims.Audience)
+	assert.Equal(t, "curatorium-backend", claims.Audience[0])
 }
 
 func TestSignJWT_HasCorrectKeyID(t *testing.T) {
@@ -348,9 +398,9 @@ func TestValidateRS256JWT(t *testing.T) {
 
 	t.Run("expired token fails", func(t *testing.T) {
 		expiredClaims := jwt.RegisteredClaims{
-			Issuer:    jwtIssuer,
+			Issuer:    jwtIssuer(),
 			Subject:   "0000-0001-2345-6789",
-			Audience:  jwt.ClaimStrings{jwtAudience},
+			Audience:  jwt.ClaimStrings{jwtAudience()},
 			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
 		}
