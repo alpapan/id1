@@ -14,5 +14,11 @@ platforms = ["linux-64"]
 # `pixi run -m apps/id1/pixi.toml test`
 test = "go test ./..."
 
+# `pixi run -m apps/id1/pixi.toml test-integration`
+# Live end-to-end tests gated behind the `integration` build tag (the default `test`
+# and the pre-commit hook skip them). main_integration_test.go builds the real main.go_
+# binary and runs it in both TLS modes. TestMain auto-loads .env.test, same as `test`.
+test-integration = "go test -tags=integration ./..."
+
 # `pixi run -m apps/id1/pixi.toml lint`  (mirrors bin/lint.sh's id1 go-vet step)
 lint = "go vet ./..."

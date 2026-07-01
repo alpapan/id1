@@ -199,6 +199,14 @@ func jwtIssuer() string {
 	return defaultJWTIssuer
 }
 
+// JWTIssuer and JWTAudience expose the resolved issuer/audience claims so main can log
+// them at startup. A dedicated instance (annot8r_id1) whose ID1_JWT_ISSUER/AUDIENCE is
+// misconfigured otherwise silently stamps curatorium's defaults - a wrong audience is
+// not rejected here, only downstream, where a bad token degrades to the public tier
+// with no error. Logging the resolved values makes that misconfiguration visible.
+func JWTIssuer() string   { return jwtIssuer() }
+func JWTAudience() string { return jwtAudience() }
+
 // _memKey caches the generated signing key in memory when KV storage is unavailable
 // (no emptyDir under Shape B). All requests within a pod's lifetime use the same key;
 // the next restart picks up the key from ID1_JWT_PRIVATE_KEY (patched into K8s Secret).

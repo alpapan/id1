@@ -64,36 +64,18 @@ func nextcloudProxy(target string) (http.HandlerFunc, error) {
 }
 
 func main() {
-	port := "8080"
-	dbpath := "/mnt/id1db"
-	nextcloudURL := ""
-
-	if godotenv.Load(".env") == nil {
-		port = os.Getenv("PORT")
-		dbpath = os.Getenv("DBPATH")
-		nextcloudURL = os.Getenv("NEXTCLOUD_URL")
-	}
-
-	// Also check environment directly (for Kubernetes, where no .env file exists)
-	if port == "" {
-		port = os.Getenv("ID1_AUTH_PORT")
-	}
-	if port == "" {
-		port = "8080"
-	}
-	if nextcloudURL == "" {
-		nextcloudURL = os.Getenv("NEXTCLOUD_URL")
-	}
-	// DBPATH env var allows overriding the key storage location in Kubernetes.
-	// Must be checked directly here because godotenv only reads it from .env.
-	if dbpath == "" {
-		dbpath = os.Getenv("DBPATH")
-	}
-	if dbpath == "" {
-		dbpath = "/mnt/id1db"
-	}
+	// Load a .env file when present (host deployments); godotenv populates the process
+	// env without overwriting existing variables, so real environment variables
+	// (Kubernetes) win. ResolveConfig reads PORT/DBPATH/NEXTCLOUD_URL via os.Getenv.
+	_ = godotenv.Load(".env")
+	port, dbpath, nextcloudURL := id1.ResolveConfig(os.Getenv)
 
 	fmt.Printf("id1 API build %s, port: %s, dbpath: %s\n", version, port, dbpath)
+	// The resolved JWT claims: a dedicated instance (annot8r_id1) must stamp its own
+	// issuer/audience. A wrong audience is not rejected here, only downstream, where a
+	// bad token degrades to the public tier with no error, so log the values an operator
+	// can check.
+	fmt.Printf("id1 JWT issuer: %s, audience: %s\n", id1.JWTIssuer(), id1.JWTAudience())
 	if nextcloudURL != "" {
 		fmt.Printf("Nextcloud proxy enabled: %s\n", nextcloudURL)
 	}
