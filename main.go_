@@ -177,6 +177,19 @@ func main() {
 	http.HandleFunc("/auth/sovereign/token", id1.HandleSovereignToken(id1KVStore))
 	fmt.Println("Registered /auth/sovereign/token sovereign key endpoint")
 
+	// Trusted-provisioner key (re)registration - internal endpoint, requires
+	// X-ID1-Internal-Secret (the same ID1_INTERNAL_SECRET as /internal/nc-token).
+	// It writes/overwrites the singular {id}/pub/key so a trusted backend can both
+	// provision a new per-user identity and rotate an existing one's key (id1's
+	// owner-write auth is HMAC-only and rejects the RS256 sovereign JWT, so a
+	// key-holder cannot overwrite by minting). Only registered when the secret is set.
+	if internalSecret := os.Getenv("ID1_INTERNAL_SECRET"); internalSecret != "" {
+		http.HandleFunc("/internal/sovereign/register", id1.HandleInternalRegisterKey(internalSecret))
+		fmt.Println("Registered /internal/sovereign/register trusted key-registration endpoint")
+	} else {
+		fmt.Println("ID1_INTERNAL_SECRET not set; /internal/sovereign/register endpoint disabled")
+	}
+
 	// Token-for-token refresh: re-mints a fresh 1h JWT from a still-valid one,
 	// capped at a 7-day session ceiling (auth_time). Not env-gated - production
 	// sessions renew through here. Reached publicly via Traefik's /auth/* prefix.
