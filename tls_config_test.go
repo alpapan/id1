@@ -81,6 +81,23 @@ func TestBuildTLSConfig_WhenDisabled(t *testing.T) {
 	assert.Nil(t, tlsConfig)
 }
 
+func TestBuildTLSConfig_NoCA_FailsClosed(t *testing.T) {
+	certFile, keyFile, _ := generateTestCerts(t)
+	t.Setenv("MTLS_ENABLED", "true")
+	t.Setenv("SSL_CERTFILE", certFile)
+	t.Setenv("SSL_KEYFILE", keyFile)
+	t.Setenv("SSL_CA_CERTS", "") // no client CA configured
+
+	cfg, err := BuildTLSConfig()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	// With no CA, ClientCAs must be a non-nil AND EMPTY pool so a presented client cert
+	// cannot verify against the host SYSTEM root pool (which would fail OPEN to any
+	// web-PKI cert). An empty pool fails the client-cert verification closed.
+	require.NotNil(t, cfg.ClientCAs, "ClientCAs must be non-nil when MTLS_ENABLED even without SSL_CA_CERTS")
+	require.True(t, cfg.ClientCAs.Equal(x509.NewCertPool()), "ClientCAs must be an EMPTY pool (no trust anchors) when SSL_CA_CERTS is unset")
+}
+
 func TestBuildTLSTransport_WhenEnabled(t *testing.T) {
 	certFile, keyFile, caFile := generateTestCerts(t)
 	t.Setenv("MTLS_ENABLED", "true")

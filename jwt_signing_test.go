@@ -89,7 +89,7 @@ func TestValidateRS256JWTID1Claims_ReturnsAuthTime(t *testing.T) {
 	kid, priv, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 	authTime := time.Now().Add(-3 * time.Hour)
-	tokenStr, err := signJWTWithAuthTime("0000-0001-2345-6789", priv, kid, authTime)
+	tokenStr, err := signJWTWithAuthTime("0000-0001-2345-6789", "", priv, kid, authTime)
 	require.NoError(t, err)
 
 	claims, err := ValidateRS256JWTID1Claims(tokenStr, kv)
@@ -97,6 +97,30 @@ func TestValidateRS256JWTID1Claims_ReturnsAuthTime(t *testing.T) {
 	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
 	require.NotNil(t, claims.AuthTime)
 	assert.LessOrEqual(t, claims.AuthTime.Time.Sub(authTime).Abs(), time.Second, "auth_time not carried")
+}
+
+func TestSignJWT_ThreadsDeviceClaim(t *testing.T) {
+	kv := setupTestKVStore(t)
+	kid, priv, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	// A device-bearing token (the sovereign/annot8r path) carries the device claim,
+	// so a resource server can rate-limit per (device, sub) and a curatorium cannot
+	// forge an arbitrary sub into another curatorium's rate bucket.
+	withDev, err := signJWTWithAuthTime("0000-0001-2345-6789", "cur-a", priv, kid, time.Now())
+	require.NoError(t, err)
+	var c1 id1TokenClaims
+	_, _, err = new(jwt.Parser).ParseUnverified(withDev, &c1)
+	require.NoError(t, err)
+	assert.Equal(t, "cur-a", c1.Device, "sovereign token must carry the device claim")
+
+	// A plain token (ORCID/demo/refresh) omits it.
+	noDev, err := signJWT("0000-0001-2345-6789", priv, kid)
+	require.NoError(t, err)
+	var c2 id1TokenClaims
+	_, _, err = new(jwt.Parser).ParseUnverified(noDev, &c2)
+	require.NoError(t, err)
+	assert.Empty(t, c2.Device, "non-sovereign token must not carry a device claim")
 }
 
 func TestValidateRS256JWTID1Claims_RejectsExpired(t *testing.T) {

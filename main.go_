@@ -177,17 +177,21 @@ func main() {
 	http.HandleFunc("/auth/sovereign/token", id1.HandleSovereignToken(id1KVStore))
 	fmt.Println("Registered /auth/sovereign/token sovereign key endpoint")
 
-	// Trusted-provisioner key (re)registration - internal endpoint, requires
-	// X-ID1-Internal-Secret (the same ID1_INTERNAL_SECRET as /internal/nc-token).
-	// It writes/overwrites the singular {id}/pub/key so a trusted backend can both
-	// provision a new per-user identity and rotate an existing one's key (id1's
-	// owner-write auth is HMAC-only and rejects the RS256 sovereign JWT, so a
-	// key-holder cannot overwrite by minting). Only registered when the secret is set.
-	if internalSecret := os.Getenv("ID1_INTERNAL_SECRET"); internalSecret != "" {
-		http.HandleFunc("/internal/sovereign/register", id1.HandleInternalRegisterKey(internalSecret))
-		fmt.Println("Registered /internal/sovereign/register trusted key-registration endpoint")
+	// Trusted-provisioner key (re)registration - the DEDICATED annot8r_id1 ONLY, enabled
+	// by INTERNAL_REGISTER_ENABLED. It writes/overwrites the per-curatorium device key
+	// {orcid}/pub/keys/{device}, CN-pinned to the mTLS client cert, so one shared ORCID
+	// carries a distinct key per curatorium (provision, rotation, re-register).
+	//
+	// It is NOT mounted on curatorium's own id1: that instance's SSL_CA_CERTS is the broad
+	// in-cluster cert-manager CA, so any in-cluster cert-holder could register a device key
+	// and mint a token impersonating a user. The endpoint is safe ONLY where SSL_CA_CERTS
+	// is a DEDICATED CA that signs solely the curatorium backends' annot8r_id1 client certs
+	// - i.e. annot8r_id1, which sets this flag. mTLS still gates it (r.TLS==nil / wrong CA).
+	if os.Getenv("INTERNAL_REGISTER_ENABLED") == "true" {
+		http.HandleFunc("/internal/sovereign/register", id1.HandleInternalRegisterKey())
+		fmt.Println("Registered /internal/sovereign/register trusted key-registration endpoint (mTLS)")
 	} else {
-		fmt.Println("ID1_INTERNAL_SECRET not set; /internal/sovereign/register endpoint disabled")
+		fmt.Println("INTERNAL_REGISTER_ENABLED not set; /internal/sovereign/register endpoint disabled")
 	}
 
 	// Token-for-token refresh: re-mints a fresh 1h JWT from a still-valid one,

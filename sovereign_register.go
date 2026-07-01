@@ -20,7 +20,7 @@ import (
 )
 
 const pendingKeyTTL = "3600" // 1 hour
-const pubKeyTTL = "604800"  // 7 days - refreshed on every login
+const pubKeyTTL = "604800"   // 7 days - refreshed on every login
 
 // RegisterBeginRequest is the JSON body for POST /auth/sovereign/register/begin.
 type RegisterBeginRequest struct {

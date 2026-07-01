@@ -24,7 +24,7 @@ func TestHandleRefresh_ValidToken_ReturnsFreshTokenSameAuthTime(t *testing.T) {
 	kid, priv, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 	authTime := time.Now().Add(-3 * time.Hour)
-	original, err := signJWTWithAuthTime("0000-0001-2345-6789", priv, kid, authTime)
+	original, err := signJWTWithAuthTime("0000-0001-2345-6789", "", priv, kid, authTime)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
@@ -50,7 +50,7 @@ func TestHandleRefresh_PastCeiling_401(t *testing.T) {
 	kv := setupTestKVStore(t)
 	kid, priv, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
-	old, err := signJWTWithAuthTime("0000-0001-2345-6789", priv, kid, time.Now().Add(-8*24*time.Hour))
+	old, err := signJWTWithAuthTime("0000-0001-2345-6789", "", priv, kid, time.Now().Add(-8*24*time.Hour))
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)

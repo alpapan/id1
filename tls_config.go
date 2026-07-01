@@ -71,17 +71,22 @@ func BuildTLSConfig() (*tls.Config, error) {
 		},
 	}
 
+	// Always set ClientCAs (an EMPTY pool when no CA is configured) so a presented
+	// client cert is verified against THIS pool, never the host system root pool.
+	// Leaving it nil makes VerifyClientCertIfGiven fall back to system roots, which
+	// would fail OPEN to any web-PKI cert on client-cert-gated endpoints. An empty
+	// pool fails closed (no presented cert verifies); a certless client still connects.
+	pool := x509.NewCertPool()
 	if caFile != "" {
 		caPEM, err := os.ReadFile(caFile)
 		if err != nil {
 			return nil, fmt.Errorf("id1: failed to read CA cert: %w", err)
 		}
-		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caPEM) {
 			return nil, fmt.Errorf("id1: failed to parse CA cert")
 		}
-		cfg.ClientCAs = pool
 	}
+	cfg.ClientCAs = pool
 
 	return cfg, nil
 }

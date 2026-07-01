@@ -145,7 +145,14 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		jwtToken, err := signJWT(req.ID, privKey, keyID)
+		// Bind the deviceId into the token as the `device` claim so a resource server
+		// can rate-limit per (device, sub). On the MULTI-DEVICE path the deviceId IS the
+		// key slot just verified (the caller proved ownership of
+		// {id}/pub/keys/{deviceId}), so it cannot be forged. On the SINGULAR-key
+		// fallback ({id}/pub/key, service identities) the deviceId is caller-chosen and
+		// only namespaces that caller's own buckets - confined to their own sub-space,
+		// never cross-tenant.
+		jwtToken, err := signJWTWithAuthTime(req.ID, req.DeviceId, privKey, keyID, time.Now())
 		if err != nil {
 			err500(w, "failed to sign JWT")
 			return

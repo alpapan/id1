@@ -383,7 +383,13 @@ func parsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 // on-wire JSON keeps the standard claim encodings (aud as array, etc.)
 // untouched and only adds one extra key.
 type id1TokenClaims struct {
-	BootID   string           `json:"id1_boot_id"`
+	BootID string `json:"id1_boot_id"`
+	// Device is the sovereign-key deviceId the token was minted for (empty for
+	// ORCID/demo/refresh tokens). A resource server (e.g. annot8r) rate-limits per
+	// (device, sub) so a curatorium cannot forge an arbitrary sub into another
+	// curatorium's rate bucket - the device is bound to the caller's client cert CN
+	// at registration + mint time.
+	Device   string           `json:"device,omitempty"`
 	AuthTime *jwt.NumericDate `json:"auth_time,omitempty"`
 	jwt.RegisteredClaims
 }
@@ -395,13 +401,13 @@ type id1TokenClaims struct {
 // Service identities (sub="service") receive a 24-hour TTL to support
 // long-running batch jobs; ORCID user JWTs (any other subject) get 1 hour.
 func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
-	return signJWTWithAuthTime(orcidID, privateKey, keyID, time.Now())
+	return signJWTWithAuthTime(orcidID, "", privateKey, keyID, time.Now())
 }
 
 // signJWTWithAuthTime issues a token carrying an explicit auth_time. The refresh
 // endpoint passes the original auth_time forward so the 7-day session ceiling is
 // measured from the real sovereign-key authentication, not from each renewal.
-func signJWTWithAuthTime(orcidID string, privateKey *rsa.PrivateKey, keyID string, authTime time.Time) (string, error) {
+func signJWTWithAuthTime(orcidID, device string, privateKey *rsa.PrivateKey, keyID string, authTime time.Time) (string, error) {
 	now := time.Now()
 
 	// Branch on subject: service identities get 24-hour TTL, ORCID users get 1 hour
@@ -412,6 +418,7 @@ func signJWTWithAuthTime(orcidID string, privateKey *rsa.PrivateKey, keyID strin
 
 	claims := id1TokenClaims{
 		BootID:   bootID,
+		Device:   device,
 		AuthTime: jwt.NewNumericDate(authTime),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    jwtIssuer(),

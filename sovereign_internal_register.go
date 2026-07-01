@@ -2,47 +2,46 @@ package id1
 
 import (
 	"crypto/rsa"
-	"crypto/subtle"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"regexp"
 )
+
+// devicePattern bounds the device (curatorium) id to a safe single key segment. It
+// must START with an alphanumeric, which rejects "."/".."/leading-dot segments that
+// could otherwise walk the key path (belt-and-suspenders alongside keyWithinRoot).
+var devicePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // InternalRegisterRequest is the JSON body for POST /internal/sovereign/register.
 type InternalRegisterRequest struct {
 	ID           string `json:"id"`
+	Device       string `json:"device"`
 	PublicKeyPEM string `json:"publicKeyPem"`
 }
 
 // HandleInternalRegisterKey returns an HTTP handler for POST /internal/sovereign/register.
 //
-// Trusted-provisioner endpoint, gated by the X-ID1-Internal-Secret header (same gate
-// shape as /internal/nc-token). It writes - and OVERWRITES - the singular, no-TTL
-// {id}/pub/key. The write goes through CmdSet directly, bypassing the generic auth()
-// gate (whose anonymous-write exemption only fires when !idExists), so the trusted
-// caller can both provision a new identity and rotate an existing one's key.
+// Trusted-provisioner endpoint authenticated by mutual TLS: the caller's credential
+// is its client certificate (never a transmitted secret). It writes - and OVERWRITES -
+// the per-curatorium device key {id}/pub/keys/{device}, so one shared ORCID carries a
+// distinct key per curatorium and the same call serves provision, rotation, and the
+// lazy re-register-on-miss path.
 //
-// This is the seam curatorium uses to provision/rotate a per-user annot8r identity:
-// id1's owner-write auth is HMAC-only and rejects an RS256 sovereign JWT, so a holder
-// of the user's private key cannot overwrite {id}/pub/key by minting. The shared
-// internal secret (held only by the trusted curatorium backend) authorises it instead.
+// Gate: a CA-verified client cert is required (r.TLS.VerifiedChains non-empty; with
+// ClientAuth=VerifyClientCertIfGiven a no-cert client connects with empty chains and a
+// non-CA cert fails the handshake), AND the request device must equal the cert CN - the
+// CN is the tenant boundary, so a curatorium can only register under its own device slot.
 //
-// The endpoint is DISABLED when internalSecret is empty: main.go_ should only register
-// it when ID1_INTERNAL_SECRET is set, and the handler additionally fails closed so a
-// naive empty-header == empty-secret match can never authorise a write.
-func HandleInternalRegisterKey(internalSecret string) http.HandlerFunc {
+// main.go_ mounts this ONLY when INTERNAL_REGISTER_ENABLED=true - i.e. on the dedicated
+// annot8r_id1 whose SSL_CA_CERTS is a dedicated CA. It is NOT mounted on curatorium's own
+// id1 (broad in-cluster CA). It is also inert without TLS (r.TLS==nil -> 401).
+func HandleInternalRegisterKey() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if internalSecret == "" {
-			http.Error(w, "endpoint disabled", http.StatusNotFound)
-			return
-		}
-		if subtle.ConstantTimeCompare(
-			[]byte(r.Header.Get("X-ID1-Internal-Secret")),
-			[]byte(internalSecret),
-		) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
+			http.Error(w, "client certificate required", http.StatusUnauthorized)
 			return
 		}
 		if r.Method != http.MethodPost {
@@ -50,7 +49,7 @@ func HandleInternalRegisterKey(internalSecret string) http.HandlerFunc {
 			return
 		}
 
-		// Cap the body: it is a small JSON {id, publicKeyPem}; bound it so a
+		// Cap the body: it is a small JSON {id, device, publicKeyPem}; bound it so a
 		// trusted-but-buggy (or compromised) caller cannot stream an oversized body.
 		r.Body = http.MaxBytesReader(w, r.Body, 64<<10) // 64 KiB
 
@@ -63,6 +62,17 @@ func HandleInternalRegisterKey(internalSecret string) http.HandlerFunc {
 			http.Error(w, "missing or malformed id", http.StatusBadRequest)
 			return
 		}
+		if req.Device == "" || !devicePattern.MatchString(req.Device) {
+			http.Error(w, "missing or malformed device", http.StatusBadRequest)
+			return
+		}
+		// CN-pin: the client may only register under its own curatorium id. The cert
+		// CN is the tenant boundary; a curatorium cannot write another's device slot.
+		cn := r.TLS.VerifiedChains[0][0].Subject.CommonName
+		if req.Device != cn {
+			http.Error(w, "device does not match client certificate CN", http.StatusForbidden)
+			return
+		}
 		if req.PublicKeyPEM == "" {
 			http.Error(w, "Missing publicKeyPem", http.StatusBadRequest)
 			return
@@ -72,16 +82,15 @@ func HandleInternalRegisterKey(internalSecret string) http.HandlerFunc {
 			return
 		}
 
-		// Singular service-style path, no TTL: a registered identity persists until
-		// rotated. CmdSet overwrites any existing value at the key.
-		if _, err := CmdSet(KK(req.ID, "pub", "key"), map[string]string{"x-id": req.ID}, []byte(req.PublicKeyPEM)).Exec(); err != nil {
+		// Per-curatorium device key. CmdSet overwrites any existing value at the slot.
+		if _, err := CmdSet(KK(req.ID, "pub", "keys", req.Device), map[string]string{"x-id": req.ID}, []byte(req.PublicKeyPEM)).Exec(); err != nil {
 			http.Error(w, "Failed to store key", http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"registered","id":%q}`, req.ID)
+		fmt.Fprintf(w, `{"status":"registered","id":%q,"device":%q}`, req.ID, req.Device)
 	}
 }
 

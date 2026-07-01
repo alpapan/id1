@@ -56,7 +56,7 @@ func HandleRefresh(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "signing key unavailable", http.StatusInternalServerError)
 			return
 		}
-		fresh, err := signJWTWithAuthTime(claims.Subject, privKey, keyID, claims.AuthTime.Time)
+		fresh, err := signJWTWithAuthTime(claims.Subject, "", privKey, keyID, claims.AuthTime.Time)
 		if err != nil {
 			http.Error(w, "failed to issue token", http.StatusInternalServerError)
 			return
