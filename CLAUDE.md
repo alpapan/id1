@@ -1,50 +1,12 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working in the id1 submodule.
-
-## What id1 is (upstream)
-
-id1 is a standalone Go backend, a 9 MB binary providing a generic key/value store with
-RSA-keyed identity, JWT authentication, pub/sub, and HTTP bridge. See `README.md` for the
-upstream API and command language.
+> **⛔ Load the `id1` skill before working in this submodule (HARD RULE).** It covers the generic KV/auth core AND the Curatorium deployment grafts (RS256 signing, ORCID, sovereign key, mTLS) in full file:line detail - this file only carries what the skill doesn't: the Curatorium network topology and build/test/commit mechanics. Subagents do not inherit it - name it in the dispatch prompt.
 
 ## Monorepo Context
 
-This repo is vendored as `apps/id1` (a top-level submodule) inside the Curatorium monorepo
-(typically `~/software/curatorium`). Inside Curatorium, id1 plays one specific role:
+Vendored as `apps/id1` (top-level submodule). **id1 is the Curatorium auth router, the only publicly exposed service** - Traefik path-routes `/auth/*`, `/pub/jwks.json`, `/internal/*`, `/nextcloud` to it; everything else is ClusterIP-internal.
 
-**id1 is the Curatorium auth router, the only publicly exposed service.**
-All external traffic enters through Traefik at the CURATORIUM_DOMAIN (e.g. `demo.curatorium.app`);
-Traefik path-routes `/auth/*`, `/pub/jwks.json`, `/internal/*`, and `/nextcloud` to id1's ClusterIP.
-Everything else (Starlette API, PostgreSQL, sync server) is ClusterIP-internal.
-
-### Curatorium-specific auth flow
-
-1. Browser hits id1 for ORCID OAuth OR sovereign-key challenge/response.
-2. id1 signs an **RS256 JWT** with claims:
-   - `iss = http://id1-router:8080`
-   - `aud = curatorium-backend`
-   - `sub = ORCID-iD`
-   - `kid = JWK Thumbprint` (RFC 7638)
-3. JWT is returned to the frontend, stored in `localStorage['CURATORIUM_JWT']`, and sent
-   as `Authorization: Bearer` on subsequent API calls. (localStorage is shared across
-   tabs on the same origin, so a sign-in in one tab propagates to the others via
-   `storage` events; see the frontend's `AuthProvider.tsx` for the listener.)
-4. The Curatorium Starlette backend (sibling `containers/starlette`) validates the JWT
-   against id1's JWKS endpoint at `id1-router:8080/pub/jwks.json`. RS256 public-key
-   verification only, no shared HMAC for JWT validation.
-
-### Key files for the Curatorium integration
-
-- `jwt_signing.go`, RS256 signing, JWKS thumbprint computation.
-- `orcid.go`, ORCID OAuth callback handler.
-- `sovereign_token.go`, sovereign-key challenge/response for machine-to-machine auth
-  (e.g. SLURM BLAST jobs using `~/.config/curatorium/blast_service.pem` on the host).
-- `tls_config.go`, SNI-based `GetCertificate` for mTLS. When `MTLS_ENABLED=true`, certs
-  are mounted from Kubernetes Secrets.
-- `/auth/test_user?orcid=XXXX-XXXX-XXXX-XXXX`, test-only endpoint, enabled **only when
-  `ENV=test`**. Used by Playwright E2E tests via `authenticateTestUser(page)` in the
-  frontend submodule.
+One fact not in the skill: the JWT lands in `localStorage['CURATORIUM_JWT']`, and since `localStorage` is shared across same-origin tabs, a sign-in in one tab propagates to others via `storage` events (frontend's `AuthProvider.tsx`).
 
 ### Service topology (Curatorium view)
 
