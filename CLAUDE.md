@@ -26,9 +26,9 @@ Do NOT `docker build -t id1:latest .` here (upstream README suggests it) - use t
 
 ```bash
 cd ~/software/curatorium   # or the worktree
-ENV=test pixi run curatorium admin build id1 --rebuild --drop
-ENV=test pixi run curatorium admin logs id1 --tail 100
-ENV=test pixi run curatorium admin restart id1
+ENV=test pixi run curatorium k3s build id1 --rebuild --drop
+ENV=test pixi run curatorium k3s logs id1 --tail 100
+ENV=test pixi run curatorium k3s restart id1
 ```
 
 Handles image tagging, secret injection, PVC mounts for id1's KV store, TLS cert mounting, Traefik passthrough wiring.
