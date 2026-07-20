@@ -32,7 +32,7 @@ func TestHandleListDevices_ReturnsRegisteredDevices(t *testing.T) {
 	CmdSet(KK(orcid, "pub", "keys", "device-2.name"), map[string]string{"x-id": orcid}, []byte("Safari on iPhone")).Exec()
 
 	// Sign JWT for this user
-	jwt, err := signJWT(orcid, signingKey, keyID)
+	jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/sovereign/devices?id="+orcid, nil)
@@ -74,7 +74,7 @@ func TestHandleListDevices_WrongUser(t *testing.T) {
 	require.NoError(t, err)
 
 	// JWT is for a different user
-	jwt, err := signJWT("0000-0002-0000-0001", signingKey, keyID)
+	jwt, err := signJWT("0000-0002-0000-0001", []string{"orcid"}, signingKey, keyID)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/sovereign/devices?id=0000-0001-2345-6789", nil)
@@ -97,7 +97,7 @@ func TestHandleDeleteDevice_RemovesDevice(t *testing.T) {
 	CmdSet(KK(orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).Exec()
 	CmdSet(KK(orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).Exec()
 
-	jwt, err := signJWT(orcid, signingKey, keyID)
+	jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodDelete, "/auth/sovereign/devices?id="+orcid+"&device=device-1", nil)

@@ -84,26 +84,37 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Check if user already has any registered device key
+		// Gate (a): EVERY registration - first-registration OR re-registration -
+		// must prove ownership of the ORCID with a valid RS256 JWT whose subject
+		// matches ?id. First-registration was formerly anonymous, which let an
+		// internet caller register a device key under any un-keyed ORCID (including
+		// admin) and then mint tokens for it. The only legitimate caller of this
+		// public path is browser onboarding AFTER an ORCID login (which already
+		// carries the ORCID JWT); machines use the mTLS /internal path, not this one.
+		//
+		// The one difference between the two cases is the missing-header status:
+		// an existing key returns 409 (its distinct "already registered" signal),
+		// a new key returns 401 (unauthenticated first-registration).
 		keyExists := idExists(orcidId)
 
-		if keyExists {
-			// Re-registration: require RS256 JWT proving ownership
-			authHeader := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authHeader, "Bearer ") {
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			if keyExists {
 				http.Error(w, "Key already registered. Provide Authorization header to re-register.", http.StatusConflict)
-				return
+			} else {
+				http.Error(w, "Registration requires proof of ORCID login. Provide Authorization header.", http.StatusUnauthorized)
 			}
-			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-			claims, err := ValidateRS256JWT(tokenStr, kvStore)
-			if err != nil {
-				http.Error(w, "Invalid JWT: "+err.Error(), http.StatusUnauthorized)
-				return
-			}
-			if claims.Subject != orcidId {
-				http.Error(w, "JWT subject does not match requested id", http.StatusForbidden)
-				return
-			}
+			return
+		}
+		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		claims, err := ValidateRS256JWT(tokenStr, kvStore)
+		if err != nil {
+			http.Error(w, "Invalid JWT: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+		if claims.Subject != orcidId {
+			http.Error(w, "JWT subject does not match requested id", http.StatusForbidden)
+			return
 		}
 
 		// Generate registration token (32 bytes, URL-safe base64)

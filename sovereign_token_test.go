@@ -365,4 +365,46 @@ func TestHandleSovereignToken_PrefersMultiDevicePath(t *testing.T) {
 	}
 }
 
+// TestSovereignToken_StampsSovereignAMR verifies the machine/service mint path
+// stamps amr=["sovereign"], so the backend never auto-provisions a new user row
+// from a self-minted sovereign token.
+func TestSovereignToken_StampsSovereignAMR(t *testing.T) {
+	dbpath = t.TempDir()
+	kvStore := ID1KeyValueStore{}
+	if _, _, err := GetOrCreateSigningKey(kvStore); err != nil {
+		t.Fatal(err)
+	}
+	userID := "0000-0001-2345-6789"
+	deviceId := "default"
+	privKey := testSovereignSetup(t, userID, deviceId)
+
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	signature := signSovereignPayload(t, privKey, userID+":"+timestamp)
+	body := `{"id":"` + userID + `","deviceId":"` + deviceId + `","timestamp":"` + timestamp + `","signature":"` + signature + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	HandleSovereignToken(kvStore).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := ValidateRS256JWTID1Claims(resp["jwt"], kvStore)
+	if err != nil {
+		t.Fatalf("validate token: %v", err)
+	}
+	found := false
+	for _, a := range claims.AMR {
+		if a == "sovereign" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected amr to contain 'sovereign', got %v", claims.AMR)
+	}
+}
+
 // __END_OF_FILE_MARKER__

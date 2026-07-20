@@ -26,6 +26,11 @@ import (
 //
 // Uses gorilla/websocket on both sides for proper bidirectional frame relay,
 // rather than httputil.ReverseProxy which doesn't handle WebSocket streaming.
+//
+// Auth: every upgrade must present a valid single-use ?ticket= minted by
+// HandleSyncTicket; without it the collaborative document content was reachable by
+// any anonymous internet caller. The ticket lives in the id1 KV and is burned via a
+// delete-first CmdDel on the leaf key (a single-winner atomic unlink).
 func SyncProxy(target string) (http.HandlerFunc, error) {
 	scheme := "ws"
 	var tlsConfig *tls.Config
@@ -51,6 +56,27 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Authenticate the upgrade with a single-use ticket (browsers cannot attach
+		// an Authorization header to a WebSocket handshake). Reject an empty ticket
+		// BEFORE the KV delete: KK(syncTicketPrefix, "") normalises to the bare
+		// _syncticket directory, whose delete would os.RemoveAll every live ticket.
+		ticket := r.URL.Query().Get("ticket")
+		if ticket == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// Burn atomically by delete-first: the ticket is a leaf key, so Command.del
+		// takes the os.Remove branch - a single-winner atomic unlink. Allow the
+		// upgrade ONLY if this call won the delete (err == nil); the loser of a
+		// concurrent burn, an unknown ticket, an expired (TTL-swept) ticket, and a
+		// ".." traversal (rejected by keyWithinRoot) all return a non-nil error.
+		// A CmdGet-presence-then-CmdDel sequence would be a TOCTOU two upgrades could
+		// both pass; delete-first is the single-winner gate.
+		if _, err := CmdDel(KK(syncTicketPrefix, ticket)).Exec(); err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		// Upgrade the inbound (browser → id1) connection
 		clientConn, err := clientUpgrader.Upgrade(w, r, nil)
 		if err != nil {

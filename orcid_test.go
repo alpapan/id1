@@ -1320,4 +1320,48 @@ func TestKVGetDelRejectDotDotSegments(t *testing.T) {
 	}
 }
 
+// TestOrcidCallback_StampsOrcidAMR verifies that a real ORCID login mints a token
+// carrying amr=["orcid"] - the provenance the backend requires to auto-provision a
+// new user row. A wrong/empty amr here would silently lock every new user out of
+// provisioning, so this pins the value.
+func TestOrcidCallback_StampsOrcidAMR(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+	kv := ID1KeyValueStore{}
+	if _, _, err := GetOrCreateSigningKey(kv); err != nil {
+		t.Fatalf("signing key: %v", err)
+	}
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"t","token_type":"bearer","orcid":"0000-0002-1825-0097","scope":"/authenticate"}`)
+	}))
+	defer mockServer.Close()
+
+	h := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
+	seedState(t, "amr_state", stateEntry{created: time.Now(), verifier: "v"})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=amr_state&code=c", nil)
+	rec := httptest.NewRecorder()
+	h.HandleCallback(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	tok := loc.Query().Get("token")
+	if tok == "" {
+		t.Fatal("no token in redirect Location")
+	}
+	claims, err := ValidateRS256JWTID1Claims(tok, kv)
+	if err != nil {
+		t.Fatalf("validate token: %v", err)
+	}
+	if len(claims.AMR) != 1 || claims.AMR[0] != "orcid" {
+		t.Errorf("expected amr [orcid], got %v", claims.AMR)
+	}
+}
+
 // __END_OF_FILE_MARKER__

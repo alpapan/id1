@@ -24,7 +24,7 @@ func TestHandleRefresh_ValidToken_ReturnsFreshTokenSameAuthTime(t *testing.T) {
 	kid, priv, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 	authTime := time.Now().Add(-3 * time.Hour)
-	original, err := signJWTWithAuthTime("0000-0001-2345-6789", "", priv, kid, authTime)
+	original, err := signJWTWithAuthTime("0000-0001-2345-6789", "", []string{"orcid"}, priv, kid, authTime)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
@@ -50,7 +50,7 @@ func TestHandleRefresh_PastCeiling_401(t *testing.T) {
 	kv := setupTestKVStore(t)
 	kid, priv, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
-	old, err := signJWTWithAuthTime("0000-0001-2345-6789", "", priv, kid, time.Now().Add(-8*24*time.Hour))
+	old, err := signJWTWithAuthTime("0000-0001-2345-6789", "", []string{"orcid"}, priv, kid, time.Now().Add(-8*24*time.Hour))
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
@@ -92,4 +92,27 @@ func TestHandleRefresh_GET_405(t *testing.T) {
 	rec := httptest.NewRecorder()
 	HandleRefresh(setupTestKVStore(t))(rec, httptest.NewRequest(http.MethodGet, "/auth/refresh", nil))
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+}
+
+// TestHandleRefresh_CarriesAMRForward verifies a refreshed token keeps its mint-path
+// provenance: a real-login token stays real (amr=["orcid"]) across renewal rather than
+// silently downgrading to a provenance-less token.
+func TestHandleRefresh_CarriesAMRForward(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	orig, err := signJWTWithAuthTime("0000-0001-2345-6789", "", []string{"orcid"}, privKey, keyID, time.Now())
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+	req.Header.Set("Authorization", "Bearer "+orig)
+	rec := httptest.NewRecorder()
+	HandleRefresh(kv)(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var body struct {
+		JWT string `json:"jwt"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"orcid"}, claims.AMR, "refresh must carry amr forward so a real-login token stays real")
 }

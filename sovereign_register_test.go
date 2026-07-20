@@ -39,18 +39,23 @@ func testGenerateRSAKeyPair(t *testing.T) (*rsa.PrivateKey, string) {
 
 func TestRegisterBeginNewUser(t *testing.T) {
 	kv := setupTestKVStore(t)
-	// Need signing key for handler init (even if not used for new-user path)
-	GetOrCreateSigningKey(kv)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
 
+	orcid := "0000-0001-2345-6789"
 	_, pubPEM := testGenerateRSAKeyPair(t)
+	// Gate (a): first-registration now requires a valid sub==id ORCID JWT.
+	tok, err := signJWT(orcid, []string{"orcid"}, privKey, keyID)
+	require.NoError(t, err)
 
 	body, _ := json.Marshal(RegisterBeginRequest{
 		PublicKeyPEM: pubPEM,
 		DeviceId:     "test-device-uuid",
 		DeviceName:   "Edge on Windows",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id=0000-0001-2345-6789", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 
 	HandleRegisterBegin(kv)(rec, req)
@@ -62,6 +67,59 @@ func TestRegisterBeginNewUser(t *testing.T) {
 	assert.NotEmpty(t, resp.RegistrationToken)
 	assert.NotEmpty(t, resp.Challenge)
 	assert.Equal(t, 3600, resp.ExpiresIn)
+}
+
+// TestRegisterBegin_NewUser_NoJWT_Rejected is the load-bearing security test for gate
+// (a): an anonymous first-registration (no key yet, no Authorization header) must be
+// rejected, because nothing proves the caller owns the un-keyed ORCID it is claiming.
+func TestRegisterBegin_NewUser_NoJWT_Rejected(t *testing.T) {
+	kv := setupTestKVStore(t)
+	GetOrCreateSigningKey(kv)
+	_, pubPEM := testGenerateRSAKeyPair(t)
+	body, _ := json.Marshal(RegisterBeginRequest{PublicKeyPEM: pubPEM, DeviceId: "d1", DeviceName: "n"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id=0000-0001-2345-6789", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	HandleRegisterBegin(kv)(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code,
+		"anonymous first-registration must be rejected: no anonymous claim of an un-keyed ORCID")
+}
+
+// TestRegisterBegin_NewUser_WrongSubject_Rejected verifies gate (a) rejects a JWT whose
+// subject does not match the ?id being registered (impersonation attempt).
+func TestRegisterBegin_NewUser_WrongSubject_Rejected(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	_, pubPEM := testGenerateRSAKeyPair(t)
+	tok, err := signJWT("9999-9999-9999-9999", []string{"orcid"}, privKey, keyID) // different sub
+	require.NoError(t, err)
+	body, _ := json.Marshal(RegisterBeginRequest{PublicKeyPEM: pubPEM, DeviceId: "d1", DeviceName: "n"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id=0000-0001-2345-6789", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	HandleRegisterBegin(kv)(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code, "JWT subject must match ?id")
+}
+
+// TestRegisterBegin_NewUser_ValidJWT_Accepted verifies gate (a) accepts a first
+// registration proven by a valid sub==id ORCID JWT (the real onboarding flow).
+func TestRegisterBegin_NewUser_ValidJWT_Accepted(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	_, pubPEM := testGenerateRSAKeyPair(t)
+	orcid := "0000-0001-2345-6789"
+	tok, err := signJWT(orcid, []string{"orcid"}, privKey, keyID)
+	require.NoError(t, err)
+	body, _ := json.Marshal(RegisterBeginRequest{PublicKeyPEM: pubPEM, DeviceId: "d1", DeviceName: "n"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	HandleRegisterBegin(kv)(rec, req)
+	assert.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 }
 
 func TestRegisterBeginExistingUserNoJWT(t *testing.T) {
@@ -100,7 +158,7 @@ func TestRegisterBeginExistingUserWithJWT(t *testing.T) {
 	CmdSet(KK(orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).Exec()
 
 	// Sign a valid JWT for this ORCID
-	tokenStr, err := signJWT(orcid, privKey, keyID)
+	tokenStr, err := signJWT(orcid, []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	body, _ := json.Marshal(RegisterBeginRequest{
@@ -120,12 +178,15 @@ func TestRegisterBeginExistingUserWithJWT(t *testing.T) {
 
 func TestRegisterCommitSuccess(t *testing.T) {
 	kv := setupTestKVStore(t)
-	GetOrCreateSigningKey(kv)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
 
 	privKey, pubPEM := testGenerateRSAKeyPair(t)
 	orcid := "0000-0001-2345-6789"
 	deviceId := "test-device-uuid"
 	deviceName := "Edge on Windows"
+	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
 
 	// Phase 1: begin
 	body, _ := json.Marshal(RegisterBeginRequest{
@@ -135,6 +196,7 @@ func TestRegisterCommitSuccess(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	HandleRegisterBegin(kv)(rec, req)
 	require.Equal(t, http.StatusAccepted, rec.Code)
@@ -179,10 +241,13 @@ func TestRegisterCommitSuccess(t *testing.T) {
 
 func TestRegisterCommitWrongNonce(t *testing.T) {
 	kv := setupTestKVStore(t)
-	GetOrCreateSigningKey(kv)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
 
 	_, pubPEM := testGenerateRSAKeyPair(t)
 	orcid := "0000-0001-2345-6789"
+	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
 
 	// Phase 1
 	body, _ := json.Marshal(RegisterBeginRequest{
@@ -192,8 +257,10 @@ func TestRegisterCommitWrongNonce(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	HandleRegisterBegin(kv)(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code, "begin: %s", rec.Body.String())
 
 	var beginResp RegisterBeginResponse
 	json.Unmarshal(rec.Body.Bytes(), &beginResp)
@@ -236,11 +303,14 @@ func TestRegisterCommitExpiredToken(t *testing.T) {
 
 func TestRegisterCommitIdempotent(t *testing.T) {
 	kv := setupTestKVStore(t)
-	GetOrCreateSigningKey(kv)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
 
 	privKey, pubPEM := testGenerateRSAKeyPair(t)
 	orcid := "0000-0001-2345-6789"
 	deviceId := "test-device-uuid"
+	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
 
 	// Phase 1
 	body, _ := json.Marshal(RegisterBeginRequest{
@@ -250,8 +320,10 @@ func TestRegisterCommitIdempotent(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	HandleRegisterBegin(kv)(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code, "begin: %s", rec.Body.String())
 
 	var beginResp RegisterBeginResponse
 	json.Unmarshal(rec.Body.Bytes(), &beginResp)
@@ -283,11 +355,14 @@ func TestRegisterCommitIdempotent(t *testing.T) {
 
 func TestRegisterCommitSetsTTL(t *testing.T) {
 	kv := setupTestKVStore(t)
-	GetOrCreateSigningKey(kv)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
 
 	privKey, pubPEM := testGenerateRSAKeyPair(t)
 	orcid := "0000-0001-2345-6789"
 	deviceId := "test-device-uuid"
+	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
 
 	// Phase 1: begin
 	body, _ := json.Marshal(RegisterBeginRequest{
@@ -297,8 +372,10 @@ func TestRegisterCommitSetsTTL(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	HandleRegisterBegin(kv)(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code, "begin: %s", rec.Body.String())
 
 	var beginResp RegisterBeginResponse
 	json.Unmarshal(rec.Body.Bytes(), &beginResp)
@@ -334,8 +411,11 @@ func TestRegisterTwoDevicesSameUser(t *testing.T) {
 	require.NoError(t, err)
 
 	orcid := "0000-0001-2345-6789"
+	// Gate (a): first-registration requires a valid sub==id ORCID JWT.
+	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
 
-	// Register device 1 (new user - no JWT needed)
+	// Register device 1 (first registration - proven by the ORCID JWT)
 	privKey1, pubPEM1 := testGenerateRSAKeyPair(t)
 	beginBody1, _ := json.Marshal(RegisterBeginRequest{
 		PublicKeyPEM: pubPEM1,
@@ -344,6 +424,7 @@ func TestRegisterTwoDevicesSameUser(t *testing.T) {
 	})
 	req1 := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(beginBody1))
 	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Authorization", "Bearer "+tok)
 	rec1 := httptest.NewRecorder()
 	HandleRegisterBegin(kv)(rec1, req1)
 	require.Equal(t, http.StatusAccepted, rec1.Code)
@@ -367,7 +448,7 @@ func TestRegisterTwoDevicesSameUser(t *testing.T) {
 
 	// Register device 2 (user already has device-1, so JWT required)
 	_, pubPEM2 := testGenerateRSAKeyPair(t)
-	jwtToken, err := signJWT(orcid, signingKey, keyID)
+	jwtToken, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
 	require.NoError(t, err)
 
 	beginBody2, _ := json.Marshal(RegisterBeginRequest{

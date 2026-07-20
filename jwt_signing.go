@@ -123,13 +123,28 @@ func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
+		// Optional ?amr= override (default "test"), whitelisted to the known
+		// mint-path values so the backend's provisioning gate can be exercised
+		// with a chosen provenance. Safe: this endpoint is already
+		// ENV-gated (dev/test only) and behind the perimeter, so an attacker who
+		// could reach it could already mint any ORCID here - the param adds no
+		// capability. An unknown value is rejected rather than silently defaulted.
+		amr := r.URL.Query().Get("amr")
+		if amr == "" {
+			amr = "test"
+		}
+		if !isKnownAMR(amr) {
+			http.Error(w, "Invalid amr value", http.StatusBadRequest)
+			return
+		}
+
 		keyID, privKey, err := GetOrCreateSigningKey(kvStore)
 		if err != nil {
 			http.Error(w, "Failed to get signing key", http.StatusInternalServerError)
 			return
 		}
 
-		jwtToken, err := signJWT(orcidID, privKey, keyID)
+		jwtToken, err := signJWT(orcidID, []string{amr}, privKey, keyID)
 		if err != nil {
 			http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
 			return
@@ -140,11 +155,26 @@ func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 	}
 }
 
-// demoUserORCID is the ORCID of the seeded demo_user (99d_seed_demo_user.sql, id=10).
-const demoUserORCID = "0009-0002-8023-3658"
+// isKnownAMR reports whether v is one of the recognised authentication-method-reference
+// (mint-path provenance) values. Used to whitelist the /auth/test_user ?amr= override.
+func isKnownAMR(v string) bool {
+	switch v {
+	case "test", "orcid", "sovereign", "demo":
+		return true
+	default:
+		return false
+	}
+}
 
-// HandleDemoUser returns an HTTP handler that issues a JWT for the demo_user account.
-// Registered at /auth/unauth_demo when ENV=test.
+// demoUserORCID is the ORCID of the seeded demo_user (migrations/02b_user_core_seed.sql),
+// granted all roles EXCEPT admin (migrations/99_seed_tables.sql). This is deliberately
+// the NON-admin demo identity: the earlier value 0009-0002-8023-3658 is the real admin
+// ORCID (all roles including admin), so minting it here from a public endpoint handed
+// anonymous callers an admin token.
+const demoUserORCID = "0009-0009-9355-3782"
+
+// HandleDemoUser returns an HTTP handler that issues a JWT for the non-admin demo_user.
+// Registered at /auth/unauth_demo only when ENV=test or ENV=dev (see main.go_).
 // This enables the demo/blast-live page to submit real BLAST jobs without ORCID login.
 func HandleDemoUser(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +187,7 @@ func HandleDemoUser(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Failed to get signing key", http.StatusInternalServerError)
 			return
 		}
-		jwtToken, err := signJWT(demoUserORCID, privKey, keyID)
+		jwtToken, err := signJWT(demoUserORCID, []string{"demo"}, privKey, keyID)
 		if err != nil {
 			http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
 			return
@@ -399,23 +429,32 @@ type id1TokenClaims struct {
 	// at registration + mint time.
 	Device   string           `json:"device,omitempty"`
 	AuthTime *jwt.NumericDate `json:"auth_time,omitempty"`
+	// AMR is the authentication method reference: the mint-path provenance of
+	// this token. ["orcid"] marks a real ORCID login; ["test"], ["demo"] and
+	// ["sovereign"] mark the test-helper, demo and machine/service mint paths.
+	// curatorium-backend reads this to decide whether a token may auto-provision
+	// a brand-new user row (only a real login may).
+	AMR []string `json:"amr,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // signJWT issues RS256 JWT with standard claims plus id1_boot_id.
-// Claims: iss, sub, aud="curatorium-backend", iat, exp=iat+ttl, id1_boot_id; header kid.
+// Claims: iss, sub, aud="curatorium-backend", iat, exp=iat+ttl, id1_boot_id, amr; header kid.
 // The id1_boot_id claim is non-standard and used by curatorium-backend's
 // Apollo token-exchange to detect pod restarts (see BootID doc comment).
+// amr records the mint-path provenance (see id1TokenClaims.AMR); callers must
+// pass it explicitly so a forgotten mint site fails to compile rather than
+// silently minting a provenance-less token.
 // Service identities (sub="service") receive a 24-hour TTL to support
 // long-running batch jobs; ORCID user JWTs (any other subject) get 1 hour.
-func signJWT(orcidID string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
-	return signJWTWithAuthTime(orcidID, "", privateKey, keyID, time.Now())
+func signJWT(orcidID string, amr []string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
+	return signJWTWithAuthTime(orcidID, "", amr, privateKey, keyID, time.Now())
 }
 
 // signJWTWithAuthTime issues a token carrying an explicit auth_time. The refresh
 // endpoint passes the original auth_time forward so the 7-day session ceiling is
 // measured from the real sovereign-key authentication, not from each renewal.
-func signJWTWithAuthTime(orcidID, device string, privateKey *rsa.PrivateKey, keyID string, authTime time.Time) (string, error) {
+func signJWTWithAuthTime(orcidID, device string, amr []string, privateKey *rsa.PrivateKey, keyID string, authTime time.Time) (string, error) {
 	now := time.Now()
 
 	// Branch on subject: service identities get 24-hour TTL, ORCID users get 1 hour
@@ -428,6 +467,7 @@ func signJWTWithAuthTime(orcidID, device string, privateKey *rsa.PrivateKey, key
 		BootID:   bootID,
 		Device:   device,
 		AuthTime: jwt.NewNumericDate(authTime),
+		AMR:      amr,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    jwtIssuer(),
 			Subject:   orcidID,

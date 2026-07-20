@@ -57,15 +57,17 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	defer server.Close()
 
 	target := strings.TrimPrefix(server.URL, "https://")
+	setupTestKVStore(t)
 	handler, err := SyncProxy(target)
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
+	CmdSet(KK("_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http")
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http") + "/sync?ticket=relay-ticket"
 	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("WebSocket dial failed: %v", err)
@@ -108,15 +110,17 @@ func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 	defer server.Close()
 
 	target := strings.TrimPrefix(server.URL, "http://")
+	setupTestKVStore(t)
 	handler, err := SyncProxy(target)
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
+	CmdSet(KK("_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http")
+	wsURL := "ws" + strings.TrimPrefix(proxyServer.URL, "http") + "/sync?ticket=relay-ticket"
 	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("WebSocket dial failed: %v", err)

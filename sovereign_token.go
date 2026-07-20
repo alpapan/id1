@@ -152,7 +152,10 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		// fallback ({id}/pub/key, service identities) the deviceId is caller-chosen and
 		// only namespaces that caller's own buckets - confined to their own sub-space,
 		// never cross-tenant.
-		jwtToken, err := signJWTWithAuthTime(req.ID, req.DeviceId, privKey, keyID, time.Now())
+		// amr=["sovereign"] marks a machine/service mint path (SLURM callbacks,
+		// annot8r). The backend never auto-provisions a new user row from a
+		// sovereign token - only from a real ORCID login.
+		jwtToken, err := signJWTWithAuthTime(req.ID, req.DeviceId, []string{"sovereign"}, privKey, keyID, time.Now())
 		if err != nil {
 			err500(w, "failed to sign JWT")
 			return

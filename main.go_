@@ -200,20 +200,25 @@ func main() {
 	})
 	fmt.Println("Registered /auth/sovereign/devices device list + revocation")
 
-	// Test-helper endpoint for issuing JWTs - registered in ENV=test and ENV=dev only.
-	// Guard logic is in id1.IsDevOrTestEnv (jwt_signing.go).
+	// Test-helper AND demo JWT endpoints - registered in ENV=test and ENV=dev ONLY.
+	// The demo endpoint mints a token for any anonymous caller, so gating it on the
+	// environment keeps a production id1 from handing out demo identities; the
+	// perimeter (Cloudflare Access) is what takes the still-public dev/test host off
+	// the internet. Guard logic is in id1.IsDevOrTestEnv (jwt_signing.go).
 	if id1.IsDevOrTestEnv(os.Getenv("ENV")) {
 		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
-		fmt.Printf("Registered /auth/test_user (ENV=%s)\n", os.Getenv("ENV"))
+		http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))
+		fmt.Printf("Registered /auth/test_user and /auth/unauth_demo (ENV=%s)\n", os.Getenv("ENV"))
 	}
 
-	// Demo JWT endpoint - always registered (not guarded by ENV=test).
-	// Serves the public demo pages; the page-level auth guard (useAuth + router.push)
-	// determines whether the demo JWT is required or optional.
-	http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))
-	fmt.Println("Registered /auth/unauth_demo demo JWT endpoint")
+	// Single-use sync-ticket mint: an authenticated (RS256 JWT) caller exchanges its
+	// token for a short-TTL opaque ticket used to authenticate the header-less /sync
+	// WebSocket upgrade below. Registered before the catch-all handler.
+	http.HandleFunc("/auth/sync_ticket", id1.HandleSyncTicket(id1KVStore))
+	fmt.Println("Registered /auth/sync_ticket single-use sync-ticket mint endpoint")
 
-	// Set up Automerge sync proxy (must be registered before the catch-all handler)
+	// Set up Automerge sync proxy (must be registered before the catch-all handler).
+	// The proxy authenticates each upgrade with a single-use ticket burned from the KV.
 	syncServerAddr := os.Getenv("AUTOMERGE_SYNC_SERVER")
 	if syncServerAddr == "" {
 		syncServerAddr = "automerge-sync-server:8100"

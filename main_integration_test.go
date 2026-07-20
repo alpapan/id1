@@ -81,6 +81,45 @@ func TestID1ServesJWKSInBothTLSModes(t *testing.T) {
 	})
 }
 
+// TestID1DemoAndTestUserEnvGated builds the real main.go_ and asserts that both the
+// demo (/auth/unauth_demo) and test-helper (/auth/test_user) mint endpoints are
+// registered ONLY in a dev/test environment. In prod neither is a registered route,
+// so the catch-all KV handler answers 404 (no JWT is ever minted); in test both mint.
+// A unit test cannot reach main.go_'s registration block, so this guards the gating.
+func TestID1DemoAndTestUserEnvGated(t *testing.T) {
+	bin := buildID1Binary(t)
+
+	t.Run("prod_does_not_serve_demo_or_test_user", func(t *testing.T) {
+		port := freePort(t)
+		startID1(t, bin, map[string]string{
+			"PORT":         port,
+			"DBPATH":       t.TempDir(),
+			"MTLS_ENABLED": "false",
+			"ENV":          "prod",
+		})
+		client := &http.Client{Timeout: 3 * time.Second}
+		// /pub/jwks.json is registered in every env; polling it confirms readiness,
+		// by which point the (un)registered demo/test routes are already decided.
+		assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
+		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/unauth_demo", http.StatusNotFound)
+		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/test_user", http.StatusNotFound)
+	})
+
+	t.Run("test_serves_demo_and_test_user", func(t *testing.T) {
+		port := freePort(t)
+		startID1(t, bin, map[string]string{
+			"PORT":         port,
+			"DBPATH":       t.TempDir(),
+			"MTLS_ENABLED": "false",
+			"ENV":          "test",
+		})
+		client := &http.Client{Timeout: 3 * time.Second}
+		assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
+		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/unauth_demo", http.StatusOK)
+		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/test_user", http.StatusOK)
+	})
+}
+
 // buildID1Binary compiles main.go_ into a runnable binary, mirroring apps/id1/Dockerfile:
 // a separate module that references the local id1 library via a replace directive.
 func buildID1Binary(t *testing.T) string {

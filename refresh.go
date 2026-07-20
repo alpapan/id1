@@ -56,7 +56,10 @@ func HandleRefresh(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "signing key unavailable", http.StatusInternalServerError)
 			return
 		}
-		fresh, err := signJWTWithAuthTime(claims.Subject, "", privKey, keyID, claims.AuthTime.Time)
+		// Carry amr forward: a refreshed real-login token stays a real-login
+		// token, and a refreshed non-login token stays non-login. Without this
+		// a refresh would strip provenance and silently downgrade the token.
+		fresh, err := signJWTWithAuthTime(claims.Subject, "", claims.AMR, privKey, keyID, claims.AuthTime.Time)
 		if err != nil {
 			http.Error(w, "failed to issue token", http.StatusInternalServerError)
 			return

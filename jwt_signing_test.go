@@ -52,7 +52,7 @@ func TestSignJWT_SetsAuthTimeClaim(t *testing.T) {
 	require.NoError(t, err)
 
 	before := time.Now().Add(-2 * time.Second)
-	tokenStr, err := signJWT("0000-0001-2345-6789", priv, kid)
+	tokenStr, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, priv, kid)
 	require.NoError(t, err)
 	after := time.Now().Add(2 * time.Second)
 
@@ -89,7 +89,7 @@ func TestValidateRS256JWTID1Claims_ReturnsAuthTime(t *testing.T) {
 	kid, priv, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 	authTime := time.Now().Add(-3 * time.Hour)
-	tokenStr, err := signJWTWithAuthTime("0000-0001-2345-6789", "", priv, kid, authTime)
+	tokenStr, err := signJWTWithAuthTime("0000-0001-2345-6789", "", []string{"orcid"}, priv, kid, authTime)
 	require.NoError(t, err)
 
 	claims, err := ValidateRS256JWTID1Claims(tokenStr, kv)
@@ -107,7 +107,7 @@ func TestSignJWT_ThreadsDeviceClaim(t *testing.T) {
 	// A device-bearing token (the sovereign/annot8r path) carries the device claim,
 	// so a resource server can rate-limit per (device, sub) and a curatorium cannot
 	// forge an arbitrary sub into another curatorium's rate bucket.
-	withDev, err := signJWTWithAuthTime("0000-0001-2345-6789", "cur-a", priv, kid, time.Now())
+	withDev, err := signJWTWithAuthTime("0000-0001-2345-6789", "cur-a", []string{"orcid"}, priv, kid, time.Now())
 	require.NoError(t, err)
 	var c1 id1TokenClaims
 	_, _, err = new(jwt.Parser).ParseUnverified(withDev, &c1)
@@ -115,7 +115,7 @@ func TestSignJWT_ThreadsDeviceClaim(t *testing.T) {
 	assert.Equal(t, "cur-a", c1.Device, "sovereign token must carry the device claim")
 
 	// A plain token (ORCID/demo/refresh) omits it.
-	noDev, err := signJWT("0000-0001-2345-6789", priv, kid)
+	noDev, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, priv, kid)
 	require.NoError(t, err)
 	var c2 id1TokenClaims
 	_, _, err = new(jwt.Parser).ParseUnverified(noDev, &c2)
@@ -185,7 +185,7 @@ func TestSignJWT_RS256Valid(t *testing.T) {
 	keyID, privKey, _ := GetOrCreateSigningKey(kv)
 
 	orcidID := "0000-0001-2345-6789"
-	tokenString, err := signJWT(orcidID, privKey, keyID)
+	tokenString, err := signJWT(orcidID, []string{"orcid"}, privKey, keyID)
 
 	require.NoError(t, err)
 	assert.NotEmpty(t, tokenString)
@@ -215,7 +215,7 @@ func TestSignJWT_IssuerAudienceConfigurableViaEnv(t *testing.T) {
 	kv := setupTestKVStore(t)
 	keyID, privKey, _ := GetOrCreateSigningKey(kv)
 
-	tokenString, err := signJWT("service", privKey, keyID)
+	tokenString, err := signJWT("service", []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
@@ -239,7 +239,7 @@ func TestSignJWT_IssuerAudienceDefaultWhenEnvUnset(t *testing.T) {
 	kv := setupTestKVStore(t)
 	keyID, privKey, _ := GetOrCreateSigningKey(kv)
 
-	tokenString, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	tokenString, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
@@ -258,7 +258,7 @@ func TestSignJWT_HasCorrectKeyID(t *testing.T) {
 	kv := setupTestKVStore(t)
 	keyID, privKey, _ := GetOrCreateSigningKey(kv)
 
-	tokenString, _ := signJWT("0000-0001-2345-6789", privKey, keyID)
+	tokenString, _ := signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
 
 	// Parse header to verify kid
 	token, _ := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
@@ -407,7 +407,7 @@ func TestValidateRS256JWT(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("valid JWT returns correct claims", func(t *testing.T) {
-		tokenStr, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+		tokenStr, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
 		require.NoError(t, err)
 
 		claims, err := ValidateRS256JWT(tokenStr, kv)
@@ -438,7 +438,7 @@ func TestValidateRS256JWT(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// K8s-Secret-primary JWT key loading (Task 8).
+// K8s-Secret-primary JWT key loading.
 // ---------------------------------------------------------------------------
 
 // memoryKV is a test double implementing KeyValueStore with in-memory storage.
@@ -530,7 +530,7 @@ func TestValidateRS256JWT_UsesEnvVarPublicKey(t *testing.T) {
 	t.Setenv("ID1_JWT_KEY_ID", keyID)
 
 	// Sign a JWT with that key.
-	tokenStr, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	tokenStr, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	// Validate against an EMPTY KV store - validation must use the env var.
@@ -563,7 +563,7 @@ func TestValidateRS256JWT_UsesMemoryCachePublicKey(t *testing.T) {
 	_memKeyMu.Unlock()
 
 	// Sign a JWT with the cached key.
-	tokenStr, err := signJWT("0000-0001-5555-6666", privKey, keyID)
+	tokenStr, err := signJWT("0000-0001-5555-6666", []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	// Validate against an empty KV store - must use memory cache.
@@ -755,7 +755,7 @@ func TestSignJWT_ServiceIdentityHasExtendedTTL(t *testing.T) {
 
 	// Test ORCID user JWT - should have 1 hour TTL
 	orcidID := "0000-0001-2345-6789"
-	orcidToken, err := signJWT(orcidID, privKey, keyID)
+	orcidToken, err := signJWT(orcidID, []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	orcidClaims := jwt.RegisteredClaims{}
@@ -767,7 +767,7 @@ func TestSignJWT_ServiceIdentityHasExtendedTTL(t *testing.T) {
 	assert.Equal(t, int64(3600), orcidTTL, "ORCID user JWT should have 1 hour (3600s) TTL")
 
 	// Test service identity JWT - should have 24 hour TTL
-	serviceToken, err := signJWT("service", privKey, keyID)
+	serviceToken, err := signJWT("service", []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	serviceClaims := jwt.RegisteredClaims{}
@@ -789,9 +789,9 @@ func TestSignJWT_IncludesBootID(t *testing.T) {
 	keyID, privKey, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 
-	tokenA, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	tokenA, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
-	tokenB, err := signJWT("0000-0001-2345-6789", privKey, keyID)
+	tokenB, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
 	require.NoError(t, err)
 
 	// Parse into MapClaims so we can read the custom id1_boot_id claim.
@@ -820,6 +820,76 @@ func TestSignJWT_IncludesBootID(t *testing.T) {
 	// BootID is also accessible via the exported BootID() helper so
 	// callers (and tests) need not decode a token to learn it.
 	assert.Equal(t, bootA, BootID(), "BootID() must return the same value signJWT embeds")
+}
+
+// TestHandleDemoUser_MintsNonAdminDemoUser verifies the public demo endpoint mints
+// the seeded NON-admin demo user, never the admin ORCID, and stamps amr=["demo"].
+func TestHandleDemoUser_MintsNonAdminDemoUser(t *testing.T) {
+	kv := setupTestKVStore(t)
+	rec := httptest.NewRecorder()
+	HandleDemoUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/unauth_demo", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		JWT string `json:"jwt"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
+	require.NoError(t, err)
+	assert.Equal(t, "0009-0009-9355-3782", claims.Subject,
+		"demo endpoint must mint the non-admin demo user, never the admin ORCID 0009-0002-8023-3658")
+	assert.Contains(t, claims.AMR, "demo")
+}
+
+// TestHandleTestUser_AMRParam verifies the ENV-gated test endpoint honours an optional
+// whitelisted ?amr= override (so a caller can mint a token with a chosen mint-path
+// provenance) and rejects an unknown value.
+func TestHandleTestUser_AMRParam(t *testing.T) {
+	kv := setupTestKVStore(t)
+	// chosen amr honoured
+	rec := httptest.NewRecorder()
+	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-1111-1111&amr=orcid", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		JWT string `json:"jwt"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"orcid"}, claims.AMR)
+	// unknown amr rejected
+	rec2 := httptest.NewRecorder()
+	HandleTestUser(kv)(rec2, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-1111-1111&amr=bogus", nil))
+	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+}
+
+// TestSignJWT_StampsAMR verifies signJWT threads the amr (authentication method
+// reference) provenance claim into the issued token, so the backend can tell a
+// real ORCID login from a test/demo/sovereign token.
+func TestSignJWT_StampsAMR(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	tok, err := signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
+	require.NoError(t, err)
+	claims, err := ValidateRS256JWTID1Claims(tok, kv)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"orcid"}, claims.AMR)
+}
+
+// TestHandleTestUser_StampsTestAMR verifies the ENV-gated test-helper endpoint
+// stamps amr=["test"] by default, so its tokens are distinguishable from a real login.
+func TestHandleTestUser_StampsTestAMR(t *testing.T) {
+	kv := setupTestKVStore(t)
+	rec := httptest.NewRecorder()
+	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-1111-1111", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body struct {
+		JWT string `json:"jwt"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
+	require.NoError(t, err)
+	assert.Contains(t, claims.AMR, "test")
 }
 
 // __END_OF_FILE_MARKER__

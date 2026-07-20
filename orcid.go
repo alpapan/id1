@@ -291,8 +291,10 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Sign JWT with ORCID iD as subject
-	jwtToken, err := signJWT(orcidID, privKey, keyID)
+	// Sign JWT with ORCID iD as subject. amr=["orcid"] marks a real, proven
+	// ORCID login - the only provenance the backend will auto-provision a new
+	// user row from (see curatorium-backend JIT-provisioning gate).
+	jwtToken, err := signJWT(orcidID, []string{"orcid"}, privKey, keyID)
 	if err != nil {
 		http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
 		return
