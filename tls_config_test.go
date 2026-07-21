@@ -163,6 +163,7 @@ func TestBuildTLSConfig_SNI_SelectsLECertForCuratoriumApp(t *testing.T) {
 	t.Setenv("SSL_CA_CERTS", cmCert)
 	t.Setenv("SSL_LE_CERTFILE", leCert)
 	t.Setenv("SSL_LE_KEYFILE", leKey)
+	t.Setenv("CURATORIUM_DOMAIN", "curatorium.app")
 
 	cfg, err := BuildTLSConfig()
 	require.NoError(t, err)
@@ -190,6 +191,7 @@ func TestBuildTLSConfig_SNI_SelectsCMCertForInternal(t *testing.T) {
 	t.Setenv("SSL_CA_CERTS", cmCert)
 	t.Setenv("SSL_LE_CERTFILE", leCert)
 	t.Setenv("SSL_LE_KEYFILE", leKey)
+	t.Setenv("CURATORIUM_DOMAIN", "curatorium.app")
 
 	cfg, err := BuildTLSConfig()
 	require.NoError(t, err)
@@ -212,6 +214,7 @@ func TestBuildTLSConfig_NoLECert_FallsBackToCM(t *testing.T) {
 	t.Setenv("SSL_CERTFILE", cmCert)
 	t.Setenv("SSL_KEYFILE", cmKey)
 	t.Setenv("SSL_CA_CERTS", cmCert)
+	t.Setenv("CURATORIUM_DOMAIN", "curatorium.app")
 	// No LE cert env vars
 
 	cfg, err := BuildTLSConfig()
@@ -225,4 +228,120 @@ func TestBuildTLSConfig_NoLECert_FallsBackToCM(t *testing.T) {
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	require.NoError(t, err)
 	assert.Equal(t, "cm", leaf.Subject.CommonName, "without LE cert, all SNI should get CM cert")
+}
+
+func TestBuildTLSConfig_SNI_UsesConfiguredDomainSuffix(t *testing.T) {
+	dir := t.TempDir()
+
+	cmCert, cmKey := generateTestCertWithSANs(t, dir, "cm", []string{"id1-router"})
+	leCert, leKey := generateTestCertWithSANs(t, dir, "le", []string{"auth.example-test.org"})
+
+	t.Setenv("MTLS_ENABLED", "true")
+	t.Setenv("SSL_CERTFILE", cmCert)
+	t.Setenv("SSL_KEYFILE", cmKey)
+	t.Setenv("SSL_CA_CERTS", cmCert)
+	t.Setenv("SSL_LE_CERTFILE", leCert)
+	t.Setenv("SSL_LE_KEYFILE", leKey)
+	t.Setenv("CURATORIUM_DOMAIN", "example-test.org")
+
+	cfg, err := BuildTLSConfig()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	hello := &tls.ClientHelloInfo{ServerName: "auth.example-test.org"}
+	cert, err := cfg.GetCertificate(hello)
+	require.NoError(t, err)
+
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	require.NoError(t, err)
+	assert.Equal(t, "le", leaf.Subject.CommonName, "SNI suffix must be driven by CURATORIUM_DOMAIN, not hardcoded to curatorium.app")
+}
+
+// TestBuildTLSConfig_SNI_RejectsSuffixConfusion pins down that the configured-domain
+// match is a real dot-delimited suffix match, not a bare substring match. A ServerName
+// that merely contains the domain (as a label prefix, or without the separating dot)
+// must NOT be treated as belonging to the domain - that would let an attacker-chosen
+// name like "curatorium.app.evil.example" or "evilcuratorium.app" claim the public
+// Let's Encrypt cert's trust context.
+func TestBuildTLSConfig_SNI_RejectsSuffixConfusion(t *testing.T) {
+	dir := t.TempDir()
+
+	cmCert, cmKey := generateTestCertWithSANs(t, dir, "cm", []string{"id1-router"})
+	leCert, leKey := generateTestCertWithSANs(t, dir, "le", []string{"auth.curatorium.app"})
+
+	t.Setenv("MTLS_ENABLED", "true")
+	t.Setenv("SSL_CERTFILE", cmCert)
+	t.Setenv("SSL_KEYFILE", cmKey)
+	t.Setenv("SSL_CA_CERTS", cmCert)
+	t.Setenv("SSL_LE_CERTFILE", leCert)
+	t.Setenv("SSL_LE_KEYFILE", leKey)
+	t.Setenv("CURATORIUM_DOMAIN", "curatorium.app")
+
+	cfg, err := BuildTLSConfig()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	cases := []struct {
+		name       string
+		serverName string
+	}{
+		{"domain-as-prefix-label", "curatorium.app.evil.example"},
+		{"domain-suffix-without-separator", "evilcuratorium.app"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hello := &tls.ClientHelloInfo{ServerName: tc.serverName}
+			cert, err := cfg.GetCertificate(hello)
+			require.NoError(t, err)
+
+			leaf, err := x509.ParseCertificate(cert.Certificate[0])
+			require.NoError(t, err)
+			assert.Equal(t, "cm", leaf.Subject.CommonName,
+				"ServerName %q must not be treated as under curatorium.app", tc.serverName)
+		})
+	}
+}
+
+// TestBuildTLSConfig_SNI_EmptyDomainDefaultsSafely pins down that an unset/empty
+// CURATORIUM_DOMAIN falls back to the literal default "curatorium.app" - it must NOT
+// silently drop the fallback and compare against a bare empty-string suffix (which
+// would only match ServerNames ending in a literal trailing dot, but is still an
+// unintended degradation of the configured default).
+func TestBuildTLSConfig_SNI_EmptyDomainDefaultsSafely(t *testing.T) {
+	dir := t.TempDir()
+
+	cmCert, cmKey := generateTestCertWithSANs(t, dir, "cm", []string{"id1-router"})
+	leCert, leKey := generateTestCertWithSANs(t, dir, "le", []string{"auth.curatorium.app"})
+
+	t.Setenv("MTLS_ENABLED", "true")
+	t.Setenv("SSL_CERTFILE", cmCert)
+	t.Setenv("SSL_KEYFILE", cmKey)
+	t.Setenv("SSL_CA_CERTS", cmCert)
+	t.Setenv("SSL_LE_CERTFILE", leCert)
+	t.Setenv("SSL_LE_KEYFILE", leKey)
+	t.Setenv("CURATORIUM_DOMAIN", "") // explicitly empty, same as unset from os.Getenv's view
+
+	cfg, err := BuildTLSConfig()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	// The default domain still selects the LE cert for a name actually under it.
+	leHello := &tls.ClientHelloInfo{ServerName: "auth.curatorium.app"}
+	leCertResult, err := cfg.GetCertificate(leHello)
+	require.NoError(t, err)
+	leLeaf, err := x509.ParseCertificate(leCertResult.Certificate[0])
+	require.NoError(t, err)
+	assert.Equal(t, "le", leLeaf.Subject.CommonName, "empty CURATORIUM_DOMAIN must still default to curatorium.app")
+
+	// An unrelated name must NOT match - proves the default "curatorium.app" is
+	// actually in effect (an unintended bare-empty-string suffix would only match
+	// ServerNames ending in a literal trailing dot, which this name does not, so
+	// this assertion alone would not catch that specific regression - the first
+	// assertion above is what pins the fallback).
+	unrelatedHello := &tls.ClientHelloInfo{ServerName: "auth.evil.example"}
+	cmCertResult, err := cfg.GetCertificate(unrelatedHello)
+	require.NoError(t, err)
+	cmLeaf, err := x509.ParseCertificate(cmCertResult.Certificate[0])
+	require.NoError(t, err)
+	assert.Equal(t, "cm", cmLeaf.Subject.CommonName, "empty CURATORIUM_DOMAIN must not match an unrelated ServerName")
 }

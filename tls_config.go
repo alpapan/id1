@@ -23,10 +23,11 @@ import (
 //
 // Supports SNI-based certificate selection:
 //   - SSL_CERTFILE / SSL_KEYFILE: primary cert (cert-manager, for internal traffic)
-//   - SSL_LE_CERTFILE / SSL_LE_KEYFILE: optional Let's Encrypt cert (for *.curatorium.app)
+//   - SSL_LE_CERTFILE / SSL_LE_KEYFILE: optional Let's Encrypt cert (for *.CURATORIUM_DOMAIN)
 //
 // When both certs are available, GetCertificate selects the LE cert for
-// *.curatorium.app SNI and the cert-manager cert for everything else.
+// SNI names under CURATORIUM_DOMAIN (default "curatorium.app" when unset)
+// and the cert-manager cert for everything else.
 func BuildTLSConfig() (*tls.Config, error) {
 	if os.Getenv("MTLS_ENABLED") != "true" {
 		return nil, nil
@@ -64,7 +65,11 @@ func BuildTLSConfig() (*tls.Config, error) {
 		NextProtos: []string{"http/1.1"},
 		ClientAuth: tls.VerifyClientCertIfGiven,
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if leCert != nil && strings.HasSuffix(hello.ServerName, ".curatorium.app") {
+			domain := os.Getenv("CURATORIUM_DOMAIN")
+			if domain == "" {
+				domain = "curatorium.app"
+			}
+			if leCert != nil && strings.HasSuffix(hello.ServerName, "."+domain) {
 				return leCert, nil
 			}
 			return &defaultCert, nil
