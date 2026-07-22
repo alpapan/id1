@@ -302,12 +302,14 @@ func TestBuildTLSConfig_SNI_RejectsSuffixConfusion(t *testing.T) {
 	}
 }
 
-// TestBuildTLSConfig_SNI_EmptyDomainDefaultsSafely pins down that an unset/empty
-// CURATORIUM_DOMAIN falls back to the literal default "curatorium.app" - it must NOT
-// silently drop the fallback and compare against a bare empty-string suffix (which
-// would only match ServerNames ending in a literal trailing dot, but is still an
-// unintended degradation of the configured default).
-func TestBuildTLSConfig_SNI_EmptyDomainDefaultsSafely(t *testing.T) {
+// TestBuildTLSConfig_SNI_EmptyDomainRefusesToServe pins down that an unset/empty
+// CURATORIUM_DOMAIN must NOT silently default to "curatorium.app" and must NOT
+// silently compare against a bare empty-string suffix (which would only match
+// ServerNames ending in a literal trailing dot - itself an unintended
+// match-everything-ish degradation). With an LE cert configured but no domain to
+// scope it, GetCertificate must refuse rather than guess for EVERY ServerName,
+// including one that would have matched the old hardcoded default.
+func TestBuildTLSConfig_SNI_EmptyDomainRefusesToServe(t *testing.T) {
 	dir := t.TempDir()
 
 	cmCert, cmKey := generateTestCertWithSANs(t, dir, "cm", []string{"id1-router"})
@@ -325,23 +327,15 @@ func TestBuildTLSConfig_SNI_EmptyDomainDefaultsSafely(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 
-	// The default domain still selects the LE cert for a name actually under it.
+	// A ServerName that would have matched the old hardcoded "curatorium.app"
+	// default must now be refused, not silently served the LE cert.
 	leHello := &tls.ClientHelloInfo{ServerName: "auth.curatorium.app"}
-	leCertResult, err := cfg.GetCertificate(leHello)
-	require.NoError(t, err)
-	leLeaf, err := x509.ParseCertificate(leCertResult.Certificate[0])
-	require.NoError(t, err)
-	assert.Equal(t, "le", leLeaf.Subject.CommonName, "empty CURATORIUM_DOMAIN must still default to curatorium.app")
+	_, err = cfg.GetCertificate(leHello)
+	require.Error(t, err, "an unset CURATORIUM_DOMAIN with an LE cert configured must refuse rather than guess a default suffix")
 
-	// An unrelated name must NOT match - proves the default "curatorium.app" is
-	// actually in effect (an unintended bare-empty-string suffix would only match
-	// ServerNames ending in a literal trailing dot, which this name does not, so
-	// this assertion alone would not catch that specific regression - the first
-	// assertion above is what pins the fallback).
+	// An unrelated name must be refused too - proves this is a real refusal, not
+	// an accidental match-everything suffix that happens to also reject one name.
 	unrelatedHello := &tls.ClientHelloInfo{ServerName: "auth.evil.example"}
-	cmCertResult, err := cfg.GetCertificate(unrelatedHello)
-	require.NoError(t, err)
-	cmLeaf, err := x509.ParseCertificate(cmCertResult.Certificate[0])
-	require.NoError(t, err)
-	assert.Equal(t, "cm", cmLeaf.Subject.CommonName, "empty CURATORIUM_DOMAIN must not match an unrelated ServerName")
+	_, err = cfg.GetCertificate(unrelatedHello)
+	require.Error(t, err, "an unset CURATORIUM_DOMAIN with an LE cert configured must refuse for any ServerName")
 }

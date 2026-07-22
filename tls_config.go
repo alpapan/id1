@@ -26,8 +26,10 @@ import (
 //   - SSL_LE_CERTFILE / SSL_LE_KEYFILE: optional Let's Encrypt cert (for *.CURATORIUM_DOMAIN)
 //
 // When both certs are available, GetCertificate selects the LE cert for
-// SNI names under CURATORIUM_DOMAIN (default "curatorium.app" when unset)
-// and the cert-manager cert for everything else.
+// SNI names under CURATORIUM_DOMAIN and the cert-manager cert for everything
+// else. CURATORIUM_DOMAIN has no default: if it is unset or empty while an LE
+// cert is configured, GetCertificate refuses (returns an error) rather than
+// guessing a default suffix or matching every SNI name.
 func BuildTLSConfig() (*tls.Config, error) {
 	if os.Getenv("MTLS_ENABLED") != "true" {
 		return nil, nil
@@ -65,11 +67,17 @@ func BuildTLSConfig() (*tls.Config, error) {
 		NextProtos: []string{"http/1.1"},
 		ClientAuth: tls.VerifyClientCertIfGiven,
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if leCert == nil {
+				return &defaultCert, nil
+			}
 			domain := os.Getenv("CURATORIUM_DOMAIN")
 			if domain == "" {
-				domain = "curatorium.app"
+				// An LE cert is configured but there is no domain to scope it -
+				// refuse rather than guess a default suffix or match every SNI
+				// via a bare empty-string suffix comparison.
+				return nil, fmt.Errorf("id1: CURATORIUM_DOMAIN must be set to serve the configured Let's Encrypt certificate")
 			}
-			if leCert != nil && strings.HasSuffix(hello.ServerName, "."+domain) {
+			if strings.HasSuffix(hello.ServerName, "."+domain) {
 				return leCert, nil
 			}
 			return &defaultCert, nil
