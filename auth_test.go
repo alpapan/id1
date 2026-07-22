@@ -25,7 +25,7 @@ func TestAuthOwnerCanSetOwnPublicKey(t *testing.T) {
 	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
 	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
-	if !auth("testid1", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{})) {
+	if !auth("testid1", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{}), "") {
 		t.Errorf("testid1 should be authorized to set own device key")
 	}
 }
@@ -35,7 +35,7 @@ func TestAuthNonOwnerCannotSetOthersKey(t *testing.T) {
 	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
 	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
-	if auth("testid2", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{})) {
+	if auth("testid2", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{}), "") {
 		t.Errorf("testid2 should not be authorized to modify testid1's device key")
 	}
 }
@@ -45,7 +45,7 @@ func TestAuthAnonymousCanReadPublicKeys(t *testing.T) {
 	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
 	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
-	if !auth("", NewCommand(Get, testid1DeviceKey, map[string]string{}, []byte{})) {
+	if !auth("", NewCommand(Get, testid1DeviceKey, map[string]string{}, []byte{}), "") {
 		t.Errorf("anonymous user should be authorized to read public device keys")
 	}
 }
@@ -143,27 +143,63 @@ func TestIdExists_SingularPubKey(t *testing.T) {
 }
 
 // TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap verifies that once
-// a service identity has bootstrapped at {id}/pub/key, a second anonymous
-// POST to the same path is rejected - preventing an attacker from overwriting
-// the service key and minting forged JWTs.
+// a service identity has bootstrapped at {id}/pub/key, a second POST to the
+// same path is rejected even with the correct internal secret - preventing an
+// attacker (or a misconfigured caller) from overwriting the service key and
+// minting forged JWTs. This gate adds no in-band recovery/overwrite path.
 func TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap(t *testing.T) {
 	setupAuthTest(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "test-internal-secret")
 
 	singularKey := KK("service", "pub", "key")
 
-	// Bootstrap: first anonymous POST to service/pub/key is allowed because
-	// the identity doesn't exist yet (isNewIdClaim && !exists).
-	if !auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{})) {
-		t.Fatal("bootstrap anonymous POST should be authorized when service does not exist")
-	}
-
-	// Seed the singular key to simulate a successful bootstrap.
+	// Seed the singular key to simulate a successful prior bootstrap.
 	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).Exec(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Second anonymous POST - must now be rejected.
-	if auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{})) {
-		t.Error("anonymous overwrite should be rejected once service identity exists")
+	// A second POST, even with the correct internal secret, must be rejected:
+	// the identity already exists.
+	if auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{}), "test-internal-secret") {
+		t.Error("anonymous overwrite should be rejected once service identity exists, even with the internal secret")
+	}
+}
+
+// TestAuth_NewIdBootstrapRequiresInternalSecret verifies that the anonymous
+// new-id bootstrap (Set to {id}/pub/key for an id that does not yet exist) is
+// gated on the ID1_INTERNAL_SECRET header: no secret configured, no header, or
+// a wrong header must all be rejected; only the correct header is authorized.
+// Closes an unauthenticated identity-squat: without this gate any caller could
+// permanently claim an unclaimed id string with no validation, no TTL, and no
+// in-band recovery.
+func TestAuth_NewIdBootstrapRequiresInternalSecret(t *testing.T) {
+	setupAuthTest(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "test-internal-secret")
+
+	singularKey := KK("service", "pub", "key")
+	newCmd := func() Command { return NewCommand(Set, singularKey, map[string]string{}, []byte{}) }
+
+	if auth("", newCmd(), "") {
+		t.Error("bootstrap without the internal secret header should be rejected")
+	}
+	if auth("", newCmd(), "wrong-secret") {
+		t.Error("bootstrap with an incorrect internal secret should be rejected")
+	}
+	if !auth("", newCmd(), "test-internal-secret") {
+		t.Error("bootstrap with the correct internal secret should be authorized when the id does not exist")
+	}
+}
+
+// TestAuth_NewIdBootstrapFailsClosedWhenSecretUnset verifies that an unset
+// (or empty) ID1_INTERNAL_SECRET never authorizes the bootstrap, even against
+// an empty header - the gate fails closed on misconfiguration rather than
+// silently degrading to the old anonymous-allow behaviour.
+func TestAuth_NewIdBootstrapFailsClosedWhenSecretUnset(t *testing.T) {
+	setupAuthTest(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "")
+
+	singularKey := KK("service", "pub", "key")
+	if auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{}), "") {
+		t.Error("bootstrap must be rejected when ID1_INTERNAL_SECRET is unset")
 	}
 }

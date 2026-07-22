@@ -39,7 +39,10 @@ func dotAfter(dir string) {
 		}
 		dotAfterContent, _ := os.ReadFile(path)
 		dotAfterCommand, parseError := ParseCommand(dotAfterContent)
-		if parseError == nil && auth(dotAfterCommand.Args["x-id"], dotAfterCommand) {
+		// No HTTP request context in the scheduled sweep, so the internal-secret
+		// new-id bootstrap exemption is never available here - a scheduled command
+		// relies only on the owner/public-get/dot-op grants.
+		if parseError == nil && auth(dotAfterCommand.Args["x-id"], dotAfterCommand, "") {
 			dotAfterCommand.Exec()
 		} else {
 			log.Printf("unauthorised .after command by '%s': %s %s", dotAfterCommand.Args["x-id"], dotAfterCommand.Op, dotAfterCommand.Key)

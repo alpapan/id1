@@ -66,11 +66,11 @@ func nextcloudProxy(target string) (http.HandlerFunc, error) {
 func main() {
 	// Load a .env file when present (host deployments); godotenv populates the process
 	// env without overwriting existing variables, so real environment variables
-	// (Kubernetes) win. ResolveConfig reads PORT/DBPATH/NEXTCLOUD_URL via os.Getenv.
+	// (Kubernetes) win. ResolveConfig reads PORT/DBPATH/NEXTCLOUD_URL/BIND_ADDR via os.Getenv.
 	_ = godotenv.Load(".env")
-	port, dbpath, nextcloudURL := id1.ResolveConfig(os.Getenv)
+	port, dbpath, nextcloudURL, bindAddr := id1.ResolveConfig(os.Getenv)
 
-	fmt.Printf("id1 API build %s, port: %s, dbpath: %s\n", version, port, dbpath)
+	fmt.Printf("id1 API build %s, port: %s, dbpath: %s, bind: %s\n", version, port, dbpath, bindAddr)
 	// The resolved JWT claims: a dedicated instance (annot8r_id1) must stamp its own
 	// issuer/audience. A wrong audience is not rejected here, only downstream, where a
 	// bad token degrades to the public tier with no error, so log the values an operator
@@ -200,16 +200,20 @@ func main() {
 	})
 	fmt.Println("Registered /auth/sovereign/devices device list + revocation")
 
-	// Test-helper AND demo JWT endpoints - registered in ENV=test and ENV=dev ONLY.
-	// The demo endpoint mints a token for any anonymous caller, so gating it on the
-	// environment keeps a production id1 from handing out demo identities; the
-	// perimeter (Cloudflare Access) is what takes the still-public dev/test host off
-	// the internet. Guard logic is in id1.IsDevOrTestEnv (jwt_signing.go).
-	if id1.IsDevOrTestEnv(os.Getenv("ENV")) {
-		http.HandleFunc("/auth/test_user", id1.HandleTestUser(id1KVStore))
-		http.HandleFunc("/auth/unauth_demo", id1.HandleDemoUser(id1KVStore))
-		fmt.Printf("Registered /auth/test_user and /auth/unauth_demo (ENV=%s)\n", os.Getenv("ENV"))
-	}
+	// Demo identity mint. Compiled in only under the `curatoriumdemo` build tag -
+	// Curatorium's own deployment, where it is always registered (no ENV check: the
+	// demo pages are production surface) and reachable only in-cluster, since it is
+	// on neither the Traefik public path list nor the Next.js rewrite array - the
+	// only path to it is the frontend's in-cluster proxy /api/demo/unauth-token.
+	// annot8r_id1 never requests this tag and so never carries the handler: it has
+	// no ORCID, no browser, no Traefik, and no rate-limited proxy in front of it.
+	id1.RegisterDemoRoutes(http.DefaultServeMux, id1KVStore)
+	fmt.Println("Registered demo identity mint routes (no-op unless built with curatoriumdemo)")
+
+	// Arbitrary-ORCID mint. Compiled in only under the `testmint` build tag, and
+	// registered only when ENV is dev or test. A production image carries neither
+	// the route nor the handler.
+	id1.RegisterTestMintRoutes(http.DefaultServeMux, id1KVStore)
 
 	// Single-use sync-ticket mint: an authenticated (RS256 JWT) caller exchanges its
 	// token for a short-TTL opaque ticket used to authenticate the header-less /sync
@@ -234,24 +238,25 @@ func main() {
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", mainHandler)
 
-	fmt.Printf("Starting server on port %s\n", port)
+	fmt.Printf("Starting server on %s:%s\n", bindAddr, port)
 	tlsConfig, err := id1.BuildTLSConfig()
 	if err != nil {
 		log.Fatalf("Failed to build TLS config: %v", err)
 	}
 	if tlsConfig != nil {
 		server := &http.Server{
-			Addr:      "0.0.0.0:" + port,
+			Addr:      bindAddr + ":" + port,
 			TLSConfig: tlsConfig,
 			ErrorLog:  log.New(id1.NewHandshakeEOFFilter(os.Stderr), "", log.LstdFlags),
 		}
-		fmt.Println("Starting with TLS enabled")
+		fmt.Printf("Starting with TLS enabled, bound to %s:%s\n", bindAddr, port)
 		// Empty strings: GetCertificate in TLSConfig handles all cert selection via SNI.
 		if err := server.ListenAndServeTLS("", ""); err != nil {
 			log.Fatalf("error starting TLS service: %s", err)
 		}
 	} else {
-		if err := http.ListenAndServe("0.0.0.0:"+port, nil); err != nil {
+		fmt.Printf("Starting WITHOUT TLS (plaintext), bound to %s:%s\n", bindAddr, port)
+		if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
 			log.Fatalf("error starting service: %s", err)
 		}
 	}

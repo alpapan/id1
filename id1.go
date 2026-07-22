@@ -62,7 +62,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		}
 		req.Cmd.Args["x-id"] = id
 
-		authOk := auth(id, req.Cmd)
+		authOk := auth(id, req.Cmd, r.Header.Get("X-ID1-Internal-Secret"))
 
 		if !authOk {
 			if len(id) > 0 {

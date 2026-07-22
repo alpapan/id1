@@ -10,6 +10,7 @@
 package id1
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,14 +19,32 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func auth(id string, cmd Command) bool {
+// auth reports whether id may perform cmd. internalSecretHeader is the
+// X-ID1-Internal-Secret header value from the originating HTTP request, when
+// one is available; pass "" when there is no request context (e.g. the
+// scheduled .after sweep in dot_after.go).
+func auth(id string, cmd Command, internalSecretHeader string) bool {
 	isOwner := cmd.Key.Id == id
 	isPublicGet := cmd.Key.Pub && (cmd.Op == Get || cmd.Op == List)
 	authorized := isOwner || isPublicGet || authDotOp(id, cmd)
 	isNewIdClaim := !authorized && (cmd.Op == Set && cmd.Key.Pub && cmd.Key.Name == "key")
 	exists := idExists(cmd.Key.Id)
-	authorized = authorized || (isNewIdClaim && !exists)
+	authorized = authorized || (isNewIdClaim && !exists && validInternalSecret(internalSecretHeader))
 	return authorized
+}
+
+// validInternalSecret reports whether header matches the server's configured
+// ID1_INTERNAL_SECRET. An unset (or empty) server-side secret never matches -
+// not even against an empty header - so a misconfigured deployment fails
+// closed (the bootstrap is refused) rather than degrading to an
+// unauthenticated-allow. The comparison is constant-time to avoid leaking the
+// secret's contents through a response-timing side channel.
+func validInternalSecret(header string) bool {
+	secret := os.Getenv("ID1_INTERNAL_SECRET")
+	if secret == "" || header == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(header), []byte(secret)) == 1
 }
 
 func idExists(id string) bool {

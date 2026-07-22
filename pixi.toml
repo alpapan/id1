@@ -14,11 +14,46 @@ platforms = ["linux-64"]
 # `pixi run -m apps/id1/pixi.toml test`
 test = "go test ./..."
 
+# `pixi run -m apps/id1/pixi.toml test-testmint`
+# The dev/test image shape: compiles testmint_on.go (the arbitrary-ORCID
+# /auth/test_user mint). The default `test` task compiles testmint_off.go, so
+# both shapes need running - a change that passes one can break the other.
+test-testmint = "go test -tags=testmint ./..."
+
 # `pixi run -m apps/id1/pixi.toml test-integration`
 # Live end-to-end tests gated behind the `integration` build tag (the default `test`
 # and the pre-commit hook skip them). main_integration_test.go builds the real main.go_
 # binary and runs it in both TLS modes. TestMain auto-loads .env.test, same as `test`.
 test-integration = "go test -tags=integration ./..."
 
+# `pixi run -m apps/id1/pixi.toml test-integration-testmint`
+# The integration suite compiled in the dev/test image shape. TestID1MintsRequireBuildTags
+# builds every real binary shape itself, so this variant exists to compile the tagged
+# unit files alongside it, not to change what that test asserts.
+test-integration-testmint = "go test -tags=integration,testmint ./..."
+
+# `pixi run -m apps/id1/pixi.toml test-curatoriumdemo`
+# Curatorium's own deployment shape: compiles demo_on.go (the demo-identity
+# /auth/unauth_demo mint the four production demo pages depend on). The default
+# `test` task compiles demo_off.go (the annot8r_id1 shape, which must never carry
+# this handler) - both shapes need running, since a change that passes one can
+# break the other.
+test-curatoriumdemo = "go test -tags=curatoriumdemo ./..."
+
+# `pixi run -m apps/id1/pixi.toml test-integration-curatoriumdemo`
+# The integration suite compiled with demo_on.go's unit tests alongside it, for
+# the same reason as test-integration-testmint above.
+test-integration-curatoriumdemo = "go test -tags=integration,curatoriumdemo ./..."
+
 # `pixi run -m apps/id1/pixi.toml lint`  (mirrors bin/lint.sh's id1 go-vet step)
 lint = "go vet ./..."
+
+# `pixi run -m apps/id1/pixi.toml lint-testmint`
+# `go vet ./...` only inspects the files the current tag selection compiles, so
+# the untagged `lint` task never looks at testmint_on.go. Both shapes need vetting.
+lint-testmint = "go vet -tags=testmint ./..."
+
+# `pixi run -m apps/id1/pixi.toml lint-curatoriumdemo`
+# `go vet ./...` never looks at demo_on.go either. Both curatoriumdemo shapes
+# need vetting, same rationale as lint-testmint.
+lint-curatoriumdemo = "go vet -tags=curatoriumdemo ./..."

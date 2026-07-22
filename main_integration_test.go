@@ -36,7 +36,7 @@ import (
 )
 
 func TestID1ServesJWKSInBothTLSModes(t *testing.T) {
-	bin := buildID1Binary(t)
+	bin := buildID1Binary(t, "")
 
 	t.Run("mtls_disabled_serves_over_http", func(t *testing.T) {
 		port := freePort(t)
@@ -81,48 +81,66 @@ func TestID1ServesJWKSInBothTLSModes(t *testing.T) {
 	})
 }
 
-// TestID1DemoAndTestUserEnvGated builds the real main.go_ and asserts that both the
-// demo (/auth/unauth_demo) and test-helper (/auth/test_user) mint endpoints are
-// registered ONLY in a dev/test environment. In prod neither is a registered route,
-// so the catch-all KV handler answers 404 (no JWT is ever minted); in test both mint.
-// A unit test cannot reach main.go_'s registration block, so this guards the gating.
-func TestID1DemoAndTestUserEnvGated(t *testing.T) {
-	bin := buildID1Binary(t)
+// TestID1MintsRequireBuildTags builds the real main.go_ in the three shapes that
+// actually get deployed and asserts both anonymous mints against each:
+//
+//   - bare (no tags): the annot8r_id1 shape. It has no ORCID, no browser, no
+//     Traefik route list, and no rate-limited proxy in front of it, so it must
+//     carry NEITHER mint, in every environment - this is the security property
+//     the `curatoriumdemo` tag exists to guarantee.
+//   - curatoriumdemo only: Curatorium's production shape. The demo mint is
+//     production surface (the four demo pages depend on it via the frontend's
+//     rate-limited proxy) so it must be present in every environment; the
+//     arbitrary-ORCID mint must still be absent.
+//   - testmint,curatoriumdemo: Curatorium's dev/test shape. Both mints present,
+//     with the arbitrary-ORCID one still gated by ENV at registration time.
+//
+// Non-reachability of either mint from the internet is otherwise a route-list
+// property of Curatorium's own deployment (Traefik + next.config.mjs), not a
+// binary property - this test is what proves the binary-level half holds.
+func TestID1MintsRequireBuildTags(t *testing.T) {
+	bareBin := buildID1Binary(t, "")
+	curatoriumProdBin := buildID1Binary(t, "curatoriumdemo")
+	curatoriumDevTestBin := buildID1Binary(t, "testmint,curatoriumdemo")
 
-	t.Run("prod_does_not_serve_demo_or_test_user", func(t *testing.T) {
-		port := freePort(t)
-		startID1(t, bin, map[string]string{
-			"PORT":         port,
-			"DBPATH":       t.TempDir(),
-			"MTLS_ENABLED": "false",
-			"ENV":          "prod",
-		})
-		client := &http.Client{Timeout: 3 * time.Second}
-		// /pub/jwks.json is registered in every env; polling it confirms readiness,
-		// by which point the (un)registered demo/test routes are already decided.
-		assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
-		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/unauth_demo", http.StatusNotFound)
-		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/test_user", http.StatusNotFound)
-	})
+	cases := []struct {
+		name           string
+		bin            string
+		env            string
+		wantTestUser   int
+		wantUnauthDemo int
+	}{
+		{"bare_prod_env", bareBin, "prod", http.StatusNotFound, http.StatusNotFound},
+		{"bare_test_env", bareBin, "test", http.StatusNotFound, http.StatusNotFound},
+		{"curatorium_prod_shape_prod_env", curatoriumProdBin, "prod", http.StatusNotFound, http.StatusOK},
+		{"curatorium_prod_shape_test_env", curatoriumProdBin, "test", http.StatusNotFound, http.StatusOK},
+		{"curatorium_devtest_shape_prod_env", curatoriumDevTestBin, "prod", http.StatusNotFound, http.StatusOK},
+		{"curatorium_devtest_shape_test_env", curatoriumDevTestBin, "test", http.StatusOK, http.StatusOK},
+	}
 
-	t.Run("test_serves_demo_and_test_user", func(t *testing.T) {
-		port := freePort(t)
-		startID1(t, bin, map[string]string{
-			"PORT":         port,
-			"DBPATH":       t.TempDir(),
-			"MTLS_ENABLED": "false",
-			"ENV":          "test",
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			port := freePort(t)
+			startID1(t, tc.bin, map[string]string{
+				"PORT":         port,
+				"DBPATH":       t.TempDir(),
+				"MTLS_ENABLED": "false",
+				"ENV":          tc.env,
+			})
+			client := &http.Client{Timeout: 3 * time.Second}
+			// /pub/jwks.json is registered in every env; polling it confirms readiness,
+			// by which point the (un)registered mint routes are already decided.
+			assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
+			assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/test_user", tc.wantTestUser)
+			assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/unauth_demo", tc.wantUnauthDemo)
 		})
-		client := &http.Client{Timeout: 3 * time.Second}
-		assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
-		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/unauth_demo", http.StatusOK)
-		assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/test_user", http.StatusOK)
-	})
+	}
 }
 
 // buildID1Binary compiles main.go_ into a runnable binary, mirroring apps/id1/Dockerfile:
 // a separate module that references the local id1 library via a replace directive.
-func buildID1Binary(t *testing.T) string {
+// goTags is passed to `go build -tags=...`; "" builds the production shape.
+func buildID1Binary(t *testing.T, goTags string) string {
 	t.Helper()
 	idSrc, err := os.Getwd() // `go test` runs in the package dir = the id1 module root
 	if err != nil {
@@ -146,7 +164,7 @@ func buildID1Binary(t *testing.T) string {
 		{"go", "mod", "edit", "-replace", "github.com/qodex/id1=" + idSrc},
 		{"go", "get", "github.com/joho/godotenv@v1.5.1"},
 		{"go", "mod", "tidy"},
-		{"go", "build", "-o", binPath, "."},
+		{"go", "build", "-tags=" + goTags, "-o", binPath, "."},
 	}
 	for _, args := range steps {
 		cmd := exec.Command(args[0], args[1:]...)

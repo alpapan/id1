@@ -127,7 +127,11 @@ func (t *Session) handleCommands() {
 
 			cmd.Args["x-id"] = t.Id
 
-			authOk := auth(t.Id, cmd)
+			// No per-message header exists on a WebSocket-framed command (the header
+			// was only present on the original HTTP upgrade request, already
+			// authorized by id1.go's Handle before the connection was upgraded), so
+			// the internal-secret new-id bootstrap exemption is never available here.
+			authOk := auth(t.Id, cmd, "")
 
 			if !authOk {
 				// Use "default" device for WebSocket challenge-response
