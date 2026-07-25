@@ -208,10 +208,28 @@ func TestSignJWT_IssuerAudienceConfigurableViaEnv(t *testing.T) {
 	assert.Equal(t, "annot8r-uniprot", claims.Audience[0])
 }
 
-// TestSignJWT_IssuerAudienceDefaultWhenEnvUnset guards curatorium: with the env vars
-// unset, a minted token must carry the existing hardcoded defaults byte-for-byte.
-func TestSignJWT_IssuerAudienceDefaultWhenEnvUnset(t *testing.T) {
+// TestSignJWT_PanicsWhenIssuerUnset guards curatorium: signJWT must not mint a
+// token with a guessed issuer when ID1_JWT_ISSUER is unset.
+func TestSignJWT_PanicsWhenIssuerUnset(t *testing.T) {
 	t.Setenv("ID1_JWT_ISSUER", "")
+	t.Setenv("ID1_JWT_AUDIENCE", "")
+
+	kv := setupTestKVStore(t)
+	keyID, privKey, _ := GetOrCreateSigningKey(kv)
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected signJWT to panic when ID1_JWT_ISSUER is unset")
+		}
+	}()
+	_, _ = signJWT("0000-0001-2345-6789", []string{"orcid"}, privKey, keyID)
+}
+
+// TestSignJWT_AudienceDefaultWhenEnvUnset guards curatorium: with only
+// ID1_JWT_AUDIENCE unset, a minted token must carry the existing hardcoded
+// audience default byte-for-byte.
+func TestSignJWT_AudienceDefaultWhenEnvUnset(t *testing.T) {
+	t.Setenv("ID1_JWT_ISSUER", "http://id1-router:8080")
 	t.Setenv("ID1_JWT_AUDIENCE", "")
 
 	kv := setupTestKVStore(t)
@@ -227,9 +245,18 @@ func TestSignJWT_IssuerAudienceDefaultWhenEnvUnset(t *testing.T) {
 	claims, ok := token.Claims.(*jwt.RegisteredClaims)
 	require.True(t, ok)
 
-	assert.Equal(t, "http://id1-router:8080", claims.Issuer)
 	require.NotEmpty(t, claims.Audience)
 	assert.Equal(t, "curatorium-backend", claims.Audience[0])
+}
+
+func TestJwtIssuerPanicsWhenUnset(t *testing.T) {
+	t.Setenv("ID1_JWT_ISSUER", "")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected jwtIssuer() to panic when ID1_JWT_ISSUER is unset")
+		}
+	}()
+	jwtIssuer()
 }
 
 func TestSignJWT_HasCorrectKeyID(t *testing.T) {

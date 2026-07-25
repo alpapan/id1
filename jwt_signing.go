@@ -109,7 +109,6 @@ const (
 	privKeyPrevPath    = "_system/priv/jwt-signing-key-prev"
 	pubKeyPrevPath     = "_system/pub/jwt-signing-key-prev"
 	defaultJWTAudience = "curatorium-backend"
-	defaultJWTIssuer   = "http://id1-router:8080" // Internal Kubernetes DNS for id1
 	jwtExpirationHours = 1
 )
 
@@ -124,13 +123,19 @@ func jwtAudience() string {
 	return defaultJWTAudience
 }
 
-// jwtIssuer returns the JWT issuer claim, overridable via ID1_JWT_ISSUER.
-// An empty/unset value falls back to the curatorium default.
+// jwtIssuer returns the JWT issuer claim, set via ID1_JWT_ISSUER. There is no
+// default: an unset value panics, since this claim identifies the instance
+// that minted the token and must match the backend's expectation exactly.
+// This panic is process-level fail-fast, not per-request: main's startup
+// path resolves the issuer before the HTTP server starts listening, so a
+// missing ID1_JWT_ISSUER stops the process at boot rather than surfacing as
+// a 500 on the first request that needs to sign a token.
 func jwtIssuer() string {
-	if v := os.Getenv("ID1_JWT_ISSUER"); v != "" {
-		return v
+	v := os.Getenv("ID1_JWT_ISSUER")
+	if v == "" {
+		panic("ID1_JWT_ISSUER is required and has no default; set it to the issuer URL this instance mints JWTs with")
 	}
-	return defaultJWTIssuer
+	return v
 }
 
 // JWTIssuer and JWTAudience expose the resolved issuer/audience claims so main can log
