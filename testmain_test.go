@@ -22,7 +22,24 @@ import (
 // read environment variables (e.g. HTTP_FRONTEND_PORT) need this bootstrap.
 func TestMain(m *testing.M) {
 	loadEnvTest()
+	loadTestOnlyDefaults()
 	os.Exit(m.Run())
+}
+
+// loadTestOnlyDefaults sets environment variables that production code
+// requires with no fallback (see jwtIssuer in jwt_signing.go) but that
+// .env.test does not carry, so unit tests that mint a JWT without caring
+// about the issuer value do not depend on ambient shell state. Individual
+// tests that exercise the unset/panic behavior itself (e.g.
+// TestJwtIssuerPanicsWhenUnset) override this via t.Setenv, which restores
+// this default afterward. Safe as a process-global os.Setenv (rather than
+// a per-test t.Setenv) because TestMain runs exactly once per test binary
+// invocation and completes before any test function starts, so the
+// sentinel is always in place before the first t.Setenv override runs.
+func loadTestOnlyDefaults() {
+	if os.Getenv("ID1_JWT_ISSUER") == "" {
+		os.Setenv("ID1_JWT_ISSUER", "http://id1-router:8080")
+	}
 }
 
 // loadEnvTest walks up from the current directory to find .env.test and
