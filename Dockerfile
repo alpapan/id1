@@ -1,4 +1,13 @@
-FROM localhost:5000/golang:1.25 AS build
+# Two distinct args, not one: the build stage's base (golang) and the runtime
+# stage's base (distroless) come from different public registries, so a single
+# shared arg cannot default correctly to both at once. Each defaults to its real
+# upstream registry so a bare `docker build` (a standalone clone, or
+# annot8r_id1's separate build script) resolves both stages unchanged. Curatorium's
+# own build overrides both via skaffold.yaml.template's buildArgs, pointing every
+# base image at its resolved local registry mirror instead.
+ARG GOLANG_REGISTRY_HOST=docker.io
+ARG DISTROLESS_REGISTRY_HOST=gcr.io
+FROM ${GOLANG_REGISTRY_HOST}/golang:1.25 AS build
 
 # Go build tags. Empty by default so an unparameterised build (e.g. a bare
 # `docker build` outside skaffold, or annot8r_id1's separate build script)
@@ -24,7 +33,7 @@ RUN cd /go/src/cmd && \
     go mod tidy && \
     CGO_ENABLED=0 go build -tags="${GO_TAGS}" -ldflags="-X main.version=$(date +%Y%m%d)" -o /go/bin/app
 
-FROM localhost:5000/distroless/static-debian12:nonroot
+FROM ${DISTROLESS_REGISTRY_HOST}/distroless/static-debian12:nonroot
 
 COPY --from=build /go/bin/app /
 CMD ["/app"]
