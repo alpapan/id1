@@ -137,6 +137,134 @@ func TestID1MintsRequireBuildTags(t *testing.T) {
 	}
 }
 
+// The two /internal/nc-* endpoints live only in main.go_, which `go test ./...`
+// cannot compile, so their registration - which path, which method, and the
+// refuse-to-register branch when the internal secret is empty - has no unit
+// coverage at all. This is the only layer that can assert it.
+func TestID1NcEndpointRegistration(t *testing.T) {
+	bin := buildID1Binary(t, "")
+
+	// A hex-encoded 32-byte key, the shape NC_DERIVATION_KEY carries.
+	const derivationKeyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+
+	t.Run("registered_when_both_secrets_present", func(t *testing.T) {
+		port := freePort(t)
+		startID1(t, bin, map[string]string{
+			"PORT":                port,
+			"DBPATH":              t.TempDir(),
+			"MTLS_ENABLED":        "false",
+			"ENV":                 "test",
+			"NC_DERIVATION_KEY":   derivationKeyHex,
+			"ID1_INTERNAL_SECRET": "integration-secret",
+		})
+		client := &http.Client{Timeout: 3 * time.Second}
+		base := "http://127.0.0.1:" + port
+		assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+
+		// Registered and gated: no header means 401 from the handler, not 404
+		// from the KV catch-all.
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusUnauthorized)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "", http.StatusUnauthorized)
+
+		// Each handler is registered at its OWN path with its OWN method gate.
+		// These are what catch the two paths being swapped.
+		assertNcStatus(t, client, "POST", base+"/internal/nc-token?orcid=0009-0002-8023-3658", "integration-secret", http.StatusMethodNotAllowed)
+		assertNcStatus(t, client, "GET", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "integration-secret", http.StatusMethodNotAllowed)
+	})
+
+	t.Run("not_registered_when_internal_secret_is_empty", func(t *testing.T) {
+		port := freePort(t)
+		startID1(t, bin, map[string]string{
+			"PORT":                port,
+			"DBPATH":              t.TempDir(),
+			"MTLS_ENABLED":        "false",
+			"ENV":                 "test",
+			"NC_DERIVATION_KEY":   derivationKeyHex,
+			"ID1_INTERNAL_SECRET": "",
+		})
+		client := &http.Client{Timeout: 3 * time.Second}
+		base := "http://127.0.0.1:" + port
+		assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+
+		// Unrouted: both fall through to the KV catch-all, which answers 404
+		// for an unknown id.
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusNotFound)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "", http.StatusNotFound)
+	})
+
+	// A key that is not hex used to abort the process, which under Kubernetes
+	// is a crash-loop that also takes ORCID login, JWKS and the sovereign-key
+	// surface down. The Nextcloud endpoints must be the only casualty.
+	t.Run("survives_a_derivation_key_that_is_not_hex", func(t *testing.T) {
+		port := freePort(t)
+		startID1(t, bin, map[string]string{
+			"PORT":                port,
+			"DBPATH":              t.TempDir(),
+			"MTLS_ENABLED":        "false",
+			"ENV":                 "test",
+			"NC_DERIVATION_KEY":   "this-is-not-hex",
+			"ID1_INTERNAL_SECRET": "integration-secret",
+		})
+		client := &http.Client{Timeout: 3 * time.Second}
+		base := "http://127.0.0.1:" + port
+
+		// The process is still serving: a crash-loop never answers this.
+		assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+		assertStatus(t, client, base+"/health", http.StatusOK)
+
+		// The two Nextcloud endpoints are unrouted rather than registered with
+		// a partially-decoded key.
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusNotFound)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "integration-secret", http.StatusNotFound)
+	})
+
+	// A key that is valid hex but shorter than the provisioned 32 bytes gets
+	// the same answer as one that does not decode at all: it cannot produce the
+	// passwords the rotation script computes, so the endpoints stay unrouted
+	// rather than register with a weakened key.
+	t.Run("does_not_register_a_short_but_valid_hex_key", func(t *testing.T) {
+		port := freePort(t)
+		startID1(t, bin, map[string]string{
+			"PORT":                port,
+			"DBPATH":              t.TempDir(),
+			"MTLS_ENABLED":        "false",
+			"ENV":                 "test",
+			"NC_DERIVATION_KEY":   "deadbeef", // valid hex, 4 bytes
+			"ID1_INTERNAL_SECRET": "integration-secret",
+		})
+		client := &http.Client{Timeout: 3 * time.Second}
+		base := "http://127.0.0.1:" + port
+
+		assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+		assertStatus(t, client, base+"/health", http.StatusOK)
+
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusNotFound)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "integration-secret", http.StatusNotFound)
+	})
+}
+
+// assertNcStatus issues a request with an explicit method and optional
+// X-ID1-Internal-Secret header, asserting the status. The file's existing
+// assertStatus only does GET without headers.
+func assertNcStatus(t *testing.T, client *http.Client, method, url, secret string, want int) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if secret != "" {
+		req.Header.Set("X-ID1-Internal-Secret", secret)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != want {
+		t.Fatalf("%s %s: got %d, want %d", method, url, resp.StatusCode, want)
+	}
+}
+
 // buildID1Binary compiles main.go_ into a runnable binary, mirroring apps/id1/Dockerfile:
 // a separate module that references the local id1 library via a replace directive.
 // goTags is passed to `go build -tags=...`; "" builds the production shape.

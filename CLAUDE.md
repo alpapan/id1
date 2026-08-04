@@ -4,7 +4,7 @@
 
 ## Monorepo Context
 
-Vendored as `apps/id1` (top-level submodule). **id1 is the Curatorium auth router, the only publicly exposed service** - Traefik routes `/auth/*`, `/pub/jwks.json`, `/internal/*`, `/nextcloud` to it; everything else is ClusterIP-internal.
+Vendored as `apps/id1` (top-level submodule). **id1 is the Curatorium auth router**, and one of several Traefik-exposed services (the others are the rclone sidecar on `/data`, apollo on `/apollo`, and the backend on `/api/v0/*` and `/api/health`). Traefik routes `/auth/sovereign/*`, `/auth/orcid`, `/auth/orcid/callback`, `/auth/refresh`, `/auth/sync_ticket`, `/pub/jwks.json`, `/sync` and `/nextcloud/remote.php/dav/*` to id1 (`Config._frontend_traefik_route_yaml`). `/internal/*` is **not** on that list and is reachable only in-cluster; everything else is ClusterIP-internal.
 
 Not in the skill: the JWT lands in `localStorage['CURATORIUM_JWT']`; same-origin sharing means a sign-in propagates cross-tab via `storage` events (`AuthProvider.tsx`).
 

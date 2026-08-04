@@ -134,24 +134,40 @@ func main() {
 	http.HandleFunc("/pub/jwks.json", id1.HandleJWKS(id1KVStore))
 	fmt.Println("Registered /pub/jwks.json JWKS endpoint")
 
-	// Nextcloud app-token minting - internal endpoint, requires X-ID1-Internal-Secret.
+	// Nextcloud account provisioning and app-token minting - two internal
+	// endpoints, both requiring X-ID1-Internal-Secret. /internal/nc-provision
+	// creates the account on a wide budget, off any path a user waits on;
+	// /internal/nc-token mints only, on a short one.
 	// C1: the bearer is ID1_INTERNAL_SECRET, kept distinct from the /data/* HMAC
 	// secret ID1_SHARED_SECRET so a leaked HMAC secret cannot mint NC tokens.
 	// NC_DERIVATION_KEY is stored as a hex string (openssl rand -hex 32); we hex-decode
 	// here so the raw 32 bytes match what the bash rotation script computes via
 	// `openssl dgst -macopt hexkey:$NEW_KEY` (which hex-decodes internally). A mismatch
 	// here would silently produce different passwords in Go vs bash.
-	if derivationKeyHex := os.Getenv("NC_DERIVATION_KEY"); derivationKeyHex != "" {
-		derivationKey, err := hex.DecodeString(derivationKeyHex)
-		if err != nil {
-			log.Fatalf("NC_DERIVATION_KEY must be hex-encoded: %v", err)
-		}
-		internalSecret := os.Getenv("ID1_INTERNAL_SECRET")
+	derivationKeyHex := os.Getenv("NC_DERIVATION_KEY")
+	internalSecret := os.Getenv("ID1_INTERNAL_SECRET")
+	switch {
+	case id1.NcEndpointsEnabled(derivationKeyHex, internalSecret):
+		// The error is discarded because NcEndpointsEnabled selected this branch
+		// by decoding the same string successfully, to exactly 32 bytes.
+		derivationKey, _ := hex.DecodeString(derivationKeyHex)
 		ncClient := id1.NewNextcloudClient()
-		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret))
-		fmt.Println("Registered /internal/nc-token endpoint")
-	} else {
-		fmt.Println("NC_DERIVATION_KEY not set; /internal/nc-token endpoint disabled")
+		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret, id1.NcTokenTimeout))
+		http.HandleFunc("/internal/nc-provision", id1.HandleNcProvision(ncClient, derivationKey, internalSecret, id1.NcProvisionTimeout))
+		fmt.Println("Registered /internal/nc-token and /internal/nc-provision endpoints")
+	case derivationKeyHex == "" && internalSecret == "":
+		fmt.Println("Neither NC_DERIVATION_KEY nor ID1_INTERNAL_SECRET is set; /internal/nc-token and /internal/nc-provision endpoints disabled")
+	case derivationKeyHex == "":
+		fmt.Println("NC_DERIVATION_KEY not set; /internal/nc-token and /internal/nc-provision endpoints disabled")
+	case internalSecret == "":
+		fmt.Println("ID1_INTERNAL_SECRET is empty while NC_DERIVATION_KEY is set; /internal/nc-token and /internal/nc-provision NOT registered - every Nextcloud file operation will fail until the secret is provisioned")
+		if decoded, err := hex.DecodeString(derivationKeyHex); err != nil || len(decoded) != id1.NcDerivationKeyBytes {
+			// Reported alongside, so a fix-and-restart does not simply surface
+			// the next problem one round later.
+			fmt.Println("NC_DERIVATION_KEY is also unusable (it must be 32 hex-encoded bytes, as produced by `openssl rand -hex 32`); both must be fixed before the endpoints can register")
+		}
+	default:
+		fmt.Println("NC_DERIVATION_KEY is unusable - it must be 32 hex-encoded bytes, as produced by `openssl rand -hex 32`; /internal/nc-token and /internal/nc-provision NOT registered - fix the key and restart. id1 keeps serving ORCID login, JWKS and the sovereign-key surface rather than crash-looping on a Nextcloud misconfiguration")
 	}
 
 	// Sovereign key token endpoint: issues RS256 JWTs to service accounts

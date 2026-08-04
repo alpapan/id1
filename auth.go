@@ -40,7 +40,14 @@ func auth(id string, cmd Command, internalSecretHeader string) bool {
 // unauthenticated-allow. The comparison is constant-time to avoid leaking the
 // secret's contents through a response-timing side channel.
 func validInternalSecret(header string) bool {
-	secret := os.Getenv("ID1_INTERNAL_SECRET")
+	return secretMatches(header, os.Getenv("ID1_INTERNAL_SECRET"))
+}
+
+// secretMatches reports whether a presented header value equals a configured
+// shared secret, in constant time. An empty configured secret or an empty
+// header never matches: a deployment that did not provision the secret refuses
+// every caller instead of accepting every caller.
+func secretMatches(header, secret string) bool {
 	if secret == "" || header == "" {
 		return false
 	}
