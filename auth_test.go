@@ -9,6 +9,9 @@
 package id1
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"testing"
 )
 
@@ -50,8 +53,20 @@ func TestAuthAnonymousCanReadPublicKeys(t *testing.T) {
 	}
 }
 
+// hs256Token assembles a JWT from the stdlib alone, so the token under test is
+// produced independently of the library that validates it. Building it also
+// keeps a value indistinguishable from a live bearer token out of the source.
+func hs256Token(secret, payload string) string {
+	encoding := base64.RawURLEncoding
+	signingInput := encoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) +
+		"." + encoding.EncodeToString([]byte(payload))
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signingInput))
+	return signingInput + "." + encoding.EncodeToString(mac.Sum(nil))
+}
+
 func TestParseClaims(t *testing.T) {
-	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0aWQiLCJpYXQiOjE1MTYyMzkwMjJ9.m7GbsjZeOBZhdFfaU1_ulqeaogLi5gduLXqfLhyxH5w"
+	token := hs256Token("test", `{"sub":"testid","iat":1516239022}`)
 
 	if claims, err := validateToken(token, "test"); err != nil {
 		t.Errorf("err: %s", err)
