@@ -31,6 +31,16 @@ import (
 
 const credGuardPlaceholder = "00000000-0000-0000-0000-000000000000"
 
+// The seeded secret manifest carries one unfilled placeholder per key, and
+// resolve_secret treats a stored value beginning with this prefix as unset and
+// mints a fresh secret over it, so such a value never reaches a pod and
+// authenticates nowhere. A placeholder that spells out the width it wants passes
+// 40 characters while mixing classes, which is the written-out phrase the shape
+// rule is documented not to judge. The prefix is what that code tests, so it is
+// what this admits: a value carrying the word anywhere later is replaced by
+// nothing and stays judged.
+const credGuardBootstrapPlaceholderPrefix = "CHANGE_ME"
+
 const credGuardPEMMinimumMaterial = 200
 
 const credGuardMaxNestedAssignments = 4
@@ -81,7 +91,14 @@ var (
 	// placeholder reaches 60 characters just as easily, and judging it would
 	// make the guard cry wolf. Generated material also mixes character classes,
 	// and a phrase a human typed does not, so both conditions must hold.
-	credGuardBase64 = regexp.MustCompile(`^[A-Za-z0-9+/]{40,}={0,2}$`)
+	// The alphabet covers URL-safe base64 (`-` and `_`) as well as standard,
+	// because the URL-safe form is what this stack actually mints:
+	// `secrets.token_urlsafe(32)` for every callback HMAC and personal access
+	// token, and `Fernet.generate_key()` for every encryption key. Restricting
+	// the class to `+/` did not merely miss a variant spelling - it admitted
+	// those values whenever their random bytes encoded a `-` or `_`, which at
+	// 43 characters is nearly every one of them.
+	credGuardBase64 = regexp.MustCompile(`^[A-Za-z0-9+/_-]{40,}={0,2}$`)
 	credGuardLower  = regexp.MustCompile(`[a-z]`)
 	credGuardUpper  = regexp.MustCompile(`[A-Z]`)
 	credGuardDigit  = regexp.MustCompile(`[0-9]`)
@@ -149,6 +166,12 @@ var credGuardSuffixes = map[string]bool{
 	".cfg":      true,
 	".ini":      true,
 	".rest":     true,
+	// `main.go_` is deployed source: the Dockerfile copies it to cmd/main.go and
+	// builds it. The underscore suffix keeps it out of this module, so
+	// `go test ./...` never compiles it and no other test in this repository can
+	// see it - which leaves this guard as its only net. It carries config and
+	// environment handling, so it is exactly where a credential lands.
+	".go_": true,
 }
 
 func credGuardIsCredentialName(name string) bool {
@@ -171,7 +194,8 @@ func credGuardLooksGenerated(value string) bool {
 }
 
 func credGuardIsSecretShaped(value string) bool {
-	if value == credGuardPlaceholder {
+	if value == credGuardPlaceholder ||
+		strings.HasPrefix(value, credGuardBootstrapPlaceholderPrefix) {
 		return false
 	}
 	if credGuardUUID.MatchString(value) || credGuardHex.MatchString(value) {
@@ -375,6 +399,13 @@ func TestCredGuardAdmittedAndRejectedSampleLines(t *testing.T) {
 		// still forms no pair and a path-shaped value is still no secret.
 		`we set the ORCID_CLIENT_SECRET in the env file`,
 		`token: docs/plans/reviews/a-review-r1.md`,
+		// An unfilled bootstrap placeholder. resolve_secret treats any value
+		// beginning CHANGE_ME as unset and mints a fresh secret over it, so such
+		// a value never reaches a pod and authenticates nowhere. The seeded
+		// manifest writes one per key, and a placeholder spelling out the width
+		// it wants passes 40 characters while mixing classes, which is the
+		// written-out phrase the shape rule is documented not to judge.
+		`CURATORIUM_JWT_SECRET: "CHANGE_ME_replace_with_a_64_byte_hex_signing_secret"`,
 	}
 	for _, line := range admitted {
 		if credGuardLineOffends(line) {
@@ -396,6 +427,11 @@ func TestCredGuardAdmittedAndRejectedSampleLines(t *testing.T) {
 		`API_TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"`,
 		`API_KEY = "AKIAIOSFODNN7EXAMPLE"`,
 		`TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.aBcDeFgHiJkLmNoPqRsTuVwXyZ01234"`,
+		// URL-safe base64, 43 characters carrying both `-` and `_`: the shape of
+		// `secrets.token_urlsafe(32)`, and of a Fernet key with its trailing pad.
+		// Synthetic - authenticates nowhere.
+		`SLURM_CALLBACK_TOKEN = "aB3dEf5GhI7jKl9MnO1pQr3StU5vWx7YzA9bCd-Ef_h"`,
+		`USER_CREDENTIALS_ENCRYPTION_KEY = "aB3dEf5GhI7jKl9MnO1pQr3StU5vWx7YzA9bCd-Ef_h="`,
 		`aBareNameButAnIssuerPrefixedToken = ghp_16C7e42F292c6912E7710c838347Ae178B4a`,
 		// Decoration around the name or the value. A guard whose value class is
 		// a denylist of terminators captures the decoration too, fails its own
@@ -414,6 +450,14 @@ func TestCredGuardAdmittedAndRejectedSampleLines(t *testing.T) {
 		// non-overlapping scan binds the outer pair and steps over the inner.
 		`kubectl create secret generic x --from-literal=orcid-client-secret=` + real,
 		`--opt=--from-literal=orcid-client-secret=` + real,
+		// The bootstrap placeholder is admitted by its PREFIX, matching what
+		// resolve_secret tests. A value merely carrying the word later on is
+		// replaced by nothing and is still a credential.
+		`SECRET = "not_CHANGE_ME_aB3dEf5GhI7jKl9MnO1pQr3StU5vWx7YzA9bCd-Ef_h"`,
+		// Case-sensitively, as resolve_secret tests it. A lowercased spelling is
+		// not the placeholder that code replaces, so a value wearing it is live
+		// and stays judged.
+		`SECRET = "change_me_aB3dEf5GhI7jKl9MnO1pQr3StU5vWx7YzA9bCd-Ef_h"`,
 	}
 	for _, line := range rejected {
 		if !credGuardLineOffends(line) {
