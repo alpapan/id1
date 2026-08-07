@@ -33,6 +33,8 @@ const credGuardPlaceholder = "00000000-0000-0000-0000-000000000000"
 
 const credGuardPEMMinimumMaterial = 200
 
+const credGuardMaxNestedAssignments = 4
+
 // A name reads as a credential when one of these words appears anywhere in it,
 // so ORCID_CLIENT_SECRET, clientSecret and orcid-client-secret are one case.
 // Comparison is on the lowercased name: YAML and JSON keys are conventionally
@@ -52,9 +54,27 @@ var credGuardBareNames = map[string]bool{
 }
 
 var (
-	credGuardAssignment = regexp.MustCompile(`["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?::=|[:=])\s*["']?([^\s"',;}\])]+)`)
-	credGuardUUID       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	credGuardHex        = regexp.MustCompile(`^[0-9a-fA-F]{32,}$`)
+	// Name and value are each captured from a positive class - the characters
+	// an identifier and a generated secret are actually written in. Anything
+	// that is in neither class, nor a separator, nor whitespace, is decoration
+	// and is matched without being captured, so quoting, markdown emphasis,
+	// inline code, an HTML tag or sentence punctuation never enters the value
+	// and never breaks the anchored shape rules below. Capturing by exclusion
+	// instead - a denylist of terminator characters - is what let a value
+	// wrapped in backticks pass.
+	credGuardDecoration = `[^A-Za-z0-9_.+/=:\s-]*`
+	credGuardAssignment = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_.-]*)` + credGuardDecoration +
+		`\s*(?::=|[:=])\s*` + credGuardDecoration + `([A-Za-z0-9+/=._-]*[A-Za-z0-9+/=_-])`)
+
+	// A value carrying a separator may hold an assignment of its own, as
+	// `--from-literal=NAME=VALUE` does. Matches are non-overlapping in every
+	// regex engine these guards are written in, so the outer pair swallows the
+	// inner one and the scan resumes past both; each captured value is
+	// therefore scanned again.
+	credGuardSeparatorInside = regexp.MustCompile(`[:=]`)
+
+	credGuardUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	credGuardHex  = regexp.MustCompile(`^[0-9a-fA-F]{32,}$`)
 
 	// A long unbroken base64 run is how a randomly generated key of 32 bytes or
 	// more is written down. Length alone is not the test: a written-out English
@@ -110,25 +130,25 @@ var credGuardNeverOpened = map[string]bool{
 // happens to contain today goes blind the moment a stray script of another
 // kind lands in it, and says nothing while it does.
 var credGuardSuffixes = map[string]bool{
-	".py": true,
-	".ts": true,
-	".tsx": true,
-	".js": true,
-	".jsx": true,
-	".mjs": true,
-	".cjs": true,
-	".go": true,
-	".json": true,
-	".yaml": true,
-	".yml": true,
-	".toml": true,
+	".py":       true,
+	".ts":       true,
+	".tsx":      true,
+	".js":       true,
+	".jsx":      true,
+	".mjs":      true,
+	".cjs":      true,
+	".go":       true,
+	".json":     true,
+	".yaml":     true,
+	".yml":      true,
+	".toml":     true,
 	".template": true,
-	".sh": true,
-	".md": true,
-	".example": true,
-	".cfg": true,
-	".ini": true,
-	".rest": true,
+	".sh":       true,
+	".md":       true,
+	".example":  true,
+	".cfg":      true,
+	".ini":      true,
+	".rest":     true,
 }
 
 func credGuardIsCredentialName(name string) bool {
@@ -169,10 +189,25 @@ func credGuardLineOffends(line string) bool {
 	if credGuardProvider.MatchString(line) {
 		return true
 	}
-	for _, match := range credGuardAssignment.FindAllStringSubmatch(line, -1) {
-		if credGuardIsCredentialName(match[1]) && credGuardIsSecretShaped(match[2]) {
-			return true
+	// Every rescan is over a strictly shorter string, and the depth is bounded
+	// so a pathological line cannot drive the scan indefinitely.
+	texts := []string{line}
+	for depth := 0; depth < credGuardMaxNestedAssignments; depth++ {
+		var nested []string
+		for _, text := range texts {
+			for _, match := range credGuardAssignment.FindAllStringSubmatch(text, -1) {
+				if credGuardIsCredentialName(match[1]) && credGuardIsSecretShaped(match[2]) {
+					return true
+				}
+				if credGuardSeparatorInside.MatchString(match[2]) {
+					nested = append(nested, match[2])
+				}
+			}
 		}
+		if len(nested) == 0 {
+			return false
+		}
+		texts = nested
 	}
 	return false
 }
@@ -335,6 +370,11 @@ func TestCredGuardAdmittedAndRejectedSampleLines(t *testing.T) {
 		// An issuer prefix named in prose is not a token. Requiring the body
 		// length is what separates the two.
 		`prose naming the ghp_ prefix, or AKIA, carries no token`,
+		// Decoration is tolerated around a name and a value, not treated as
+		// part of either, so a name that merely reads as a credential in prose
+		// still forms no pair and a path-shaped value is still no secret.
+		`we set the ORCID_CLIENT_SECRET in the env file`,
+		`token: docs/plans/reviews/a-review-r1.md`,
 	}
 	for _, line := range admitted {
 		if credGuardLineOffends(line) {
@@ -357,6 +397,23 @@ func TestCredGuardAdmittedAndRejectedSampleLines(t *testing.T) {
 		`API_KEY = "AKIAIOSFODNN7EXAMPLE"`,
 		`TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.aBcDeFgHiJkLmNoPqRsTuVwXyZ01234"`,
 		`aBareNameButAnIssuerPrefixedToken = ghp_16C7e42F292c6912E7710c838347Ae178B4a`,
+		// Decoration around the name or the value. A guard whose value class is
+		// a denylist of terminators captures the decoration too, fails its own
+		// anchored shape test, and reports the line clean - which is how two
+		// real values sat in tracked markdown while this guard passed.
+		"`ORCID_CLIENT_SECRET=" + real + "`",
+		`The value was ORCID_CLIENT_SECRET=` + real + `.`,
+		"**ORCID_CLIENT_SECRET**: `" + real + "`",
+		`~~ORCID_CLIENT_SECRET~~=` + real,
+		`<code>ORCID_CLIENT_SECRET=` + real + `</code>`,
+		`ORCID_CLIENT_SECRET=` + real + `!`,
+		`was ORCID_CLIENT_SECRET=` + real + `?`,
+		"ORCID_CLIENT_SECRET=\u201c" + real + "\u201d",
+		`{orcid_client_secret: ` + real + `}`,
+		// An assignment nested inside the value of an outer one. A
+		// non-overlapping scan binds the outer pair and steps over the inner.
+		`kubectl create secret generic x --from-literal=orcid-client-secret=` + real,
+		`--opt=--from-literal=orcid-client-secret=` + real,
 	}
 	for _, line := range rejected {
 		if !credGuardLineOffends(line) {
