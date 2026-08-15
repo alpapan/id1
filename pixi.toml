@@ -57,3 +57,12 @@ lint-testmint = "go vet -tags=testmint ./..."
 # `go vet ./...` never looks at demo_on.go either. Both curatoriumdemo shapes
 # need vetting, same rationale as lint-testmint.
 lint-curatoriumdemo = "go vet -tags=curatoriumdemo ./..."
+
+# Redirects Python's bytecode cache to a per-account directory via $HOME, so a build or
+# install step this workspace runs as root does not leave root-owned .pyc files in the
+# nfs4-shared checkout. ${HOME:?...} is bash's strict-parameter-expansion form (pixi
+# activation.env is evaluated by a real bash): unset/empty $HOME fails activation loudly
+# instead of silently writing under the filesystem root. See the root pyproject.toml's copy
+# of this table for the full rationale.
+[target.unix.activation.env]
+PYTHONPYCACHEPREFIX = "${HOME:?HOME must be set for the pycache redirect}/.cache/curatorium-pycache"
