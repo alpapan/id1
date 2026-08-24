@@ -58,11 +58,25 @@ lint-testmint = "go vet -tags=testmint ./..."
 # need vetting, same rationale as lint-testmint.
 lint-curatoriumdemo = "go vet -tags=curatoriumdemo ./..."
 
-# Redirects Python's bytecode cache to a per-account directory via $HOME, so a build or
-# install step this workspace runs as root does not leave root-owned .pyc files in the
-# shared checkout. ${HOME:?...} is bash's strict-parameter-expansion form (pixi
-# activation.env is evaluated by a real bash): unset/empty $HOME fails activation loudly
-# instead of silently writing under the filesystem root. See the root pyproject.toml's copy
-# of this table for the full rationale.
+# --- BEGIN GENERATED pycache redirect: edit scripts/pycache_prefix.sh, never these lines ---
+# CPython writes __pycache__ directories and .pyc files beside the source it imports, and
+# this checkout is SHARED between accounts, so bytecode compiled by one account lands in
+# another account's tree, owned by whichever account imported the module first. No single
+# command is the cause: every import from inside the checkout writes bytecode beside the
+# source. The criterion is that the checkout is shared, never what storage carries it.
+#
+# The path lives in one place per repository - the activation script named in the table
+# below - and never in a manifest. Pixi sources that script before it applies the table
+# beneath this comment, so that table expands what the script exported; when the script
+# did not run, the expansion refuses and the task never starts, instead of the cache
+# falling back beside the source in silence.
+#
+# This block is generated. Edit scripts/pycache_prefix.sh for the path, or
+# scripts/admin/pycache_activation.py in the Curatorium monorepo for these lines, then run
+# that generator. Never edit this block in place.
 [target.unix.activation.env]
-PYTHONPYCACHEPREFIX = "${HOME:?HOME must be set for the pycache redirect}/.cache/curatorium-pycache"
+PYTHONPYCACHEPREFIX = "${CURATORIUM_PYCACHE_PREFIX:?the pycache activation script did not run for this workspace}"
+
+[activation]
+scripts = ["scripts/pycache_prefix.sh"]
+# --- END GENERATED pycache redirect ---
