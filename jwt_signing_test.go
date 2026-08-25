@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -702,6 +704,144 @@ func TestSignJWT_StampsAMR(t *testing.T) {
 	claims, err := ValidateRS256JWTID1Claims(tok, kv)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"orcid"}, claims.AMR)
+}
+
+// TestCuratoriumNamespacePanicsWhenUnset pins the owner's ruling: the namespace
+// is a core Curatorium value, not an optional one, and there is no useful id1
+// without it. Same shape as TestJwtIssuerPanicsWhenUnset above, because it is
+// the same class of variable - required, no default, resolved at boot.
+//
+// Guessing was the old behaviour: an unset value fell back to the literal
+// "curatorium-test". The Role authorising the signing-key PATCH is namespaced,
+// so on any server not named that, the write was addressed where the pod holds
+// no permission and was denied.
+func TestCuratoriumNamespacePanicsWhenUnset(t *testing.T) {
+	t.Setenv("CURATORIUM_NAMESPACE", "")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected curatoriumNamespace() to panic when CURATORIUM_NAMESPACE is unset")
+		}
+	}()
+	curatoriumNamespace()
+}
+
+func TestCuratoriumNamespace_ReturnsTheConfiguredValueVerbatim(t *testing.T) {
+	t.Setenv("CURATORIUM_NAMESPACE", "curatorium-somewhere-else")
+	assert.Equal(t, "curatorium-somewhere-else", CuratoriumNamespace())
+}
+
+// useTokenFile points the ServiceAccount token path at a temporary file, making
+// the process look like it is running inside a cluster. exists=false points it
+// at an absent path, which is the out-of-cluster shape.
+func useTokenFile(t *testing.T, exists bool) {
+	t.Helper()
+	original := serviceAccountTokenPath
+	path := filepath.Join(t.TempDir(), "token")
+	if exists {
+		if err := os.WriteFile(path, []byte("fake-projected-token"), 0o600); err != nil {
+			t.Fatalf("write fake token: %v", err)
+		}
+	}
+	serviceAccountTokenPath = path
+	t.Cleanup(func() { serviceAccountTokenPath = original })
+}
+
+// stubSecretWriter swaps the Secret write for a recorder and returns the call
+// count plus a knob for the error it reports. The real one reaches the
+// Kubernetes API, which a unit test must not do.
+func stubSecretWriter(t *testing.T, reportErr error) *int {
+	t.Helper()
+	calls := 0
+	original := secretWriter
+	secretWriter = func(privPEM []byte, keyID string) error {
+		calls++
+		return reportErr
+	}
+	t.Cleanup(func() { secretWriter = original })
+	return &calls
+}
+
+// TestStoreKeyToKubeSecret_OutOfClusterReportsTheCluster covers the ORDER of the
+// two preconditions, which decides which of two very different situations an
+// operator is told about.
+//
+// Out of cluster - the standalone annot8r_id1 build, and local dev - there is no
+// projected ServiceAccount token, and reporting the absent cluster is correct.
+// Resolving the namespace first would instead panic there, turning a normal
+// local run into a crash. The token file is the discriminator, so it is read
+// first.
+func TestStoreKeyToKubeSecret_OutOfClusterReportsTheCluster(t *testing.T) {
+	useTokenFile(t, false)
+	t.Setenv("CURATORIUM_NAMESPACE", "")
+	err := storeKeyToKubeSecret([]byte("irrelevant"), "irrelevant")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not running in a Kubernetes cluster")
+}
+
+// TestGetOrCreateSigningKey_RetriesTheSecretWriteOnTheKVPath covers the silent
+// permanent skip.
+//
+// The Secret write used to happen only on the freshly-generated-key path. Once
+// a write was missed, the key was in the KV, so every later boot took path 2,
+// returned early, and never attempted the write again - with no warning, ever.
+// The misconfiguration became invisible precisely because its first symptom had
+// been survived.
+//
+// Reaching path 2 at all proves curatorium-secrets does not carry the key: path
+// 1 reads ID1_JWT_PRIVATE_KEY from that Secret and did not fire. So path 2 is
+// exactly where the write belongs.
+func TestGetOrCreateSigningKey_RetriesTheSecretWriteOnTheKVPath(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_JWT_PRIVATE_KEY", "")
+	t.Setenv("ID1_JWT_KEY_ID", "")
+
+	// First boot: the key is generated and lands in the KV. The Secret write is
+	// attempted and reported as failing, which is the state being modelled.
+	firstCalls := stubSecretWriter(t, fmt.Errorf("simulated API rejection"))
+	keyID, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	require.NotNil(t, privKey)
+	require.Equal(t, 1, *firstCalls, "the generate path must attempt the Secret write")
+
+	// Drop the in-memory cache, as a restart would.
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+
+	// Second boot: the key comes back from the KV, and the write is retried.
+	secondCalls := stubSecretWriter(t, nil)
+	secondKeyID, secondPrivKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	assert.Equal(t, keyID, secondKeyID, "the KV path must return the same key, not mint a new one")
+	assert.Equal(t, privKey.D, secondPrivKey.D)
+	assert.Equal(t, 1, *secondCalls,
+		"a boot that read the key from the KV must retry the Secret write rather than skip it silently")
+}
+
+// TestGetOrCreateSigningKey_KVPathRetriesOncePerProcess keeps the retry off the
+// request path. Path 2 runs whenever the in-memory cache is cold, so a retry
+// that did not prime that cache would issue a PATCH per request.
+func TestGetOrCreateSigningKey_KVPathRetriesOncePerProcess(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_JWT_PRIVATE_KEY", "")
+	t.Setenv("ID1_JWT_KEY_ID", "")
+
+	stubSecretWriter(t, nil)
+	_, _, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	_memKeyMu.Lock()
+	_memKeyID = ""
+	_memPrivKey = nil
+	_memKeyMu.Unlock()
+
+	calls := stubSecretWriter(t, nil)
+	for range 5 {
+		_, _, err := GetOrCreateSigningKey(kv)
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 1, *calls, "the retry must be cached, not repeated per call")
 }
 
 // __END_OF_FILE_MARKER__

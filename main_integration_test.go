@@ -18,6 +18,7 @@ package id1
 //	# or: pixi run -m apps/id1/pixi.toml test-integration
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -31,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -262,6 +264,59 @@ func assertNcStatus(t *testing.T, client *http.Client, method, url, secret strin
 	defer resp.Body.Close()
 	if resp.StatusCode != want {
 		t.Fatalf("%s %s: got %d, want %d", method, url, resp.StatusCode, want)
+	}
+}
+
+// TestID1RefusesToStartWithoutNamespace pins the owner's ruling that
+// CURATORIUM_NAMESPACE is a core Curatorium value with no default: there is no
+// useful id1 without it, so an unset value stops the process at boot rather
+// than being discovered later.
+//
+// This tier is the only one that can assert it. The refusal lives in main(),
+// which `go test ./...` cannot compile, and the whole point is that the server
+// never reaches its listener - a unit test on the resolver alone proves the
+// panic, not that the process actually declines to serve.
+//
+// Before the fix an unset namespace silently became the literal
+// "curatorium-test", so the binary started normally and the misconfiguration
+// only surfaced as a denied Secret write on a server whose namespace differed.
+func TestID1RefusesToStartWithoutNamespace(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+
+	// Bounded, because the regression this guards against is precisely a binary
+	// that DOESN'T exit: an unbounded wait would hang the suite instead of
+	// failing it. Measured against a deliberately reverted main.go_, which
+	// serves indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = append(os.Environ(),
+		"PORT="+port,
+		"DBPATH="+t.TempDir(),
+		"MTLS_ENABLED=false",
+		"ENV=test",
+		// Explicitly empty, overriding whatever .env.test put in the
+		// environment. Later entries win in exec, so this is the unset case.
+		"CURATORIUM_NAMESPACE=",
+	)
+	output, err := cmd.CombinedOutput()
+
+	if ctx.Err() != nil {
+		t.Fatalf("id1 kept running with no namespace; it must refuse to boot.\n%s", output)
+	}
+	if err == nil {
+		t.Fatalf("id1 started and exited cleanly with no namespace; it must refuse to boot.\n%s", output)
+	}
+	if !strings.Contains(string(output), "CURATORIUM_NAMESPACE") {
+		t.Fatalf("the refusal must name the variable an operator has to set; got:\n%s", output)
+	}
+	// It must die at boot, not after opening the port. A live listener here
+	// would mean it served traffic with an unresolved namespace.
+	if resp, err := (&http.Client{Timeout: 2 * time.Second}).Get("http://127.0.0.1:" + port + "/health"); err == nil {
+		resp.Body.Close()
+		t.Fatal("id1 served /health despite an unset namespace")
 	}
 }
 

@@ -76,6 +76,13 @@ func main() {
 	// bad token degrades to the public tier with no error, so log the values an operator
 	// can check.
 	fmt.Printf("id1 JWT issuer: %s, audience: %s\n", id1.JWTIssuer(), id1.JWTAudience())
+	// Resolved here, at boot, because CURATORIUM_NAMESPACE has no default and
+	// panics when unset. It names the namespace whose curatorium-secrets holds
+	// the RS256 signing key, and the Role authorising that write is namespaced,
+	// so a guess is denied rather than merely wrong. Resolving it before the
+	// server listens turns a misconfigured deployment into a refusal to start
+	// instead of a failure found later.
+	fmt.Printf("id1 namespace: %s\n", id1.CuratoriumNamespace())
 	if nextcloudURL != "" {
 		fmt.Printf("Nextcloud proxy enabled: %s\n", nextcloudURL)
 	}

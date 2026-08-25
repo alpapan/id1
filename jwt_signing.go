@@ -197,6 +197,19 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 		privKey, err := parsePrivateKey(privPEM)
 		if err == nil {
 			keyID := computeKeyID(&privKey.PublicKey)
+			// Reaching here proves curatorium-secrets does not carry the key:
+			// path 1 reads it from that Secret and did not fire. Retry the
+			// write. Without this the Secret write happened only on the
+			// freshly-generated path, so a single missed write became permanent
+			// and silent - every later boot found the key in the KV, returned
+			// here, and never tried again.
+			_memKeyMu.Lock()
+			_memKeyID = keyID
+			_memPrivKey = privKey
+			_memKeyMu.Unlock()
+			// Cached above first, so the retry runs once per process rather
+			// than on every request that resolves the key.
+			persistKeyToKubeSecret(privPEM, keyID)
 			return keyID, privKey, nil
 		}
 		// If parsing fails, generate new key below.
@@ -240,29 +253,92 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 	_memPrivKey = privateKey
 	_memKeyMu.Unlock()
 
-	// Store key to Kubernetes Secret for test access
-	if err := storeKeyToKubeSecret(privPEM, keyID); err != nil {
-		// Log error but don't fail - KV store is primary
-		fmt.Printf("warning: failed to store key to kube secret: %v\n", err)
-	}
+	persistKeyToKubeSecret(privPEM, keyID)
 
 	return keyID, privateKey, nil
 }
 
+// persistKeyToKubeSecret writes the key to curatorium-secrets and reports a
+// failure without ending the process.
+//
+// The failure is not fatal because the key is already in the KV store, which is
+// a PersistentVolumeClaim, so path 2 of GetOrCreateSigningKey recovers it after
+// a restart. What a failure costs is the Secret-backed copy: the key then
+// survives only as long as that volume does, and anything reading
+// ID1_JWT_PRIVATE_KEY out of curatorium-secrets finds nothing. The message says
+// exactly that, because a warning claiming the key is lost sends an operator
+// hunting a failure that has not happened.
+//
+// An unset CURATORIUM_NAMESPACE never reaches here: CuratoriumNamespace panics,
+// and main resolves it at boot before the server starts listening.
+func persistKeyToKubeSecret(privPEM []byte, keyID string) {
+	if err := secretWriter(privPEM, keyID); err != nil {
+		fmt.Printf(
+			"warning: the signing key was not written to curatorium-secrets: %v. "+
+				"It remains in the KV store, so a restart recovers it from there, but the "+
+				"Secret-backed copy is missing and nothing can read the key out of "+
+				"curatorium-secrets until this is fixed.\n", err)
+	}
+}
+
+// secretWriter is the Secret write, indirected so a test can observe that it was
+// attempted without reaching the Kubernetes API. Nothing in production
+// reassigns it.
+var secretWriter = storeKeyToKubeSecret
+
+// serviceAccountTokenPath is the projected ServiceAccount token the kubelet
+// mounts into every pod. Its presence is what distinguishes an in-cluster
+// process from an out-of-cluster one. A variable rather than a constant so a
+// test can present either shape; nothing in production reassigns it.
+var serviceAccountTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+// curatoriumNamespace returns the namespace this instance operates in, set via
+// CURATORIUM_NAMESPACE. There is no default: an unset value panics, exactly as
+// jwtIssuer does for ID1_JWT_ISSUER, because the namespace is a core Curatorium
+// value rather than an optional one and there is no useful id1 without it.
+//
+// Guessing is the specific thing this prevents. The Role authorising the
+// signing-key PATCH is namespaced, so a guessed namespace addresses the write
+// where this pod holds no permission and the request is denied; a guess also
+// makes every misconfigured server report the same name, so the log cannot say
+// which one is wrong.
+//
+// Process-level fail-fast, not per-request: main resolves this at boot, before
+// the HTTP server starts listening, so a missing CURATORIUM_NAMESPACE stops the
+// process there rather than surfacing later. The deployment supplies it from
+// the pod's own metadata.namespace via the downward API, which is the namespace
+// the Role lives in by construction.
+func curatoriumNamespace() string {
+	v := os.Getenv("CURATORIUM_NAMESPACE")
+	if v == "" {
+		panic("CURATORIUM_NAMESPACE is required and has no default; set it to the namespace this instance operates in")
+	}
+	return v
+}
+
+// CuratoriumNamespace exposes the resolved namespace so main can resolve it at
+// boot, which is what turns an unset value into a refusal to start rather than
+// a failure discovered later.
+func CuratoriumNamespace() string { return curatoriumNamespace() }
+
 // storeKeyToKubeSecret stores the private key and key ID to Kubernetes Secret
 // using the in-cluster service account credentials. No kubectl binary required.
 // The id1 ServiceAccount must have RBAC permission to patch curatorium-secrets.
+//
+// The token file is read BEFORE the namespace is resolved, and the order is
+// load-bearing: out of cluster there is no token and no namespace, and the
+// caller should hear about the absent cluster, which is expected, rather than
+// about a namespace it had no reason to hold. Reaching the namespace check at
+// all therefore means the process IS in a cluster, which is what makes an unset
+// namespace a misconfiguration rather than a normal local run.
 func storeKeyToKubeSecret(privPEM []byte, keyID string) error {
-	namespace := os.Getenv("CURATORIUM_NAMESPACE")
-	if namespace == "" {
-		namespace = "curatorium-test"
-	}
-
 	// Read in-cluster service account token (auto-mounted by Kubernetes)
-	tokenBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	tokenBytes, err := os.ReadFile(serviceAccountTokenPath)
 	if err != nil {
 		return fmt.Errorf("not running in a Kubernetes cluster (no service account token): %w", err)
 	}
+
+	namespace := curatoriumNamespace()
 
 	// Read the cluster CA certificate to verify the API server
 	caCertBytes, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
