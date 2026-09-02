@@ -1,0 +1,10 @@
+# Golden vectors for the Nextcloud login-password derivation.
+# Three whitespace-separated columns per row: derivation material in hex, ORCID iD, derived value.
+# Derived value is "NC_" followed by unpadded base64url of HMAC-SHA256 over the ORCID iD,
+# hex-decoding column one to obtain the raw HMAC material.
+# These are fixed public test vectors. They authenticate nowhere: no deployment has
+# ever held any of these values, and two of the four are constant bytes.
+0000000000000000000000000000000000000000000000000000000000000000 0000-0000-0000-0001 NC_6lNZWUwOC25gY2PaX14r3GfTtN0HTIO0QhzxmtXan8o
+00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff 0009-0002-8023-3658 NC_pKHk7y52Q2FLJx-IuQpyU3mmBgwYotJVIqPDImf8w_k
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 0000-0002-1825-0097 NC_hb15SCaW7O5BBprkG51Qc7oVqzCvjLbFELVbr-DgkUg
+6a1f0c9d3b8e47a2c5d0f9b1e8a37c4d2f6b0e91a4c7d38b5e2f9014c6a7d3b8 0000-0001-5109-3700 NC_N3Uou7-HvwfHaNz3fwGlvfHnm_wVD9ayyWNIy8tC2TY

@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -63,15 +64,38 @@ var ocsAuthHints = map[int]string{
 // that no longer matches what the derivation key produces. The caller decides
 // whether to provision and retry.
 var ErrNextcloudCredentialsRejected = errors.New("nextcloud rejected the derived credentials")
+var ErrNextcloudRateLimited = errors.New("nextcloud is rate-limiting requests")
 
 // ncHTTPClientTimeout bounds a single OCS round trip. Every handler budget
 // below must be strictly smaller, or the handler's own context stops being the
 // binding bound and becomes decoration.
 const ncHTTPClientTimeout = 30 * time.Second
 
+// NcMintUserAgent is sent on every OCS mint request. Nextcloud names an app
+// password after the User-Agent of the request that created it, so this string
+// is what identifies a Curatorium-minted app password in
+// `occ user:auth-tokens:list` output. Any consumer that selects tokens for
+// revocation matches on it, so changing it changes which tokens are selectable.
+const NcMintUserAgent = "curatorium-auth/1"
+
 // NcTokenTimeout bounds the mint-only token handler. The warm path costs
-// ~1.24s against a healthy Nextcloud; four times that leaves headroom without
-// letting a wedged Nextcloud hold a backend request open.
+// ~1.24s against a healthy Nextcloud in the steady state (one attempt); with
+// a rotation fallback armed, the worst case is two sequential attempts under
+// one shared budget, so headroom is tighter. A 5s budget is sufficient for two
+// healthy round trips with margin, and must stay strictly smaller than
+// ncHTTPClientTimeout (30s) so socket timeouts do not hide handler timeouts.
+//
+// Edge case: a brand-new user's first request is a credentials rejection by
+// construction (the account does not exist yet), so with the fallback armed it
+// always takes the two-attempt path. If the second attempt alone exhausts the
+// remaining shared budget, the handler answers 504 instead of 409, and the
+// caller's provisioning path (nextcloud_credentials.py in the backend)
+// provisions only on 409 - a 504 is simply not provisioned on that request,
+// and it self-corrects on the caller's next one. This is accepted rather than
+// sized against len(keys) round trips because the rotation window, when the
+// ~1.24s warm-path figure above is least trustworthy (Nextcloud is also mid
+// password-reset pass), is transient, and a wider budget would slow the
+// steady-state timeout too.
 const NcTokenTimeout = 5 * time.Second
 
 // NcProvisionTimeout bounds the account-provisioning handler. Account creation
@@ -93,17 +117,71 @@ const NcDerivationKeyBytes = 32
 // startup line, which is diagnosable.
 //
 // A key that does not decode, and one that decodes to the wrong length, are
-// treated identically: neither can produce the passwords the bash rotation
-// script computes for the same key, so registering with either derives a wrong
-// or weakened password for every user. Rejecting them here rather than aborting
-// keeps ORCID login, JWKS and the sovereign-key surface serving, which a
-// Nextcloud misconfiguration must not take down.
+// treated identically: neither can produce the passwords
+// `curatorium admin nextcloud rotate-derivation-key` computes for the same
+// key, so registering with either derives a wrong or weakened password for
+// every user. Rejecting them here rather than aborting keeps ORCID login,
+// JWKS and the sovereign-key surface serving, which a Nextcloud
+// misconfiguration must not take down.
 func NcEndpointsEnabled(derivationKeyHex, internalSecret string) bool {
 	if derivationKeyHex == "" || internalSecret == "" {
 		return false
 	}
 	decoded, err := hex.DecodeString(derivationKeyHex)
 	return err == nil && len(decoded) == NcDerivationKeyBytes
+}
+
+// NcPreviousDerivationKey decodes the superseded derivation key a rotation
+// leaves behind, reporting whether it is usable as a fallback.
+//
+// Unset is the steady state - a deployment that has never rotated has no
+// previous key - so the empty string is answered false with no complaint. A
+// value that is set but does not decode to exactly NcDerivationKeyBytes is a
+// different thing entirely: an operator meant an overlap to exist and will not
+// get one, and every account whose Nextcloud password still derives from the
+// old key is refused until the rotation finishes. The caller distinguishes the
+// two by testing the raw string for emptiness itself, and reports the second.
+//
+// A rejected key returns no bytes at all rather than a partial decode: half of
+// a derivation key derives a password nothing accepts, so handing one back
+// would arm a fallback that can only ever cost a wasted round trip.
+func NcPreviousDerivationKey(previousKeyHex string) ([]byte, bool) {
+	if previousKeyHex == "" {
+		return nil, false
+	}
+	decoded, err := hex.DecodeString(previousKeyHex)
+	if err != nil || len(decoded) != NcDerivationKeyBytes {
+		return nil, false
+	}
+	return decoded, true
+}
+
+// NcPreviousKeyForFallback decides whether the previous Nextcloud derivation
+// key arms the rotation fallback, and gives the one line main.go_ should
+// print about that decision. main.go_ is never compiled by `go test ./...`
+// (see apps/id1/CLAUDE.md's extraction pattern), so moving the decision here
+// is what makes it reachable by the unit suite.
+//
+// previousKeyHex empty is the steady state and answers with a nil key and an
+// empty logLine, so the caller prints nothing. A previousKeyHex that
+// NcPreviousDerivationKey rejects (wrong length, not hex) answers with a nil
+// key and a non-empty logLine: an operator meant an overlap to exist and is
+// not getting one. A previousKeyHex that decodes but is byte-identical to
+// currentKey gives the fallback nothing to fall back to, so it is dropped the
+// same way even though it decoded cleanly - compared in constant time because
+// both are secret key material. Anything else is armed.
+func NcPreviousKeyForFallback(previousKeyHex string, currentKey []byte) (previousKey []byte, logLine string) {
+	decoded, usable := NcPreviousDerivationKey(previousKeyHex)
+	if !usable {
+		if previousKeyHex == "" {
+			return nil, ""
+		}
+		return nil, "NC_DERIVATION_KEY_PREV is set but unusable (it must be 32 hex-encoded bytes, as produced by `openssl rand -hex 32`); the rotation fallback is NOT armed, so every account whose Nextcloud password still derives from the previous key is refused until its reset runs"
+	}
+	if subtle.ConstantTimeCompare(decoded, currentKey) == 1 {
+		return nil, "NC_DERIVATION_KEY_PREV is set and usable but equals NC_DERIVATION_KEY; the rotation fallback is NOT armed because both slots hold the same value, so every account whose Nextcloud password still derives from the previous key is refused until its reset runs"
+	}
+	return decoded, "NC_DERIVATION_KEY_PREV is set and usable; /internal/nc-token accepts the previous key as a fallback while a rotation completes"
 }
 
 // formatOCSError returns a diagnostic error wrapping (code, message, hint).
@@ -238,6 +316,7 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword 
 		return "", fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("OCS-APIREQUEST", "true")
+	req.Header.Set("User-Agent", NcMintUserAgent)
 	req.SetBasicAuth(orcid, userPassword)
 
 	client := &http.Client{Timeout: ncHTTPClientTimeout}
@@ -257,6 +336,13 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword 
 		// matters in the case that does not.
 		c.noteRejection(orcid, "HTTP 401")
 		return "", ErrNextcloudCredentialsRejected
+	}
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// Nextcloud is rate-limiting. This says nothing about which key is right;
+		// retrying would double the load on a service that is already throttling.
+		log.Printf("nc-mint: nextcloud rate-limited for %s (HTTP 429)", orcid)
+		return "", ErrNextcloudRateLimited
 	}
 
 	var ocsResult OCSResponse
@@ -350,7 +436,22 @@ func (c *NextcloudClient) clearRejectionStreak(orcid string) {
 // The handler is stateless: it derives the user's Nextcloud login password
 // from (orcid, derivationKey) and mints a fresh app token. id1 persists
 // nothing - the caller caches.
-func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret string, timeout time.Duration) http.HandlerFunc {
+//
+// previousKeys carries the derivation keys a rotation has superseded but whose
+// passwords some accounts still hold, newest first. Rotation resets each
+// account's Nextcloud password to the current key's derivation one account at a
+// time, so for the duration of that pass the two sides of the boundary need
+// different keys; without the fallback every account not yet reset is refused
+// and the outage scales with the user count. Each key is tried in turn and only
+// while Nextcloud is REFUSING the credentials: a timeout or any other failure
+// says nothing about which key is right, so retrying on those would double the
+// load on a Nextcloud that is already failing. Passing no previousKeys is the
+// steady state and behaves exactly as before.
+func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret string, timeout time.Duration, previousKeys ...[]byte) http.HandlerFunc {
+	// Built once at construction rather than per request. The current key is
+	// always index 0, which is what makes "current first" a property of the
+	// data rather than of the loop body.
+	keys := append([][]byte{derivationKey}, previousKeys...)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !secretMatches(r.Header.Get("X-ID1-Internal-Secret"), internalSecret) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -370,22 +471,39 @@ func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret str
 			return
 		}
 
-		pw, err := DeriveNextcloudPassword(derivationKey, orcid)
-		if err != nil {
-			http.Error(w, "derive failed", http.StatusInternalServerError)
-			return
-		}
-
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 
-		token, err := nc.MintAppToken(ctx, orcid, pw)
+		// One budget covers every attempt. A per-attempt timeout would let a
+		// slow Nextcloud hold the caller for the sum of them.
+		// Note: each failed attempt (when current key is rejected before trying
+		// previous key) counts against Nextcloud's brute-force protection, doubling
+		// the failed-login rate during rotation. A throttled Nextcloud will return
+		// HTTP 429, which MintAppToken detects and returns ErrNextcloudRateLimited.
+		// This is a known cost of the fallback during the rotation window.
+		var token string
+		var err error
+		for _, key := range keys {
+			var pw string
+			pw, err = DeriveNextcloudPassword(key, orcid)
+			if err != nil {
+				http.Error(w, "derive failed", http.StatusInternalServerError)
+				return
+			}
+			token, err = nc.MintAppToken(ctx, orcid, pw)
+			if !errors.Is(err, ErrNextcloudCredentialsRejected) {
+				// Success, or a failure that no other key can fix.
+				break
+			}
+		}
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrNextcloudCredentialsRejected):
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)
 				fmt.Fprint(w, `{"error":"nextcloud_credentials_rejected"}`)
+			case errors.Is(err, ErrNextcloudRateLimited):
+				http.Error(w, "nextcloud rate limited", http.StatusServiceUnavailable)
 			case errors.Is(err, context.DeadlineExceeded):
 				http.Error(w, "nextcloud timeout", http.StatusGatewayTimeout)
 			case errors.Is(err, context.Canceled):
@@ -472,9 +590,9 @@ func HandleNcProvision(nc *NextcloudClient, derivationKey []byte, internalSecret
 // The NC_ prefix ensures the derived value satisfies Nextcloud's password
 // character-class requirements (upper + lower + digit + special).
 //
-// The bash rotation script (ops/host-cron/curatorium-rotate-nc-key.sh) MUST produce
-// byte-identical output for the same (key, orcid). Any divergence silently breaks
-// every user on rotation.
+// `curatorium admin nextcloud rotate-derivation-key` MUST produce byte-identical
+// output for the same (key, orcid). Any divergence silently breaks every user
+// on rotation.
 func DeriveNextcloudPassword(derivationKey []byte, orcid string) (string, error) {
 	if len(derivationKey) == 0 {
 		return "", fmt.Errorf("derivation key must not be empty")

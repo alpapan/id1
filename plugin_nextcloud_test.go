@@ -10,6 +10,7 @@ package id1
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -456,6 +459,162 @@ func TestHandleNcToken_OCSAuthFailuresReturn409(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Rotation overlap - HandleNcToken accepts the previous derivation key.
+// ---------------------------------------------------------------------------
+
+// Rotating NC_DERIVATION_KEY resets every account's Nextcloud password to the
+// value the new key derives, one account at a time, while id1 keeps deriving
+// from whichever key its pod was started with. Without an overlap every account
+// on the wrong side of that boundary is refused, so the outage scales with the
+// user count rather than being the "~1 second window" the rotation was once
+// documented as. Serving current-plus-previous is what jwt_signing.go already
+// does for the RS256 signing key, and this is the same shape for the
+// derivation key.
+func TestHandleNcToken_FallsBackToThePreviousDerivationKey(t *testing.T) {
+	currentKey := []byte("current-derivation-key")
+	previousKey := []byte("previous-derivation-key")
+	const orcid = "0009-0002-8023-3658"
+
+	currentPassword, err := DeriveNextcloudPassword(currentKey, orcid)
+	require.NoError(t, err)
+	previousPassword, err := DeriveNextcloudPassword(previousKey, orcid)
+	require.NoError(t, err)
+	require.NotEqual(t, currentPassword, previousPassword, "the two keys must derive different passwords or this test proves nothing")
+
+	var mu sync.Mutex
+	var presented []string
+
+	// This account's Nextcloud password has NOT been reset yet, so only the
+	// previous key's derivation authenticates.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, password, _ := r.BasicAuth()
+		mu.Lock()
+		presented = append(presented, password)
+		mu.Unlock()
+		if password != previousPassword {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"MINTED-WITH-PREVIOUS"}}}`)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, currentKey, "internal-secret", 2*time.Second, previousKey)
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid="+orcid, nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	assert.Equal(t, "MINTED-WITH-PREVIOUS", body["token"])
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, presented, 2, "exactly two attempts: the current key, then the previous one")
+	assert.Equal(t, currentPassword, presented[0], "the current key must be tried FIRST")
+	assert.Equal(t, previousPassword, presented[1], "the previous key is the fallback, never the first choice")
+}
+
+// An account whose password matches NEITHER key is not a rotation problem - it
+// is the ordinary "this account does not exist yet" case, and the caller
+// provisions on 409. Exhausting the keys must reach exactly the same answer as
+// having no previous key at all, or the lazy provisioning path stops firing for
+// every new user for the duration of a rotation.
+func TestHandleNcToken_ReturnsConflictWhenNoKeyAuthenticates(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, []byte("current-key"), "internal-secret", 2*time.Second, []byte("previous-key"))
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusConflict, rr.Code)
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+	assert.Equal(t, "nextcloud_credentials_rejected", body["error"])
+	assert.Equal(t, int32(2), atomic.LoadInt32(&attempts), "both keys tried, neither retried further")
+}
+
+// A failure that is not a credentials rejection must not consume the fallback.
+// A wedged or unreachable Nextcloud says nothing about which key is right, and
+// a second attempt would double the load on a service that is already failing
+// while still answering 502.
+func TestHandleNcToken_DoesNotRetryOnAFailureThatIsNotACredentialsRejection(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":998,"status":"failure","message":"not found"},"data":null}}`)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, []byte("current-key"), "internal-secret", 2*time.Second, []byte("previous-key"))
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadGateway, rr.Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts), "OCS 998 is not a credentials rejection, so the previous key is never tried")
+}
+
+// The steady state: no rotation in flight, no previous key configured. One
+// attempt, and the previous-key machinery is invisible.
+func TestHandleNcToken_WithNoPreviousKeyMakesExactlyOneAttempt(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, []byte("current-key"), "internal-secret", 2*time.Second)
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusConflict, rr.Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts))
+}
+
+// When Nextcloud signals it is rate-limiting (HTTP 429), the fallback must not
+// consume the attempt on the previous key. Rate-limiting says nothing about
+// which key is right - a second attempt would double the load on a service
+// that is already throttling while still failing.
+func TestHandleNcToken_DoesNotRetryOnHTTP429(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusTooManyRequests) // HTTP 429
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, []byte("current-key"), "internal-secret", 2*time.Second, []byte("previous-key"))
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts), "HTTP 429 is not a credentials rejection, so the previous key is never tried")
+}
+
 // id1 registers no server-side ReadTimeout/WriteTimeout, so each handler must
 // bound itself rather than relying on the caller's socket.
 func TestHandleNcToken_BoundsItselfWithItsOwnTimeout(t *testing.T) {
@@ -559,15 +718,49 @@ func TestNcEndpointsEnabled_RejectsAKeyThatIsNotThirtyTwoBytes(t *testing.T) {
 	assert.False(t, NcEndpointsEnabled(strings.Repeat("ab", 33), "s3cret"), "33 bytes is not the provisioned shape")
 }
 
-// A derivation key that is not hex cannot produce the passwords the bash
-// rotation script computes, so the endpoints must not be registered with it.
-// Reporting it here is what lets the caller decline to register rather than
-// kill a process that also serves ORCID login, JWKS and the sovereign-key
-// surface.
+// A derivation key that is not hex cannot produce the passwords
+// `curatorium admin nextcloud rotate-derivation-key` computes, so the
+// endpoints must not be registered with it. Reporting it here is what lets
+// the caller decline to register rather than kill a process that also serves
+// ORCID login, JWKS and the sovereign-key surface.
 func TestNcEndpointsEnabled_RejectsAKeyThatIsNotHex(t *testing.T) {
 	assert.False(t, NcEndpointsEnabled("not-hex-at-all", "s3cret"), "a non-hex key derives nothing usable")
 	assert.False(t, NcEndpointsEnabled("abc", "s3cret"), "an odd-length hex string decodes partially")
 	assert.False(t, NcEndpointsEnabled("00112233gg", "s3cret"), "a non-hex digit decodes partially")
+}
+
+// NC_DERIVATION_KEY_PREV is absent in the steady state and present only for the
+// duration of a rotation, so "not set" must be an ordinary answer rather than a
+// misconfiguration. A value that IS set and cannot be used is the opposite: it
+// means an operator intended an overlap and will not get one, which is the
+// exact outage the overlap exists to remove, so the caller has to be able to
+// tell the two apart and say so.
+func TestNcPreviousDerivationKey(t *testing.T) {
+	fullKey := strings.Repeat("cd", 32) // what `openssl rand -hex 32` provisions
+
+	key, usable := NcPreviousDerivationKey(fullKey)
+	assert.True(t, usable)
+	assert.Len(t, key, NcDerivationKeyBytes)
+
+	key, usable = NcPreviousDerivationKey("")
+	assert.False(t, usable, "unset is the steady state, not a usable key")
+	assert.Nil(t, key)
+}
+
+func TestNcPreviousDerivationKey_RefusesAKeyThatIsNotUsable(t *testing.T) {
+	for _, bad := range []string{
+		"2206",
+		"deadbeef",
+		strings.Repeat("ab", 31),
+		strings.Repeat("ab", 33),
+		"not-hex-at-all",
+		"abc",
+		"00112233gg",
+	} {
+		key, usable := NcPreviousDerivationKey(bad)
+		assert.False(t, usable, "unusable previous key must not arm the fallback: %q", bad)
+		assert.Nil(t, key, "an unusable key must yield no bytes at all: %q", bad)
+	}
 }
 
 // captureLog redirects the standard logger for the duration of a test and
@@ -973,4 +1166,189 @@ func TestHandleNcProvision_BoundsItselfWithItsOwnTimeout(t *testing.T) {
 	assert.Less(t, elapsed, time.Second)
 }
 
-// __END_OF_FILE_MARKER__
+func TestNextcloudClient_MintAppToken_SendsExplicitUserAgent(t *testing.T) {
+	var gotUserAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"PLAINTEXT-TOKEN-abc123"}}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL}
+	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	require.NoError(t, err)
+	assert.Equal(t, NcMintUserAgent, gotUserAgent,
+		"Nextcloud names an app password after the mint request's User-Agent, so it must be one we assert")
+	assert.NotEqual(t, "Go-http-client/1.1", gotUserAgent,
+		"the Go net/http default is not a discriminator this project controls")
+}
+
+// ---------------------------------------------------------------------------
+// Golden vectors - the executable form of the cross-language derivation contract.
+//
+// The same vectors are asserted by the Python implementation in
+// scripts/curatorium_assistant, against its own independent copy of this
+// fixture: apps/id1 and scripts/curatorium_assistant are separate submodules,
+// so neither can portably read a file inside the other.
+// scripts/admin/test_nc_derivation_vectors_match_across_languages.py compares
+// the two copies for byte-identity, so drift between them is caught.
+//
+// This test reads the expected values; it never computes them. A test that
+// generates its own expectations asserts nothing.
+// ---------------------------------------------------------------------------
+
+type ncDerivationVector struct {
+	KeyHex   string
+	Orcid    string
+	Expected string
+}
+
+// readNcDerivationVectors parses the three-column vector fixture. Blank lines
+// and lines opening with "#" are commentary and carry no vector.
+func readNcDerivationVectors(t *testing.T, path string) []ncDerivationVector {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err, "the golden vector fixture must exist")
+
+	var vectors []ncDerivationVector
+	for index, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		require.Len(t, fields, 3,
+			"line %d of %s must carry exactly three whitespace-separated fields", index+1, path)
+		vectors = append(vectors, ncDerivationVector{
+			KeyHex:   fields[0],
+			Orcid:    fields[1],
+			Expected: fields[2],
+		})
+	}
+	return vectors
+}
+
+func TestDeriveNextcloudPassword_MatchesGoldenVectors(t *testing.T) {
+	vectors := readNcDerivationVectors(t, filepath.Join("testdata", "nc_derivation_vectors.txt"))
+
+	require.GreaterOrEqual(t, len(vectors), 4,
+		"the fixture must carry at least four vectors; an emptied fixture would let this test pass while asserting nothing")
+
+	orcids := make([]string, 0, len(vectors))
+	for _, vector := range vectors {
+		orcids = append(orcids, vector.Orcid)
+	}
+	assert.Subset(t, orcids, []string{
+		"0000-0000-0000-0001",
+		"0009-0002-8023-3658",
+		"0000-0002-1825-0097",
+		"0000-0001-5109-3700",
+	}, "the fixture must carry these four canary ORCID iDs; their absence means the vectors were swapped for a different set")
+
+	for _, vector := range vectors {
+		key, err := hex.DecodeString(vector.KeyHex)
+		require.NoError(t, err, "field 1 of every vector must be valid hex")
+
+		got, err := DeriveNextcloudPassword(key, vector.Orcid)
+		require.NoError(t, err)
+		assert.Equal(t, vector.Expected, got,
+			"derivation drifted for orcid %s", vector.Orcid)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Startup diagnostics: NcPreviousDerivationKey and fallback arming.
+// ---------------------------------------------------------------------------
+
+func TestNcStartupDiagnostics_PreviousKeyForFallback(t *testing.T) {
+	// Table-driven per curatorium-testing's "collapse a family before you
+	// report DONE": one function under test (NcPreviousKeyForFallback), same
+	// setup/assertion shape, differing only by which of the five input
+	// scenarios is exercised.
+	currentKey := make([]byte, 32)
+	currentKey[0] = 0x01
+	differentUsableHex := "02" + strings.Repeat("00", 31)
+
+	cases := []struct {
+		name           string
+		previousKeyHex string
+		wantArmed      bool // previousKey expected non-nil (fallback armed)
+		wantLogged     bool // logLine expected non-empty (operator warned)
+	}{
+		{
+			name:           "UsableAndDifferent",
+			previousKeyHex: differentUsableHex,
+			wantArmed:      true,
+			wantLogged:     true,
+		},
+		{
+			name:           "UsableAndEqual",
+			previousKeyHex: "01" + strings.Repeat("00", 31), // decodes equal to currentKey
+			wantArmed:      false,
+			wantLogged:     true,
+		},
+		{
+			name:           "UnusableTooShort",
+			previousKeyHex: "0102",
+			wantArmed:      false,
+			wantLogged:     true,
+		},
+		{
+			name:           "UnusableInvalidHex",
+			previousKeyHex: "zzzzzzzzzzzzzzzzzz",
+			wantArmed:      false,
+			wantLogged:     true,
+		},
+		{
+			name:           "Absent",
+			previousKeyHex: "",
+			wantArmed:      false,
+			wantLogged:     false,
+		},
+	}
+
+	// Guard over the case list itself: a deleted case must fail this test
+	// rather than let the table quietly shrink to fewer scenarios.
+	wantCaseNames := []string{
+		"UsableAndDifferent", "UsableAndEqual", "UnusableTooShort", "UnusableInvalidHex", "Absent",
+	}
+	require.Len(t, cases, len(wantCaseNames),
+		"the case list must carry exactly these five cases; a deleted case must fail this guard rather than pass quietly")
+	gotCaseNames := make([]string, 0, len(cases))
+	for _, tc := range cases {
+		gotCaseNames = append(gotCaseNames, tc.name)
+	}
+	assert.ElementsMatch(t, wantCaseNames, gotCaseNames,
+		"the case list must carry exactly these named cases; a deleted, renamed, or added case must fail this guard rather than pass quietly")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			previousKey, logLine := NcPreviousKeyForFallback(tc.previousKeyHex, currentKey)
+			if tc.wantArmed {
+				require.NotNil(t, previousKey, "case %s must arm the fallback", tc.name)
+			} else {
+				assert.Nil(t, previousKey, "case %s must not arm the fallback", tc.name)
+			}
+			if tc.wantLogged {
+				assert.NotEmpty(t, logLine, "case %s must warn the operator", tc.name)
+			} else {
+				assert.Empty(t, logLine, "case %s must print nothing", tc.name)
+			}
+
+			if tc.name == "Absent" {
+				// The absent-key case alone cannot distinguish a real
+				// decision from a stub that always returns (nil, ""),
+				// because that is exactly what the absent-key case itself
+				// returns. Prove the function still makes a real decision
+				// by also exercising a usable, different key here and
+				// requiring it to arm the fallback with a non-empty log
+				// line, so this subtest discriminates on its own.
+				controlKey, controlLogLine := NcPreviousKeyForFallback(differentUsableHex, currentKey)
+				require.NotNil(t, controlKey, "a usable, different previous key must still arm the fallback")
+				assert.NotEmpty(t, controlLogLine, "an armed fallback must still be logged")
+			}
+		})
+	}
+}

@@ -152,14 +152,28 @@ func main() {
 	// `openssl dgst -macopt hexkey:$NEW_KEY` (which hex-decodes internally). A mismatch
 	// here would silently produce different passwords in Go vs bash.
 	derivationKeyHex := os.Getenv("NC_DERIVATION_KEY")
+	previousDerivationKeyHex := os.Getenv("NC_DERIVATION_KEY_PREV")
 	internalSecret := os.Getenv("ID1_INTERNAL_SECRET")
 	switch {
 	case id1.NcEndpointsEnabled(derivationKeyHex, internalSecret):
 		// The error is discarded because NcEndpointsEnabled selected this branch
 		// by decoding the same string successfully, to exactly 32 bytes.
 		derivationKey, _ := hex.DecodeString(derivationKeyHex)
+		// NC_DERIVATION_KEY_PREV exists only while a rotation is in flight: it
+		// holds the key whose derived passwords some accounts still carry
+		// because their reset has not run yet. NcPreviousKeyForFallback makes
+		// the decision, because this file is never compiled by `go test
+		// ./...` and cannot be asserted from here.
+		var previousKeys [][]byte
+		previousKey, logLine := id1.NcPreviousKeyForFallback(previousDerivationKeyHex, derivationKey)
+		if previousKey != nil {
+			previousKeys = append(previousKeys, previousKey)
+		}
+		if logLine != "" {
+			fmt.Println(logLine)
+		}
 		ncClient := id1.NewNextcloudClient()
-		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret, id1.NcTokenTimeout))
+		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret, id1.NcTokenTimeout, previousKeys...))
 		http.HandleFunc("/internal/nc-provision", id1.HandleNcProvision(ncClient, derivationKey, internalSecret, id1.NcProvisionTimeout))
 		fmt.Println("Registered /internal/nc-token and /internal/nc-provision endpoints")
 	case derivationKeyHex == "" && internalSecret == "":
