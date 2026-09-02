@@ -160,6 +160,7 @@ var credGuardSuffixes = map[string]bool{
 	".yml":      true,
 	".toml":     true,
 	".template": true,
+	".txt":      true,
 	".sh":       true,
 	".md":       true,
 	".example":  true,
