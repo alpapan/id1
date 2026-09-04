@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> **⛔ Load the `id1` skill before working in this submodule (HARD RULE).** Covers the generic KV/auth core + Curatorium deployment grafts (RS256, ORCID, sovereign key, mTLS) at file:line detail - this file only carries what the skill doesn't: network topology, build/test/commit. Subagents don't inherit it - name it.
+> **Load the `id1` skill before working in this submodule (HARD RULE).** Covers the generic KV/auth core + Curatorium deployment grafts (RS256, ORCID, sovereign key, mTLS) at file:line detail - this file only carries what the skill doesn't: network topology, build/test/commit. Subagents don't inherit it - name it.
 
 ## Monorepo Context
 
@@ -11,10 +11,10 @@ Not in the skill: the JWT lands in `localStorage['CURATORIUM_JWT']`; same-origin
 ### Service topology (Curatorium view)
 
 ```
-Internet → cloudflared → Traefik (IngressRouteTCP passthrough) → id1-router:8080
-                                                                   ↓ (JWKS only)
+Internet -> cloudflared -> Traefik (IngressRouteTCP passthrough) -> id1-router:8080
+                                                                   v (JWKS only)
                                                                curatorium-backend:8000 (internal)
-                                                                   ↓
+                                                                   v
                                                                 postgres:5432 (internal)
 ```
 
@@ -65,5 +65,5 @@ handler for `/pub/jwks.json` in `id1.go` - the backend middleware validates RS25
 
 ## Commit submodule changes from here
 
-`cd apps/id1 && git add <file> && git commit -m "feat(id1): …"`
+`cd apps/id1 && git add <file> && git commit -m "feat(id1): ..."`
 The monorepo pins a specific commit; bumping it needs a separate commit at the Curatorium monorepo root.

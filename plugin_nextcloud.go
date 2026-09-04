@@ -185,7 +185,7 @@ func NcPreviousKeyForFallback(previousKeyHex string, currentKey []byte) (previou
 }
 
 // formatOCSError returns a diagnostic error wrapping (code, message, hint).
-// hints is the applicable code→hint map (provisioning vs auth).
+// hints is the applicable code->hint map (provisioning vs auth).
 func formatOCSError(endpoint string, code int, message string, hints map[int]string) error {
 	if hint, ok := hints[code]; ok {
 		return fmt.Errorf("OCS error %d at %s: %s (%s)", code, endpoint, message, hint)
