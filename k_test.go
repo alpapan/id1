@@ -13,7 +13,7 @@ import (
 )
 
 func TestKParsesPubPath(t *testing.T) {
-	k := K("TestId/pub/key")
+	k := mustK(t, "TestId/pub/key")
 	if k.Id != "TestId" {
 		t.Errorf("expected Id='TestId', got %q", k.Id)
 	}
@@ -32,7 +32,7 @@ func TestKParsesPubPath(t *testing.T) {
 }
 
 func TestKStripsLeadingTrailingSlashes(t *testing.T) {
-	k := K("/TestId/")
+	k := mustK(t, "/TestId/")
 	if k.Id != "TestId" {
 		t.Errorf("expected Id='TestId', got %q", k.Id)
 	}
@@ -51,7 +51,7 @@ func TestKStripsLeadingTrailingSlashes(t *testing.T) {
 }
 
 func TestKSingleSegment(t *testing.T) {
-	k := K("root")
+	k := mustK(t, "root")
 	if k.Id != "root" {
 		t.Errorf("expected Id='root', got %q", k.Id)
 	}
@@ -70,7 +70,7 @@ func TestKSingleSegment(t *testing.T) {
 }
 
 func TestKDetectsPubInSecondSegment(t *testing.T) {
-	k := K("user1/pub/token")
+	k := mustK(t, "user1/pub/token")
 	if !k.Pub {
 		t.Errorf("expected Pub=true for 'user1/pub/token', got false")
 	}
@@ -80,14 +80,14 @@ func TestKDetectsPubInSecondSegment(t *testing.T) {
 }
 
 func TestKDetectsPubFalseWhenNotSecondSegment(t *testing.T) {
-	k := K("user1/data/pub")
+	k := mustK(t, "user1/data/pub")
 	if k.Pub {
 		t.Errorf("expected Pub=false for 'user1/data/pub', got true (pub is not second segment)")
 	}
 }
 
 func TestKHandlesComplexPath(t *testing.T) {
-	k := K("user123/priv/key/version/2")
+	k := mustK(t, "user123/priv/key/version/2")
 	if k.Id != "user123" {
 		t.Errorf("expected Id='user123', got %q", k.Id)
 	}
@@ -106,7 +106,7 @@ func TestKHandlesComplexPath(t *testing.T) {
 }
 
 func TestKEmptyString(t *testing.T) {
-	k := K("")
+	k := mustK(t, "")
 	if k.Id != "" {
 		t.Errorf("expected empty Id, got %q", k.Id)
 	}

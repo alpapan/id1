@@ -30,25 +30,25 @@ func setup(t *testing.T) {
 	// - test0-level roles: max has "Admin"
 	// - test0/pub/tags level roles: max has "Tagger"
 
-	_, err := CmdSet(K("test0/pub/key"), map[string]string{}, []byte("...")).Exec()
+	_, err := CmdSet(mustK(t, "test0/pub/key"), map[string]string{}, []byte("...")).Exec()
 	require.NoError(t, err, "setup: failed to set test0/pub/key")
 
-	_, err = CmdSet(K("test0/pub/tags/Robot"), map[string]string{}, []byte("...")).Exec()
+	_, err = CmdSet(mustK(t, "test0/pub/tags/Robot"), map[string]string{}, []byte("...")).Exec()
 	require.NoError(t, err, "setup: failed to set test0/pub/tags/Robot")
 
-	_, err = CmdSet(K("test0/.get"), map[string]string{}, []byte("Reader")).Exec()
+	_, err = CmdSet(mustK(t, "test0/.get"), map[string]string{}, []byte("Reader")).Exec()
 	require.NoError(t, err, "setup: failed to set test0/.get permission")
 
-	_, err = CmdSet(K("test0/pub/tags/.set"), map[string]string{}, []byte("Tagger")).Exec()
+	_, err = CmdSet(mustK(t, "test0/pub/tags/.set"), map[string]string{}, []byte("Tagger")).Exec()
 	require.NoError(t, err, "setup: failed to set test0/pub/tags/.set permission")
 
-	_, err = CmdSet(K(".roles/max"), map[string]string{}, []byte("Reader")).Exec()
+	_, err = CmdSet(mustK(t, ".roles/max"), map[string]string{}, []byte("Reader")).Exec()
 	require.NoError(t, err, "setup: failed to set global role for max")
 
-	_, err = CmdSet(K("test0/.roles/max"), map[string]string{}, []byte("Admin")).Exec()
+	_, err = CmdSet(mustK(t, "test0/.roles/max"), map[string]string{}, []byte("Admin")).Exec()
 	require.NoError(t, err, "setup: failed to set test0-level role for max")
 
-	_, err = CmdSet(K("test0/pub/tags/.roles/max"), map[string]string{}, []byte("Tagger")).Exec()
+	_, err = CmdSet(mustK(t, "test0/pub/tags/.roles/max"), map[string]string{}, []byte("Tagger")).Exec()
 	require.NoError(t, err, "setup: failed to set test0/pub/tags role for max")
 }
 
@@ -56,26 +56,26 @@ func TestAuthDotOpAuthorization(t *testing.T) {
 	setup(t)
 
 	// max has "Tagger" role at test0/pub/tags, so should be able to set tags
-	require.True(t, authDotOp("max", CmdSet(K("test0/pub/tags/Robot"), map[string]string{}, []byte{})),
+	require.True(t, authDotOp("max", CmdSet(mustK(t, "test0/pub/tags/Robot"), map[string]string{}, []byte{})),
 		"max should be authorized to set test0/pub/tags/Robot with Tagger role")
 
 	// max should not be able to delete (requires different role)
-	require.False(t, authDotOp("max", CmdDel(K("test0/pub/tags/Robot"))),
+	require.False(t, authDotOp("max", CmdDel(mustK(t, "test0/pub/tags/Robot"))),
 		"max should not be authorized to delete test0/pub/tags/Robot")
 
 	// max should be able to get test0/token (inherits permissions from test0)
-	require.True(t, authDotOp("max", CmdGet(K("test0/token"))),
+	require.True(t, authDotOp("max", CmdGet(mustK(t, "test0/token"))),
 		"max should be authorized to get test0/token with inherited permissions")
 
 	// max should not be able to delete test0/pub/key (not authorized at that level)
-	require.False(t, authDotOp("max", CmdDel(K("test0/pub/key"))),
+	require.False(t, authDotOp("max", CmdDel(mustK(t, "test0/pub/key"))),
 		"max should not be authorized to delete test0/pub/key")
 }
 
 func TestGetRolesReturnsAllApplicableRoles(t *testing.T) {
 	setup(t)
 
-	roles := getRoles("max", K("test0/pub/tags/Robot"))
+	roles := getRoles("max", mustK(t, "test0/pub/tags/Robot"))
 
 	// Verify all inherited roles are present
 	require.True(t, slices.Contains(roles, "Reader"),

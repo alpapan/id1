@@ -21,7 +21,7 @@ func TestDotAfter(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	ttlKey := K("testda/1sec/qqqqbbbb")
+	ttlKey := mustK(t, "testda/1sec/qqqqbbbb")
 	expectedData := "..."
 
 	// Set key with TTL
@@ -54,7 +54,7 @@ func TestDotAfter(t *testing.T) {
 	}
 
 	// The .ttl. metadata file should also be removed
-	ttlMetaKey := K(fmt.Sprintf("%s/.ttl.%s", ttlKey.Parent, ttlKey.Name))
+	ttlMetaKey := mustK(t, fmt.Sprintf("%s/.ttl.%s", ttlKey.Parent, ttlKey.Name))
 	_, errMetaDelete := CmdGet(ttlMetaKey).Exec()
 	if errMetaDelete == nil {
 		t.Errorf("Expected TTL metadata file %q to be deleted by dotAfter, but Get succeeded (file still exists)", ttlMetaKey.String())

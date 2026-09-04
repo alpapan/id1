@@ -83,6 +83,10 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing deviceId", http.StatusBadRequest)
 			return
 		}
+		if !devicePattern.MatchString(req.DeviceId) {
+			http.Error(w, "Invalid deviceId", http.StatusBadRequest)
+			return
+		}
 
 		// Gate (a): EVERY registration - first-registration OR re-registration -
 		// must prove ownership of the ORCID with a valid RS256 JWT whose subject
@@ -140,8 +144,16 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 		}
 
 		// Store pending key + nonce with TTL
-		pendingKeyPath := KK(orcidId, "priv", "pending", token+".key")
-		pendingNoncePath := KK(orcidId, "priv", "pending", token+".nonce")
+		pendingKeyPath, err := KK(orcidId, "priv", "pending", token+".key")
+		if err != nil {
+			http.Error(w, "Invalid id", http.StatusBadRequest)
+			return
+		}
+		pendingNoncePath, err := KK(orcidId, "priv", "pending", token+".nonce")
+		if err != nil {
+			http.Error(w, "Invalid id", http.StatusBadRequest)
+			return
+		}
 
 		if _, err := CmdSet(pendingKeyPath, map[string]string{"x-id": orcidId, "ttl": pendingKeyTTL}, []byte(req.PublicKeyPEM)).Exec(); err != nil {
 			http.Error(w, "Failed to store pending key", http.StatusInternalServerError)
@@ -196,19 +208,40 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing deviceId", http.StatusBadRequest)
 			return
 		}
+		if !devicePattern.MatchString(req.DeviceId) {
+			http.Error(w, "Invalid deviceId", http.StatusBadRequest)
+			return
+		}
+		if !registrationTokenPattern.MatchString(req.RegistrationToken) {
+			http.Error(w, "Invalid registrationToken", http.StatusBadRequest)
+			return
+		}
 
-		pendingKeyPath := KK(orcidId, "priv", "pending", req.RegistrationToken+".key")
-		pendingNoncePath := KK(orcidId, "priv", "pending", req.RegistrationToken+".nonce")
+		pendingKeyPath, err := KK(orcidId, "priv", "pending", req.RegistrationToken+".key")
+		if err != nil {
+			http.Error(w, "Invalid id", http.StatusBadRequest)
+			return
+		}
+		pendingNoncePath, err := KK(orcidId, "priv", "pending", req.RegistrationToken+".nonce")
+		if err != nil {
+			http.Error(w, "Invalid id", http.StatusBadRequest)
+			return
+		}
 
 		// Read pending key
 		pendingPEM, err := CmdGet(pendingKeyPath).Exec()
 		if err != nil || len(pendingPEM) == 0 {
 			// Idempotent: if pub/keys/{deviceId} already exists, the commit already went through
-			activeKey, activeErr := CmdGet(KK(orcidId, "pub", "keys", req.DeviceId)).Exec()
+			activeKeyPath, activeKeyErr := KK(orcidId, "pub", "keys", req.DeviceId)
+			if activeKeyErr != nil {
+				http.Error(w, "Registration token expired or invalid. Start over.", http.StatusBadRequest)
+				return
+			}
+			activeKey, activeErr := CmdGet(activeKeyPath).Exec()
 			if activeErr == nil && len(activeKey) > 0 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				fmt.Fprintf(w, `{"status":"already_committed","id":"%s"}`, orcidId)
+				fmt.Fprintf(w, `{"status":"already_committed","id":%q}`, orcidId)
 				return
 			}
 			http.Error(w, "Registration token expired or invalid. Start over.", http.StatusBadRequest)
@@ -245,14 +278,21 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 		}
 
 		// Promote: set pub/keys/{deviceId} = pending PEM with 7-day TTL (refreshed on each login)
-		if _, err := CmdSet(KK(orcidId, "pub", "keys", req.DeviceId), map[string]string{"x-id": orcidId, "ttl": pubKeyTTL}, pendingPEM).Exec(); err != nil {
+		activeKeyPathPromote, err := KK(orcidId, "pub", "keys", req.DeviceId)
+		if err != nil {
+			http.Error(w, "Invalid id or device", http.StatusBadRequest)
+			return
+		}
+		if _, err := CmdSet(activeKeyPathPromote, map[string]string{"x-id": orcidId, "ttl": pubKeyTTL}, pendingPEM).Exec(); err != nil {
 			http.Error(w, "Failed to activate key", http.StatusInternalServerError)
 			return
 		}
 
 		// Store device name (best-effort, no TTL - lives alongside the key)
 		if req.DeviceName != "" {
-			CmdSet(KK(orcidId, "pub", "keys", req.DeviceId+".name"), map[string]string{"x-id": orcidId}, []byte(req.DeviceName)).Exec()
+			if deviceNameKey, err := KK(orcidId, "pub", "keys", req.DeviceId+".name"); err == nil {
+				CmdSet(deviceNameKey, map[string]string{"x-id": orcidId}, []byte(req.DeviceName)).Exec()
+			}
 		}
 
 		// Clean up pending state (best-effort)
@@ -261,6 +301,6 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"committed","id":"%s"}`, orcidId)
+		fmt.Fprintf(w, `{"status":"committed","id":%q}`, orcidId)
 	}
 }

@@ -68,11 +68,19 @@ type KeyValueStore interface {
 type ID1KeyValueStore struct{}
 
 func (ID1KeyValueStore) CmdGet(key string) ([]byte, error) {
-	return CmdGet(K(key)).Exec()
+	k, err := K(key)
+	if err != nil {
+		return nil, fmt.Errorf("invalid key %q: %w", key, err)
+	}
+	return CmdGet(k).Exec()
 }
 
 func (ID1KeyValueStore) CmdSet(key string, value []byte) error {
-	_, err := CmdSet(K(key), map[string]string{}, value).Exec()
+	k, err := K(key)
+	if err != nil {
+		return fmt.Errorf("invalid key %q: %w", key, err)
+	}
+	_, err = CmdSet(k, map[string]string{}, value).Exec()
 	return err
 }
 

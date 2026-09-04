@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,10 +27,10 @@ func TestHandleListDevices_ReturnsRegisteredDevices(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Register two devices
-	CmdSet(KK(orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).Exec()
-	CmdSet(KK(orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).Exec()
-	CmdSet(KK(orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-2")).Exec()
-	CmdSet(KK(orcid, "pub", "keys", "device-2.name"), map[string]string{"x-id": orcid}, []byte("Safari on iPhone")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-2")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2.name"), map[string]string{"x-id": orcid}, []byte("Safari on iPhone")).Exec()
 
 	// Sign JWT for this user
 	jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
@@ -94,8 +95,8 @@ func TestHandleDeleteDevice_RemovesDevice(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Register a device
-	CmdSet(KK(orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).Exec()
-	CmdSet(KK(orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).Exec()
 
 	jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
 	require.NoError(t, err)
@@ -109,11 +110,11 @@ func TestHandleDeleteDevice_RemovesDevice(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 
 	// Key should be gone
-	_, err = CmdGet(KK(orcid, "pub", "keys", "device-1")).Exec()
+	_, err = CmdGet(mustKK(t, orcid, "pub", "keys", "device-1")).Exec()
 	assert.Error(t, err, "device key should be deleted")
 
 	// Name should be gone too
-	_, err = CmdGet(KK(orcid, "pub", "keys", "device-1.name")).Exec()
+	_, err = CmdGet(mustKK(t, orcid, "pub", "keys", "device-1.name")).Exec()
 	assert.Error(t, err, "device name should be deleted")
 }
 
@@ -127,4 +128,119 @@ func TestHandleDeleteDevice_RequiresJWT(t *testing.T) {
 	HandleDeleteDevice(kv)(rec, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// hostileDeviceIdCases is the case list for
+// TestHandleDeleteDeviceRejectsHostileDeviceId. These are the same
+// illustrative bad-device SHAPES devicePattern's own boundary test uses
+// (ingress_validation_test.go's badDevices: "../victim/pub/keys/x", "..",
+// ".", "a/b", "", ".hidden"), not the identical values: the empty string is
+// dropped because this handler already refuses it via its own "Missing id
+// or device parameter" check before devicePattern is ever consulted; the
+// bare "." case is dropped because it is already caught incidentally by
+// K()'s exact-"."-segment rejection; and the traversal example's final
+// segment is renamed from "x" to "evil" with no change in meaning. No
+// production registry names this set, so the list is literal, and it is
+// asserted below for exact length and membership.
+//
+// Of the four surviving cases, "../victim/pub/keys/evil" and ".." are also
+// caught incidentally by K()'s exact-".."-segment rejection - they exercise
+// devicePattern's guard the same way "." would have, but do not themselves
+// require it. Only "a/b" and ".hidden" produce no "..", "." or "" segment
+// and so are rejected exclusively by the new devicePattern check; they are
+// what makes this table load-bearing for this task's fix.
+var hostileDeviceIdCases = []string{
+	"../victim/pub/keys/evil",
+	"..",
+	"a/b",
+	".hidden",
+}
+
+// TestHandleDeleteDeviceHostileDeviceIdCaseListIsPopulated is the tripwire
+// for the table below: dropping a case from hostileDeviceIdCases drops an
+// assertion silently unless this also fails.
+func TestHandleDeleteDeviceHostileDeviceIdCaseListIsPopulated(t *testing.T) {
+	if len(hostileDeviceIdCases) != 4 {
+		t.Fatalf("expected exactly 4 cases, got %d", len(hostileDeviceIdCases))
+	}
+	want := map[string]bool{
+		"../victim/pub/keys/evil": true,
+		"..":                      true,
+		"a/b":                     true,
+		".hidden":                 true,
+	}
+	for _, c := range hostileDeviceIdCases {
+		if !want[c] {
+			t.Errorf("hostileDeviceIdCases has unexpected case %q", c)
+		}
+	}
+	for w := range want {
+		found := false
+		for _, c := range hostileDeviceIdCases {
+			if c == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("hostileDeviceIdCases is missing case %q", w)
+		}
+	}
+}
+
+// TestHandleDeleteDeviceRejectsHostileDeviceId is the load-bearing test: the
+// ?device= query parameter becomes a key segment at
+// KK(orcidId, "pub", "keys", deviceId), and every value reaching that call
+// must first satisfy devicePattern, the same character-class guard already
+// applied to deviceId at every other public entry point in this plan
+// (sovereign_register.go's HandleRegisterBegin/HandleRegisterCommit,
+// sovereign_token.go's HandleSovereignToken, and id1.go's own ?device= path).
+func TestHandleDeleteDeviceRejectsHostileDeviceId(t *testing.T) {
+	for _, deviceId := range hostileDeviceIdCases {
+		t.Run(deviceId, func(t *testing.T) {
+			kv := setupTestKVStore(t)
+			keyID, signingKey, err := GetOrCreateSigningKey(kv)
+			require.NoError(t, err)
+
+			orcid := "0000-0001-2345-6789"
+			jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+			require.NoError(t, err)
+
+			q := url.Values{}
+			q.Set("id", orcid)
+			q.Set("device", deviceId)
+			req := httptest.NewRequest(http.MethodDelete, "/auth/sovereign/devices?"+q.Encode(), nil)
+			req.Header.Set("Authorization", "Bearer "+jwt)
+			rec := httptest.NewRecorder()
+
+			HandleDeleteDevice(kv)(rec, req)
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+		})
+	}
+}
+
+// TestHandleDeleteDeviceRejectsHostileDeviceIdBeforeAuth independently proves
+// the devicePattern guard runs before JWT validation, rather than merely
+// before KK(): it pairs a hostile deviceId with NO Authorization header at
+// all. If the guard ran after JWT validation, this request would be
+// rejected 401 (missing auth) before devicePattern is ever consulted; the
+// observed 400 instead shows the guard runs first, exactly as
+// device_list.go's source order requires.
+func TestHandleDeleteDeviceRejectsHostileDeviceIdBeforeAuth(t *testing.T) {
+	kv := setupTestKVStore(t)
+	GetOrCreateSigningKey(kv)
+
+	orcid := "0000-0001-2345-6789"
+
+	q := url.Values{}
+	q.Set("id", orcid)
+	q.Set("device", "a/b")
+	req := httptest.NewRequest(http.MethodDelete, "/auth/sovereign/devices?"+q.Encode(), nil)
+	// Deliberately no Authorization header.
+	rec := httptest.NewRecorder()
+
+	HandleDeleteDevice(kv)(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }

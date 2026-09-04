@@ -11,6 +11,7 @@ package id1
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -77,7 +78,7 @@ func seedState(t *testing.T, key string, entry stateEntry) {
 	if err != nil {
 		t.Fatalf("failed to marshal seed state %q: %v", key, err)
 	}
-	if _, err := CmdSet(KK(stateKeyPrefix, key), map[string]string{"x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+	if _, err := CmdSet(mustKK(t, stateKeyPrefix, key), map[string]string{"x-id": stateKeyPrefix}, wire).Exec(); err != nil {
 		t.Fatalf("failed to seed state %q: %v", key, err)
 	}
 }
@@ -86,7 +87,7 @@ func seedState(t *testing.T, key string, entry stateEntry) {
 // the key is absent (consumed, expired-and-swept, or never written).
 func readState(t *testing.T, key string) (stateEntry, bool) {
 	t.Helper()
-	data, err := CmdGet(KK(stateKeyPrefix, key)).Exec()
+	data, err := CmdGet(mustKK(t, stateKeyPrefix, key)).Exec()
 	if err != nil || len(data) == 0 {
 		return stateEntry{}, false
 	}
@@ -811,7 +812,7 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 
 	// Trigger path-1 error: private key env var set but key ID missing.
 	t.Setenv("ID1_JWT_PRIVATE_KEY", "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0Z3VS5JJcds3xHn/ygWep4T\n-----END RSA PRIVATE KEY-----\n")
-	t.Setenv("ID1_JWT_KEY_ID", "") // empty → GetOrCreateSigningKey returns error
+	t.Setenv("ID1_JWT_KEY_ID", "") // empty -> GetOrCreateSigningKey returns error
 
 	originalDbpath := dbpath
 	dbpath = t.TempDir()
@@ -1214,7 +1215,7 @@ func TestOrcidStateGarbageCollectedByDotAfter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if _, err := CmdSet(KK(stateKeyPrefix, "gc_state"), map[string]string{"ttl": "1", "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+	if _, err := CmdSet(mustKK(t, stateKeyPrefix, "gc_state"), map[string]string{"ttl": "1", "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
 		t.Fatalf("seed with ttl: %v", err)
 	}
 	if _, ok := readState(t, "gc_state"); !ok {
@@ -1270,7 +1271,7 @@ func TestOrcidCallbackStateRejectsPathTraversal(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// A victim KV entry outside the _authstate namespace (mirrors a device/signing key).
-	if _, err := CmdSet(K("victimkey"), map[string]string{"x-id": "victimkey"}, []byte("secret")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victimkey"), map[string]string{"x-id": "victimkey"}, []byte("secret")).Exec(); err != nil {
 		t.Fatalf("seed victim: %v", err)
 	}
 
@@ -1287,7 +1288,7 @@ func TestOrcidCallbackStateRejectsPathTraversal(t *testing.T) {
 		t.Errorf("expected 400 for traversal state, got %d: %s", rec.Code, rec.Body.String())
 	}
 	// Load-bearing: the victim must NOT have been deleted by the callback.
-	if data, err := CmdGet(K("victimkey")).Exec(); err != nil || string(data) != "secret" {
+	if data, err := CmdGet(mustK(t, "victimkey")).Exec(); err != nil || string(data) != "secret" {
 		t.Errorf("SECURITY: path-traversal state deleted/altered a file outside the namespace (err=%v, data=%q)", err, string(data))
 	}
 }
@@ -1302,20 +1303,35 @@ func TestKVGetDelRejectDotDotSegments(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Victim INSIDE dbpath, in a different namespace (mirrors a device key).
-	if _, err := CmdSet(K("victimns/secret"), map[string]string{"x-id": "victimns"}, []byte("secret")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victimns/secret"), map[string]string{"x-id": "victimns"}, []byte("secret")).Exec(); err != nil {
 		t.Fatalf("seed victim: %v", err)
 	}
 
-	// A key that traverses cross-namespace via "..".
-	escapeKey := K("_authstate/../victimns/secret")
+	// A key that traverses cross-namespace via "..". K() itself now rejects this at
+	// construction time - a strictly earlier gate than the CmdGet/CmdDel backstop
+	// (keyWithinRoot in cmd_get.go) this test originally targeted, so K's own rejection
+	// is the primary assertion.
+	if _, err := K("_authstate/../victimns/secret"); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("SECURITY: K() accepted a key with a .. segment (cross-namespace traversal), err=%v", err)
+	}
 
+	// Defense-in-depth: even a key that reached CmdGet/CmdDel by some other path (e.g. a
+	// caller that built an Id1Key by hand rather than through K/KK) must still be rejected
+	// by the keyWithinRoot backstop. Build that key directly (not via K/KK, which now
+	// rejects it at construction) to exercise this second, independent gate.
+	escapeKey := Id1Key{
+		Id:       "_authstate",
+		Name:     "secret",
+		Parent:   "_authstate/../victimns",
+		Segments: []string{"_authstate", "..", "victimns", "secret"},
+	}
 	if _, err := CmdGet(escapeKey).Exec(); err == nil {
 		t.Error("SECURITY: CmdGet accepted a key with a .. segment (cross-namespace traversal)")
 	}
 	if _, err := CmdDel(escapeKey).Exec(); err == nil {
 		t.Error("SECURITY: CmdDel accepted a key with a .. segment (cross-namespace traversal)")
 	}
-	if data, err := CmdGet(K("victimns/secret")).Exec(); err != nil || string(data) != "secret" {
+	if data, err := CmdGet(mustK(t, "victimns/secret")).Exec(); err != nil || string(data) != "secret" {
 		t.Errorf("SECURITY: cross-namespace traversal deleted the victim (err=%v data=%q)", err, string(data))
 	}
 }

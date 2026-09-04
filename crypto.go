@@ -86,7 +86,10 @@ func generateSecretWithSalt(id, salt string) string {
 // not fall back to a zero-byte salt (which would make all affected users share
 // identical secrets - a critical security vulnerability).
 func generateSecret(id string) (string, error) {
-	saltKey := KK(id, "priv", "salt")
+	saltKey, err := KK(id, "priv", "salt")
+	if err != nil {
+		return "", fmt.Errorf("invalid key for %s: %w", id, err)
+	}
 	saltBytes, err := CmdGet(saltKey).Exec()
 	if err != nil || len(saltBytes) == 0 {
 		saltBytes = make([]byte, 32)

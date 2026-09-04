@@ -28,7 +28,11 @@ type RequestProps struct {
 	Id          string
 	Token       string
 	IsWebSocket bool
-	Cmd         Command
+	// KeyErr carries K()'s refusal of a malformed request path. Handle turns a
+	// non-nil KeyErr into HTTP 400 before any operation runs, so a key that
+	// could not be constructed never reaches the filesystem.
+	KeyErr error
+	Cmd    Command
 }
 
 func (t RequestProps) String() string {
@@ -36,9 +40,25 @@ func (t RequestProps) String() string {
 }
 
 func NewRequestProps(r *http.Request) RequestProps {
-	key := K(r.URL.Path)
+	// A trailing "*" on a GET marks a list request. Strip it BEFORE the key is
+	// constructed. Leaving it in makes the final segment of "/victim/pub/..*"
+	// the three characters "..*", which no containment check recognises as a
+	// traversal; list() then trims the star itself and hands the real ".." to
+	// the filesystem. Stripping first means the key the guards inspect is the
+	// key the filesystem will be given.
+	path := r.URL.Path
+	isListRequest := r.Method == http.MethodGet && strings.HasSuffix(path, "*")
+	if isListRequest {
+		path = strings.TrimSuffix(path, "*")
+	}
+
+	key, err := K(path)
+	if err != nil {
+		log.Printf("new request props: rejected malformed key %q: %v", r.URL.Path, err)
+	}
 	req := RequestProps{
-		Id: key.Id,
+		Id:     key.Id,
+		KeyErr: err,
 		Cmd: Command{
 			Op:   opMap[r.Method],
 			Key:  key,
@@ -66,7 +86,7 @@ func NewRequestProps(r *http.Request) RequestProps {
 		req.Cmd.Data = data
 	}
 
-	if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "*") {
+	if isListRequest {
 		req.Cmd.Op = List
 	}
 	if r.Method == http.MethodPatch && len(r.Header["X-Move-To"]) > 0 {

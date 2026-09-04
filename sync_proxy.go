@@ -65,6 +65,11 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+		ticketKey, keyErr := KK(syncTicketPrefix, ticket)
+		if keyErr != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
 		// Burn atomically by delete-first: the ticket is a leaf key, so Command.del
 		// takes the os.Remove branch - a single-winner atomic unlink. Allow the
 		// upgrade ONLY if this call won the delete (err == nil); the loser of a
@@ -72,7 +77,7 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 		// ".." traversal (rejected by keyWithinRoot) all return a non-nil error.
 		// A CmdGet-presence-then-CmdDel sequence would be a TOCTOU two upgrades could
 		// both pass; delete-first is the single-winner gate.
-		if _, err := CmdDel(KK(syncTicketPrefix, ticket)).Exec(); err != nil {
+		if _, err := CmdDel(ticketKey).Exec(); err != nil {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

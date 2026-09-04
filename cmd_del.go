@@ -19,6 +19,12 @@ func (t *Command) del() error {
 	if !keyWithinRoot(t.Key) {
 		return ErrForbidden
 	}
+	// A zero-segment key joins to dbpath itself, which is a directory, and the
+	// directory branch below is os.RemoveAll - so an empty key would delete
+	// every namespace in the store.
+	if len(t.Key.Segments) == 0 {
+		return ErrForbidden
+	}
 	path := filepath.Join(dbpath, t.Key.String())
 	if stat, err := os.Stat(path); err != nil {
 		return ErrNotFound

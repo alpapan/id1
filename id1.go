@@ -45,6 +45,14 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 
 		req := NewRequestProps(r)
 
+		// A path K() refused is a malformed request, not an authorisation
+		// failure: answer 400 and stop here, so no operation ever sees a key
+		// that could not be constructed.
+		if req.KeyErr != nil {
+			err400(w, "invalid key")
+			return
+		}
+
 		if req.Id == "" {
 			err404(w, "")
 			return
@@ -64,6 +72,17 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 
 		authOk := auth(id, req.Cmd, r.Header.Get("X-ID1-Internal-Secret"))
 
+		// A WebSocket session binds an identity for the whole life of the
+		// connection and authorises every later frame as that identity, so a
+		// public-read grant is not sufficient to open one: reading {id}/pub/... is
+		// public, but acting AS {id} is not. Clearing authOk here routes an
+		// unauthenticated upgrade into the branch below, which answers it with the
+		// same 401 and encrypted challenge the ordinary HTTP path uses, so a
+		// client can complete the handshake and dial again with a token.
+		if req.IsWebSocket && id == "" {
+			authOk = false
+		}
+
 		if !authOk {
 			if len(id) > 0 {
 				err403(w, "")
@@ -72,14 +91,26 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 				if deviceId == "" {
 					deviceId = "default"
 				}
-				if pubKey, err := CmdGet(KK(req.Id, "pub", "keys", deviceId)).Exec(); err == nil {
+				if !devicePattern.MatchString(deviceId) {
+					err404(w, "")
+					return
+				}
+				deviceKey, keyErr := KK(req.Id, "pub", "keys", deviceId)
+				if keyErr != nil {
+					err404(w, keyErr.Error())
+					return
+				}
+				if pubKey, err := CmdGet(deviceKey).Exec(); err == nil {
 					if challenge, err := generateChallenge(req.Id, string(pubKey)); err == nil {
 						err401(w, challenge)
 					} else {
 						err500(w, err.Error())
 					}
 				} else {
-					err404(w, err.Error())
+					if !errors.Is(err, ErrNotFound) {
+						log.Printf("device key lookup failed for id %q device %q: %v", req.Id, deviceId, err)
+					}
+					err404(w, "")
 				}
 			}
 			return
@@ -91,7 +122,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 			wsHandler := webSocketHandler{
 				upgrader: upgrader,
 			}
-			wsHandler.Handle(w, r)
+			wsHandler.Handle(w, r, id)
 		} else if data, err := req.Cmd.Exec(); err == nil {
 			ok200(w, data)
 		} else if errors.Is(err, ErrForbidden) {

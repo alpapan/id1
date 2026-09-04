@@ -102,7 +102,11 @@ func ParseCommand(data []byte) (Command, error) {
 		return command, err
 	}
 	command.Op = op(url.Scheme)
-	command.Key = K(url.Path)
+	key, err := K(url.Path)
+	if err != nil {
+		return command, fmt.Errorf("parse command key %q: %w", url.Path, err)
+	}
+	command.Key = key
 	command.Args = map[string]string{}
 	for k := range url.Query() {
 		command.Args[k] = url.Query().Get(k)

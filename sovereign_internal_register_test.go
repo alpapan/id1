@@ -85,7 +85,7 @@ func TestInternalRegister_VerifiedCertWritesThenOverwrites(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("first register: want 200, got %d (%s)", rr.Code, rr.Body.String())
 	}
-	stored, err := CmdGet(KK(id, "pub", "keys", device)).Exec()
+	stored, err := CmdGet(mustKK(t, id, "pub", "keys", device)).Exec()
 	if err != nil || string(stored) != pem1 {
 		t.Fatalf("stored device key mismatch after first register: err=%v", err)
 	}
@@ -98,7 +98,7 @@ func TestInternalRegister_VerifiedCertWritesThenOverwrites(t *testing.T) {
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("rotate register: want 200, got %d (%s)", rr2.Code, rr2.Body.String())
 	}
-	stored2, err := CmdGet(KK(id, "pub", "keys", device)).Exec()
+	stored2, err := CmdGet(mustKK(t, id, "pub", "keys", device)).Exec()
 	if err != nil || string(stored2) != pem2 {
 		t.Fatalf("device key not overwritten on rotate: err=%v", err)
 	}
@@ -115,7 +115,7 @@ func TestInternalRegister_NoTLS_Rejected(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("no TLS: want 401, got %d", rr.Code)
 	}
-	if data, err := CmdGet(KK(id, "pub", "keys", "cur-a")).Exec(); err == nil && len(data) > 0 {
+	if data, err := CmdGet(mustKK(t, id, "pub", "keys", "cur-a")).Exec(); err == nil && len(data) > 0 {
 		t.Fatalf("key written despite no TLS")
 	}
 }
@@ -131,7 +131,7 @@ func TestInternalRegister_EmptyVerifiedChains_Rejected(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("empty chains: want 401, got %d", rr.Code)
 	}
-	if data, err := CmdGet(KK(id, "pub", "keys", "cur-a")).Exec(); err == nil && len(data) > 0 {
+	if data, err := CmdGet(mustKK(t, id, "pub", "keys", "cur-a")).Exec(); err == nil && len(data) > 0 {
 		t.Fatalf("key written despite empty verified chains")
 	}
 }
@@ -147,7 +147,7 @@ func TestInternalRegister_DeviceMustMatchCN(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("device!=CN: want 403, got %d", rr.Code)
 	}
-	if data, err := CmdGet(KK(id, "pub", "keys", "cur-b")).Exec(); err == nil && len(data) > 0 {
+	if data, err := CmdGet(mustKK(t, id, "pub", "keys", "cur-b")).Exec(); err == nil && len(data) > 0 {
 		t.Fatalf("cross-tenant device key was written")
 	}
 }
@@ -281,7 +281,7 @@ func TestInternalRegister_RealHandshake(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("trusted client: want 200, got %d", resp.StatusCode)
 	}
-	if v, err := CmdGet(KK(id, "pub", "keys", "cur-a")).Exec(); err != nil || len(v) == 0 {
+	if v, err := CmdGet(mustKK(t, id, "pub", "keys", "cur-a")).Exec(); err != nil || len(v) == 0 {
 		t.Fatalf("device key not written on real handshake: %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestInternalRegister_RealHandshake(t *testing.T) {
 		t.Fatalf("untrusted-CA client connected certless but was not rejected: got %d", resp3.StatusCode)
 	}
 	// The rogue must not have overwritten the legit key from case (a).
-	if stored, err := CmdGet(KK(id, "pub", "keys", "cur-a")).Exec(); err != nil || string(stored) != pemA {
+	if stored, err := CmdGet(mustKK(t, id, "pub", "keys", "cur-a")).Exec(); err != nil || string(stored) != pemA {
 		t.Fatalf("untrusted-CA client overwrote the device key")
 	}
 }
@@ -335,7 +335,7 @@ func TestInternalRegister_BodyCapped(t *testing.T) {
 	if rr.Code == http.StatusOK {
 		t.Fatalf("oversized body accepted (got 200); MaxBytesReader cap not enforced")
 	}
-	if data, err := CmdGet(KK("0000-0001-2345-6789", "pub", "keys", "cur-a")).Exec(); err == nil && len(data) > 0 {
+	if data, err := CmdGet(mustKK(t, "0000-0001-2345-6789", "pub", "keys", "cur-a")).Exec(); err == nil && len(data) > 0 {
 		t.Fatalf("key written from an oversized body")
 	}
 }

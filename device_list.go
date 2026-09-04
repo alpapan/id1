@@ -80,8 +80,10 @@ func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 			}
 			deviceId := entry.Name()
 			deviceName := deviceId // default to ID
-			if nameData, err := CmdGet(KK(orcidId, "pub", "keys", deviceId+".name")).Exec(); err == nil {
-				deviceName = string(nameData)
+			if nameKey, err := KK(orcidId, "pub", "keys", deviceId+".name"); err == nil {
+				if nameData, err := CmdGet(nameKey).Exec(); err == nil {
+					deviceName = string(nameData)
+				}
 			}
 			devices = append(devices, DeviceInfo{DeviceId: deviceId, DeviceName: deviceName})
 		}
@@ -118,6 +120,10 @@ func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing id or device parameter", http.StatusBadRequest)
 			return
 		}
+		if !devicePattern.MatchString(deviceId) {
+			http.Error(w, "Invalid device", http.StatusBadRequest)
+			return
+		}
 
 		// Require RS256 JWT
 		claims, err := extractAndValidateJWT(r, kvStore)
@@ -131,8 +137,18 @@ func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 		}
 
 		// Delete the device key and its name metadata
-		CmdDel(KK(orcidId, "pub", "keys", deviceId)).Exec()
-		CmdDel(KK(orcidId, "pub", "keys", deviceId+".name")).Exec()
+		if deviceKey, err := KK(orcidId, "pub", "keys", deviceId); err != nil {
+			http.Error(w, "Invalid id or device", http.StatusBadRequest)
+			return
+		} else {
+			CmdDel(deviceKey).Exec()
+		}
+		if deviceNameKey, err := KK(orcidId, "pub", "keys", deviceId+".name"); err != nil {
+			http.Error(w, "Invalid id or device", http.StatusBadRequest)
+			return
+		} else {
+			CmdDel(deviceNameKey).Exec()
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"deleted","deviceId":"%s"}`, deviceId)

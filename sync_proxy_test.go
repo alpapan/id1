@@ -73,7 +73,7 @@ func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	setupTestKVStore(t)
 	// seed a ticket as the mint endpoint would
-	CmdSet(KK("_syncticket", "good-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+	CmdSet(mustKK(t, "_syncticket", "good-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
 		[]byte("0000-0001-2345-6789")).Exec()
 	backend := stubBackendWS(t)
 	defer backend.Close()
@@ -88,7 +88,7 @@ func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 		c.Close()
 	}
 	// ticket burned: gone from KV, so a second use is rejected
-	_, getErr := CmdGet(KK("_syncticket", "good-ticket")).Exec()
+	_, getErr := CmdGet(mustKK(t, "_syncticket", "good-ticket")).Exec()
 	assert.Error(t, getErr, "ticket must be burned (deleted) after first use")
 	c2, resp2, err2 := websocket.DefaultDialer.Dial(wsURL, nil)
 	require.Error(t, err2)
@@ -104,7 +104,7 @@ func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 func TestSyncProxy_ConcurrentTicketUse_SingleWinner(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	setupTestKVStore(t)
-	CmdSet(KK("_syncticket", "race-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+	CmdSet(mustKK(t, "_syncticket", "race-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
 		[]byte("0000-0001-2345-6789")).Exec()
 	backend := stubBackendWS(t)
 	defer backend.Close()
@@ -187,7 +187,7 @@ func TestSyncProxyRelaysFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
-	CmdSet(KK("_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
 
 	// Proxy server
 	proxy := httptest.NewServer(handler)
@@ -243,7 +243,7 @@ func TestSyncProxyBinaryFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
-	CmdSet(KK("_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
 
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
@@ -280,7 +280,7 @@ func TestSyncProxyUpstreamUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
-	CmdSet(KK("_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
 
 	// The proxy authenticates the ticket, upgrades the client, then dials the backend.
 	// If the backend is unreachable, the upgraded connection closes immediately.

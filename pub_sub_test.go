@@ -20,7 +20,7 @@ func TestPubSubBasicRouting(t *testing.T) {
 	ch := pubsub.Subscribe("test-sub")
 	defer pubsub.Unsubscribe("test-sub", ch)
 
-	key := KK("test-sub", 0)
+	key := mustKK(t, "test-sub", 0)
 	cmd := CmdSet(key, map[string]string{}, []byte{})
 
 	var received Command
@@ -84,7 +84,7 @@ func TestPubSubMultipleSubscribers(t *testing.T) {
 	// Publish single message to each subscriber
 	for i := range subCount {
 		subID := fmt.Sprintf("subscriber%d", i)
-		key := KK(subID, 0)
+		key := mustKK(t, subID, 0)
 		cmd := CmdSet(key, map[string]string{}, []byte{})
 		pubsub.Publish(&cmd)
 	}
@@ -144,7 +144,7 @@ func TestPubSubMultiplePublishers(t *testing.T) {
 	for pub := range pubCount {
 		for sub := range subCount {
 			subID := fmt.Sprintf("subscriber%d", sub)
-			key := KK(subID, pub)
+			key := mustKK(t, subID, pub)
 			cmd := CmdSet(key, map[string]string{}, []byte{})
 			pubsub.Publish(&cmd)
 		}

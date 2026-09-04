@@ -46,7 +46,7 @@ func testSovereignSetup(t *testing.T, userID, deviceId string) *rsa.PrivateKey {
 	})
 
 	// Register the public key at per-device path
-	key := KK(userID, "pub", "keys", deviceId)
+	key := mustKK(t, userID, "pub", "keys", deviceId)
 	if _, err := CmdSet(key, map[string]string{"x-id": userID}, pubPEM).Exec(); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestHandleSovereignToken_ExpiredTimestamp(t *testing.T) {
 	deviceId := "default"
 	privKey := testSovereignSetup(t, userID, deviceId)
 
-	// Timestamp 10 minutes ago - outside ±5 min window
+	// Timestamp 10 minutes ago - outside +/-5 min window
 	timestamp := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
 	payload := userID + ":" + timestamp
 	signature := signSovereignPayload(t, privKey, payload)
@@ -256,13 +256,13 @@ func TestHandleSovereignToken_FallbackToSingularPubKey(t *testing.T) {
 	}
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 
-	singularPath := KK(userID, "pub", "key")
+	singularPath := mustKK(t, userID, "pub", "key")
 	if _, err := CmdSet(singularPath, map[string]string{"x-id": userID}, pubPEM).Exec(); err != nil {
 		t.Fatal(err)
 	}
 
 	// Confirm the multi-device path is absent so we know the fallback triggered.
-	if existing, _ := CmdGet(KK(userID, "pub", "keys", deviceId)).Exec(); len(existing) > 0 {
+	if existing, _ := CmdGet(mustKK(t, userID, "pub", "keys", deviceId)).Exec(); len(existing) > 0 {
 		t.Fatalf("precondition failed: multi-device path should be empty")
 	}
 
@@ -326,7 +326,7 @@ func TestHandleSovereignToken_PrefersMultiDevicePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	singularPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: singularDER})
-	if _, err := CmdSet(KK(userID, "pub", "key"),
+	if _, err := CmdSet(mustKK(t, userID, "pub", "key"),
 		map[string]string{"x-id": userID}, singularPEM).Exec(); err != nil {
 		t.Fatal(err)
 	}
@@ -404,6 +404,89 @@ func TestSovereignToken_StampsSovereignAMR(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected amr to contain 'sovereign', got %v", claims.AMR)
+	}
+}
+
+// hostileSovereignTokenDeviceIdCases is the case list for
+// TestHandleSovereignToken_RejectsHostileDeviceId: distinct deviceId shapes
+// that devicePattern must reject at the door, before any KV lookup is
+// attempted. No production registry names this set, so it is literal and
+// asserted below for exact length and membership.
+var hostileSovereignTokenDeviceIdCases = []struct {
+	name     string
+	deviceId string
+}{
+	{name: "path traversal", deviceId: "../victim/pub/keys/evil"},
+	{name: "embedded slash", deviceId: "a/b"},
+	{name: "leading dot", deviceId: ".hidden"},
+}
+
+func TestHandleSovereignToken_RejectsHostileDeviceIdCaseListIsPopulated(t *testing.T) {
+	if len(hostileSovereignTokenDeviceIdCases) != 3 {
+		t.Fatalf("expected exactly 3 cases, got %d", len(hostileSovereignTokenDeviceIdCases))
+	}
+	names := map[string]bool{}
+	for _, c := range hostileSovereignTokenDeviceIdCases {
+		names[c.name] = true
+	}
+	for _, want := range []string{"path traversal", "embedded slash", "leading dot"} {
+		if !names[want] {
+			t.Errorf("hostileSovereignTokenDeviceIdCases is missing case %q", want)
+		}
+	}
+}
+
+// TestHandleSovereignToken_RejectsHostileDeviceId is the load-bearing test for
+// HandleSovereignToken's devicePattern guard, added by the same task that
+// added the guard: the request never reaches the KV layer at all, so a
+// hostile deviceId must be refused with 400 purely on pattern grounds.
+func TestHandleSovereignToken_RejectsHostileDeviceId(t *testing.T) {
+	for _, c := range hostileSovereignTokenDeviceIdCases {
+		t.Run(c.name, func(t *testing.T) {
+			dbpath = t.TempDir()
+			kvStore := ID1KeyValueStore{}
+			if _, _, err := GetOrCreateSigningKey(kvStore); err != nil {
+				t.Fatal(err)
+			}
+			userID := "service"
+			timestamp := time.Now().UTC().Format(time.RFC3339)
+			body := `{"id":"` + userID + `","deviceId":"` + c.deviceId + `","timestamp":"` + timestamp + `","signature":"bm90LWEtcmVhbC1zaWc="}`
+			req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/token", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			HandleSovereignToken(kvStore).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("hostile deviceId %q must be refused with 400, got %d: %s", c.deviceId, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestRegistrationTokenPatternBoundaryLengths asserts registrationTokenPattern's
+// stated 16-64 character bound at its edges: 15 and 65 characters must be
+// rejected, 16 and 64 must be accepted. The pattern's alphabet character (a)
+// is repeated to isolate length as the only variable under test.
+func TestRegistrationTokenPatternBoundaryLengths(t *testing.T) {
+	cases := []struct {
+		name   string
+		length int
+		want   bool
+	}{
+		{name: "below floor (15)", length: 15, want: false},
+		{name: "at floor (16)", length: 16, want: true},
+		{name: "at ceiling (64)", length: 64, want: true},
+		{name: "above ceiling (65)", length: 65, want: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tok := strings.Repeat("a", c.length)
+			got := registrationTokenPattern.MatchString(tok)
+			if got != c.want {
+				t.Errorf("registrationTokenPattern.MatchString(%d chars) = %v, want %v", c.length, got, c.want)
+			}
+		})
 	}
 }
 

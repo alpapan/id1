@@ -15,6 +15,12 @@ import (
 // could otherwise walk the key path (belt-and-suspenders alongside keyWithinRoot).
 var devicePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
+// registrationTokenPattern validates registration tokens: URL-safe base64 alphabet,
+// 16-64 characters, no path traversal, no spaces. Generated as base64url-encoded
+// random 32 bytes (43 chars typical) but validated against a loose bound to allow
+// for format variations.
+var registrationTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
+
 // InternalRegisterRequest is the JSON body for POST /internal/sovereign/register.
 type InternalRegisterRequest struct {
 	ID           string `json:"id"`
@@ -83,7 +89,12 @@ func HandleInternalRegisterKey() http.HandlerFunc {
 		}
 
 		// Per-curatorium device key. CmdSet overwrites any existing value at the slot.
-		if _, err := CmdSet(KK(req.ID, "pub", "keys", req.Device), map[string]string{"x-id": req.ID}, []byte(req.PublicKeyPEM)).Exec(); err != nil {
+		deviceKeyPath, keyErr := KK(req.ID, "pub", "keys", req.Device)
+		if keyErr != nil {
+			http.Error(w, "Failed to store key", http.StatusInternalServerError)
+			return
+		}
+		if _, err := CmdSet(deviceKeyPath, map[string]string{"x-id": req.ID}, []byte(req.PublicKeyPEM)).Exec(); err != nil {
 			http.Error(w, "Failed to store key", http.StatusInternalServerError)
 			return
 		}

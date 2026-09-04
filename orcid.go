@@ -176,7 +176,12 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 	// survives an id1 pod restart. x-id == stateKeyPrefix so the TTL-scheduled
 	// delete self-authorizes in dotAfter.
 	ttlSeconds := strconv.Itoa(int(h.stateTTL.Seconds()))
-	if _, err := CmdSet(KK(stateKeyPrefix, state), map[string]string{"ttl": ttlSeconds, "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+	stateStoreKey, err := KK(stateKeyPrefix, state)
+	if err != nil {
+		http.Error(w, "internal error encoding auth state", http.StatusInternalServerError)
+		return
+	}
+	if _, err := CmdSet(stateStoreKey, map[string]string{"ttl": ttlSeconds, "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
 		http.Error(w, "internal error storing auth state", http.StatusInternalServerError)
 		return
 	}
@@ -205,7 +210,11 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stateKey := KK(stateKeyPrefix, state)
+	stateKey, keyErr := KK(stateKeyPrefix, state)
+	if keyErr != nil {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
 	data, getErr := CmdGet(stateKey).Exec()
 	if getErr != nil || len(data) == 0 {
 		http.Error(w, "invalid state", http.StatusBadRequest)
@@ -284,7 +293,10 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), ".name") {
 				continue
 			}
-			deviceKey := KK(orcidID, "pub", "keys", entry.Name())
+			deviceKey, err := KK(orcidID, "pub", "keys", entry.Name())
+			if err != nil {
+				continue
+			}
 			if data, err := CmdGet(deviceKey).Exec(); err == nil && len(data) > 0 {
 				CmdSet(deviceKey, map[string]string{"x-id": orcidID, "ttl": "604800"}, data).Exec()
 			}

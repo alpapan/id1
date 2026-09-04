@@ -47,7 +47,7 @@ func TestSyncTicket_MintsSingleUseTicket(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.NotEmpty(t, body.Ticket)
-	data, err := CmdGet(KK("_syncticket", body.Ticket)).Exec()
+	data, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).Exec()
 	require.NoError(t, err)
 	assert.Equal(t, "0000-0001-2345-6789", string(data)) // stored sub
 }
@@ -83,12 +83,12 @@ func TestSyncTicketGarbageCollectedByDotAfter(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Seed a ticket with a 1-second TTL via the same path HandleSyncTicket uses.
-	if _, err := CmdSet(KK(syncTicketPrefix, "gc-ticket"),
+	if _, err := CmdSet(mustKK(t, syncTicketPrefix, "gc-ticket"),
 		map[string]string{"ttl": "1", "x-id": syncTicketPrefix},
 		[]byte("0000-0001-2345-6789")).Exec(); err != nil {
 		t.Fatalf("seed with ttl: %v", err)
 	}
-	if data, err := CmdGet(KK(syncTicketPrefix, "gc-ticket")).Exec(); err != nil || len(data) == 0 {
+	if data, err := CmdGet(mustKK(t, syncTicketPrefix, "gc-ticket")).Exec(); err != nil || len(data) == 0 {
 		t.Fatal("ticket should be present immediately after seeding")
 	}
 
@@ -96,7 +96,7 @@ func TestSyncTicketGarbageCollectedByDotAfter(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 	dotAfter(dbpath)
 
-	if _, err := CmdGet(KK(syncTicketPrefix, "gc-ticket")).Exec(); err == nil {
+	if _, err := CmdGet(mustKK(t, syncTicketPrefix, "gc-ticket")).Exec(); err == nil {
 		t.Error("expired sync ticket was not garbage-collected by dotAfter (check x-id authorization)")
 	}
 }

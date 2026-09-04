@@ -19,16 +19,25 @@ func authDotOp(id string, cmd Command) bool {
 		return false
 	}
 	roles := getRoles(id, cmd.Key)
-	parentKey := K(cmd.Key.Parent)
+	parentKey, err := K(cmd.Key.Parent)
+	if err != nil {
+		return false
+	}
 	for len(parentKey.String()) != 0 {
-		dotOpKey := KK(parentKey, fmt.Sprintf(".%s", cmd.Op))
-		if data, err := CmdGet(dotOpKey).Exec(); err == nil {
-			lines := strings.Split(string(data), "\n")
-			if ContainsAny(lines, roles) {
-				return true
+		dotOpKey, err := KK(parentKey, fmt.Sprintf(".%s", cmd.Op))
+		if err == nil {
+			if data, err := CmdGet(dotOpKey).Exec(); err == nil {
+				lines := strings.Split(string(data), "\n")
+				if ContainsAny(lines, roles) {
+					return true
+				}
 			}
 		}
-		parentKey = K(parentKey.Parent)
+		nextParentKey, err := K(parentKey.Parent)
+		if err != nil {
+			break
+		}
+		parentKey = nextParentKey
 	}
 
 	return false
@@ -36,15 +45,24 @@ func authDotOp(id string, cmd Command) bool {
 
 func getRoles(id string, key Id1Key) []string {
 	result := []string{"*", id}
-	parentKey := K(key.Parent)
+	parentKey, err := K(key.Parent)
+	if err != nil {
+		return result
+	}
 	for {
-		rolesKey := KK(parentKey, ".roles", id)
-		if data, err := CmdGet(rolesKey).Exec(); err == nil {
-			lines := strings.Split(string(data), "\n")
-			result = append(result, lines...)
+		rolesKey, err := KK(parentKey, ".roles", id)
+		if err == nil {
+			if data, err := CmdGet(rolesKey).Exec(); err == nil {
+				lines := strings.Split(string(data), "\n")
+				result = append(result, lines...)
+			}
 		}
 		if len(parentKey.String()) > 0 {
-			parentKey = K(parentKey.Parent)
+			nextParentKey, err := K(parentKey.Parent)
+			if err != nil {
+				break
+			}
+			parentKey = nextParentKey
 		} else {
 			break
 		}

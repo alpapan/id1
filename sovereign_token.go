@@ -91,16 +91,31 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
+		if !devicePattern.MatchString(req.DeviceId) {
+			err400(w, "invalid deviceId")
+			return
+		}
+
 		// Load the registered public key. Prefer the multi-device path
 		// ({id}/pub/keys/{deviceId}) used by ORCID browser registrations; fall
 		// back to the singular path ({id}/pub/key) used by service/machine
 		// identities bootstrapped via the anonymous POST exemption in auth.go.
-		multiDevicePath := KK(req.ID, "pub", "keys", req.DeviceId)
+		multiDevicePath, err := KK(req.ID, "pub", "keys", req.DeviceId)
+		if err != nil {
+			err400(w, "invalid id or deviceId")
+			return
+		}
 		usedSingularFallback := false
 		pubKeyPEM, err := CmdGet(multiDevicePath).Exec()
 		if err != nil || len(pubKeyPEM) == 0 {
 			usedSingularFallback = true
-			pubKeyPEM, err = CmdGet(KK(req.ID, "pub", "key")).Exec()
+			var singularKeyPath Id1Key
+			singularKeyPath, err = KK(req.ID, "pub", "key")
+			if err != nil {
+				err400(w, "invalid id")
+				return
+			}
+			pubKeyPEM, err = CmdGet(singularKeyPath).Exec()
 			if err != nil || len(pubKeyPEM) == 0 {
 				err404(w, "no public key registered for this id")
 				return

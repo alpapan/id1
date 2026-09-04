@@ -19,6 +19,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -130,7 +131,7 @@ func TestRegisterBeginExistingUserNoJWT(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Pre-register a device key (simulates existing registration)
-	CmdSet(KK(orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).Exec()
 
 	body, _ := json.Marshal(RegisterBeginRequest{
 		PublicKeyPEM: pubPEM,
@@ -155,7 +156,7 @@ func TestRegisterBeginExistingUserWithJWT(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Pre-register a device key
-	CmdSet(KK(orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).Exec()
 
 	// Sign a valid JWT for this ORCID
 	tokenStr, err := signJWT(orcid, []string{"orcid"}, privKey, keyID)
@@ -225,17 +226,17 @@ func TestRegisterCommitSuccess(t *testing.T) {
 	assert.Equal(t, http.StatusOK, commitRec.Code, "body: %s", commitRec.Body.String())
 
 	// pub/keys/{deviceId} should exist
-	data, err := CmdGet(KK(orcid, "pub", "keys", deviceId)).Exec()
+	data, err := CmdGet(mustKK(t, orcid, "pub", "keys", deviceId)).Exec()
 	require.NoError(t, err)
 	assert.Equal(t, pubPEM, string(data))
 
 	// Device name should be stored
-	nameData, err := CmdGet(KK(orcid, "pub", "keys", deviceId+".name")).Exec()
+	nameData, err := CmdGet(mustKK(t, orcid, "pub", "keys", deviceId+".name")).Exec()
 	require.NoError(t, err)
 	assert.Equal(t, deviceName, string(nameData))
 
 	// pending should be cleaned up
-	_, err = CmdGet(KK(orcid, "priv", "pending", beginResp.RegistrationToken+".key")).Exec()
+	_, err = CmdGet(mustKK(t, orcid, "priv", "pending", beginResp.RegistrationToken+".key")).Exec()
 	assert.Error(t, err, "pending key should be deleted after commit")
 }
 
@@ -353,6 +354,83 @@ func TestRegisterCommitIdempotent(t *testing.T) {
 	assert.Equal(t, http.StatusOK, commitRec2.Code, "idempotent retry should return 200")
 }
 
+// TestRegisterCommitResponsesEscapeOrcidId guards the two hand-built JSON
+// response bodies in HandleRegisterCommit (the "already_committed" idempotent
+// branch and the "committed" success branch) against a caller-controlled
+// orcidId that contains a double quote. KK()/K() impose no character
+// restriction beyond rejecting ".."/"."/empty segments, so a quote reaches
+// these fmt.Fprintf calls unescaped; %s around it breaks the emitted JSON.
+func TestRegisterCommitResponsesEscapeOrcidId(t *testing.T) {
+	orcid := `0000-0001-"><script>-6789`
+	deviceId := "test-device-uuid"
+
+	assertValidJSONWithId := func(t *testing.T, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		require.Equal(t, http.StatusOK, rec.Code, "commit: %s", rec.Body.String())
+		var parsed struct {
+			Status string `json:"status"`
+			Id     string `json:"id"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &parsed),
+			"response body must be valid JSON, got: %s", rec.Body.String())
+		require.Equal(t, orcid, parsed.Id)
+	}
+
+	kv := setupTestKVStore(t)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	privKey, pubPEM := testGenerateRSAKeyPair(t)
+	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
+
+	beginBody, _ := json.Marshal(RegisterBeginRequest{
+		PublicKeyPEM: pubPEM,
+		DeviceId:     deviceId,
+		DeviceName:   "Test Browser",
+	})
+	beginReq := httptest.NewRequest(http.MethodPost,
+		"/auth/sovereign/register/begin?id="+url.QueryEscape(orcid), bytes.NewReader(beginBody))
+	beginReq.Header.Set("Content-Type", "application/json")
+	beginReq.Header.Set("Authorization", "Bearer "+tok)
+	beginRec := httptest.NewRecorder()
+	HandleRegisterBegin(kv)(beginRec, beginReq)
+	require.Equal(t, http.StatusAccepted, beginRec.Code, "begin: %s", beginRec.Body.String())
+
+	var beginResp RegisterBeginResponse
+	require.NoError(t, json.Unmarshal(beginRec.Body.Bytes(), &beginResp))
+
+	challengeBytes, _ := base64.StdEncoding.DecodeString(beginResp.Challenge)
+	nonce, _ := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, challengeBytes, nil)
+	nonceB64 := base64.StdEncoding.EncodeToString(nonce)
+
+	commitBody, _ := json.Marshal(RegisterCommitRequest{
+		RegistrationToken: beginResp.RegistrationToken,
+		Nonce:             nonceB64,
+		DeviceId:          deviceId,
+		DeviceName:        "Test Browser",
+	})
+
+	t.Run("committed", func(t *testing.T) {
+		commitReq := httptest.NewRequest(http.MethodPost,
+			"/auth/sovereign/register/commit?id="+url.QueryEscape(orcid), bytes.NewReader(commitBody))
+		commitReq.Header.Set("Content-Type", "application/json")
+		commitRec := httptest.NewRecorder()
+		HandleRegisterCommit(kv)(commitRec, commitReq)
+		assertValidJSONWithId(t, commitRec)
+	})
+
+	t.Run("already_committed", func(t *testing.T) {
+		// Pending state is gone after the first commit above; pub/keys/{deviceId}
+		// exists, so this replay takes the idempotent "already_committed" branch.
+		commitReq2 := httptest.NewRequest(http.MethodPost,
+			"/auth/sovereign/register/commit?id="+url.QueryEscape(orcid), bytes.NewReader(commitBody))
+		commitReq2.Header.Set("Content-Type", "application/json")
+		commitRec2 := httptest.NewRecorder()
+		HandleRegisterCommit(kv)(commitRec2, commitReq2)
+		assertValidJSONWithId(t, commitRec2)
+	})
+}
+
 func TestRegisterCommitSetsTTL(t *testing.T) {
 	kv := setupTestKVStore(t)
 	keyID, signingKey, err := GetOrCreateSigningKey(kv)
@@ -397,7 +475,7 @@ func TestRegisterCommitSetsTTL(t *testing.T) {
 	require.Equal(t, http.StatusOK, commitRec.Code)
 
 	// Verify TTL was set: the .ttl.{deviceId} file should exist in the pub/keys directory
-	ttlPath := KK(orcid, "pub", "keys", ".ttl."+deviceId)
+	ttlPath := mustKK(t, orcid, "pub", "keys", ".ttl."+deviceId)
 	ttlData, err := CmdGet(ttlPath).Exec()
 	assert.NoError(t, err, "TTL metadata file should exist after commit")
 	assert.NotEmpty(t, ttlData, "TTL metadata should contain the .after path")
@@ -464,11 +542,11 @@ func TestRegisterTwoDevicesSameUser(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, rec2.Code, "device-2 begin with JWT: %s", rec2.Body.String())
 
 	// Verify both device keys are stored independently
-	data1, err := CmdGet(KK(orcid, "pub", "keys", "device-1")).Exec()
+	data1, err := CmdGet(mustKK(t, orcid, "pub", "keys", "device-1")).Exec()
 	require.NoError(t, err)
 	assert.Equal(t, pubPEM1, string(data1))
 
-	name1, err := CmdGet(KK(orcid, "pub", "keys", "device-1.name")).Exec()
+	name1, err := CmdGet(mustKK(t, orcid, "pub", "keys", "device-1.name")).Exec()
 	require.NoError(t, err)
 	assert.Equal(t, "Edge on Windows", string(name1))
 }

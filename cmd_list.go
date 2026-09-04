@@ -63,14 +63,35 @@ func (t *ListOptions) Parse(args map[string]string) {
 }
 
 func (t *Command) list() ([]byte, error) {
+	if !keyWithinRoot(t.Key) {
+		return []byte{}, ErrForbidden
+	}
+
+	// A list key can still carry a trailing "*" here: the HTTP ingress strips it
+	// before building the key, but an in-process caller and a command parsed out
+	// of a WebSocket frame do not. Trimming the star can reveal a segment the
+	// guard above never saw - "..*" becomes ".." - so the trimmed key is rebuilt
+	// through K() and re-checked before it reaches the filesystem. A zero-segment
+	// key is refused outright: it resolves to dbpath itself, which would list
+	// every namespace in the store.
+	listKey, keyErr := K(strings.TrimSuffix(t.Key.String(), "*"))
+	if keyErr != nil {
+		return []byte{}, ErrForbidden
+	}
+	if len(listKey.Segments) == 0 {
+		return []byte{}, ErrForbidden
+	}
+	if !keyWithinRoot(listKey) {
+		return []byte{}, ErrForbidden
+	}
+
 	opt := ListOptions{}
 	opt.Parse(t.Args)
 	if opt.Children && opt.Recursive {
 		return []byte{}, fmt.Errorf("recursive can't be true if children is true")
 	}
 
-	key := strings.TrimSuffix(t.Key.String(), "*")
-	dirPath := filepath.Join(dbpath, key)
+	dirPath := filepath.Join(dbpath, listKey.String())
 
 	if stat, err := os.Stat(dirPath); err != nil || !stat.IsDir() {
 		return []byte{}, ErrNotFound
@@ -104,6 +125,7 @@ func (t *Command) list() ([]byte, error) {
 func listDir(path string, opt ListOptions) (map[string][]byte, error) {
 	results := map[string][]byte{}
 	totalSize := 0
+	dbpathClean := filepath.Clean(dbpath)
 	if entries, err := os.ReadDir(path); err != nil {
 		log.Printf("error listing dir %s: %s", path, err)
 	} else {
@@ -123,7 +145,7 @@ func listDir(path string, opt ListOptions) (map[string][]byte, error) {
 				continue
 			}
 
-			key := strings.TrimPrefix(itemPath, dbpath)
+			key := strings.TrimPrefix(itemPath, dbpathClean)
 			key = strings.TrimPrefix(key, "/")
 
 			if totalSize+len(key) > opt.TotalSizeLimit {
@@ -153,6 +175,7 @@ func listDir(path string, opt ListOptions) (map[string][]byte, error) {
 func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 	results := map[string][]byte{}
 	totalSize := 0
+	dbpathClean := filepath.Clean(dbpath)
 	err := filepath.WalkDir(path, func(itemPath string, d fs.DirEntry, err error) error {
 		if len(results) >= opt.Limit {
 			return nil
@@ -168,8 +191,12 @@ func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 			return nil
 		}
 
-		key := strings.TrimPrefix(itemPath, dbpath)
+		key := strings.TrimPrefix(itemPath, dbpathClean)
 		key = strings.TrimPrefix(key, "/")
+
+		if totalSize+len(key) > opt.TotalSizeLimit {
+			return ErrLimitExceeded
+		}
 		totalSize += len(key)
 
 		if opt.Keys {

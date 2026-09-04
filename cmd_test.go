@@ -17,7 +17,7 @@ import (
 func TestCmdBytes(t *testing.T) {
 	cmd := Command{
 		Op:  Set,
-		Key: KK("testid", "dir", "one"),
+		Key: mustKK(t, "testid", "dir", "one"),
 		Args: map[string]string{
 			"ttl":  "5",
 			"x-id": "admin",
@@ -63,7 +63,7 @@ func TestCommandSet(t *testing.T) {
 	originalDbpath := dbpath
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
-	testKey := KK("test", "set_single")
+	testKey := mustKK(t, "test", "set_single")
 	NewCommand(Del, testKey, map[string]string{}, []byte{}).Exec()
 
 	_, err := NewCommand(Set, testKey, map[string]string{}, []byte("1")).Exec()
@@ -77,7 +77,7 @@ func TestCommandGet(t *testing.T) {
 	originalDbpath := dbpath
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
-	testKey := KK("test", "get_single")
+	testKey := mustKK(t, "test", "get_single")
 	NewCommand(Del, testKey, map[string]string{}, []byte{}).Exec()
 
 	// Setup: Set a value first
@@ -103,7 +103,7 @@ func TestCommandUpdate(t *testing.T) {
 	originalDbpath := dbpath
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
-	testKey := KK("test", "update_single")
+	testKey := mustKK(t, "test", "update_single")
 	NewCommand(Del, testKey, map[string]string{}, []byte{}).Exec()
 
 	// Setup: Set initial value
@@ -136,7 +136,7 @@ func TestCommandDelete(t *testing.T) {
 	originalDbpath := dbpath
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
-	testKey := KK("test", "delete_single")
+	testKey := mustKK(t, "test", "delete_single")
 	NewCommand(Del, testKey, map[string]string{}, []byte{}).Exec()
 
 	// Setup: Set a value
@@ -164,8 +164,8 @@ func TestCommandMove(t *testing.T) {
 	originalDbpath := dbpath
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
-	testKey := KK("test", "move_source")
-	testKeyTgt := KK("test", "move_target")
+	testKey := mustKK(t, "test", "move_source")
+	testKeyTgt := mustKK(t, "test", "move_target")
 	CmdDel(testKeyTgt).Exec()
 
 	// Setup: Set value at source location
@@ -207,12 +207,12 @@ func TestCommandListNonRecursive(t *testing.T) {
 
 	// Setup
 	id := "test_list_nr"
-	idKey := K(id)
+	idKey := mustK(t, id)
 	NewCommand(Del, idKey, map[string]string{}, []byte{}).Exec()
-	NewCommand(Set, KK(id, "one"), map[string]string{}, []byte("1")).Exec()
-	NewCommand(Set, KK(id, "two"), map[string]string{}, []byte("22")).Exec()
-	NewCommand(Set, KK(id, "three"), map[string]string{}, []byte("333")).Exec()
-	NewCommand(Set, K("test_list_nr/sub/one"), map[string]string{}, []byte("sub/1")).Exec()
+	NewCommand(Set, mustKK(t, id, "one"), map[string]string{}, []byte("1")).Exec()
+	NewCommand(Set, mustKK(t, id, "two"), map[string]string{}, []byte("22")).Exec()
+	NewCommand(Set, mustKK(t, id, "three"), map[string]string{}, []byte("333")).Exec()
+	NewCommand(Set, mustK(t, "test_list_nr/sub/one"), map[string]string{}, []byte("sub/1")).Exec()
 
 	// Test: List without recursive flag should return only direct children
 	data, err := NewCommand(List, idKey, map[string]string{}, []byte{}).Exec()
@@ -236,12 +236,12 @@ func TestCommandListRecursive(t *testing.T) {
 
 	// Setup
 	id := "test_list_rec"
-	idKey := K(id)
+	idKey := mustK(t, id)
 	NewCommand(Del, idKey, map[string]string{}, []byte{}).Exec()
-	NewCommand(Set, KK(id, "one"), map[string]string{}, []byte("1")).Exec()
-	NewCommand(Set, KK(id, "two"), map[string]string{}, []byte("22")).Exec()
-	NewCommand(Set, KK(id, "three"), map[string]string{}, []byte("333")).Exec()
-	NewCommand(Set, K("test_list_rec/sub/one"), map[string]string{}, []byte("sub/1")).Exec()
+	NewCommand(Set, mustKK(t, id, "one"), map[string]string{}, []byte("1")).Exec()
+	NewCommand(Set, mustKK(t, id, "two"), map[string]string{}, []byte("22")).Exec()
+	NewCommand(Set, mustKK(t, id, "three"), map[string]string{}, []byte("333")).Exec()
+	NewCommand(Set, mustK(t, "test_list_rec/sub/one"), map[string]string{}, []byte("sub/1")).Exec()
 
 	// Test: List with recursive flag should return all descendants
 	data, err := NewCommand(List, idKey, map[string]string{"recursive": "true"}, []byte{}).Exec()
@@ -265,11 +265,11 @@ func TestCommandListWithLimit(t *testing.T) {
 
 	// Setup
 	id := "test_list_lim"
-	idKey := K(id)
+	idKey := mustK(t, id)
 	NewCommand(Del, idKey, map[string]string{}, []byte{}).Exec()
-	NewCommand(Set, KK(id, "one"), map[string]string{}, []byte("1")).Exec()
-	NewCommand(Set, KK(id, "two"), map[string]string{}, []byte("22")).Exec()
-	NewCommand(Set, KK(id, "three"), map[string]string{}, []byte("333")).Exec()
+	NewCommand(Set, mustKK(t, id, "one"), map[string]string{}, []byte("1")).Exec()
+	NewCommand(Set, mustKK(t, id, "two"), map[string]string{}, []byte("22")).Exec()
+	NewCommand(Set, mustKK(t, id, "three"), map[string]string{}, []byte("333")).Exec()
 
 	// Test: List with limit should return only specified number of items
 	data, err := NewCommand(List, idKey, map[string]string{"limit": "2"}, []byte{}).Exec()
@@ -293,11 +293,11 @@ func TestCommandListKeysOnly(t *testing.T) {
 
 	// Setup
 	id := "test_list_keys"
-	idKey := K(id)
+	idKey := mustK(t, id)
 	NewCommand(Del, idKey, map[string]string{}, []byte{}).Exec()
-	NewCommand(Set, KK(id, "one"), map[string]string{}, []byte("1")).Exec()
-	NewCommand(Set, KK(id, "two"), map[string]string{}, []byte("22")).Exec()
-	NewCommand(Set, KK(id, "three"), map[string]string{}, []byte("333")).Exec()
+	NewCommand(Set, mustKK(t, id, "one"), map[string]string{}, []byte("1")).Exec()
+	NewCommand(Set, mustKK(t, id, "two"), map[string]string{}, []byte("22")).Exec()
+	NewCommand(Set, mustKK(t, id, "three"), map[string]string{}, []byte("333")).Exec()
 
 	// Test: List with keys=true should return only key names, not data
 	data, err := NewCommand(List, idKey, map[string]string{"keys": "true"}, []byte{}).Exec()
@@ -320,11 +320,11 @@ func TestCommandListWithSizeLimit(t *testing.T) {
 
 	// Setup
 	id := "test_list_size"
-	idKey := K(id)
+	idKey := mustK(t, id)
 	NewCommand(Del, idKey, map[string]string{}, []byte{}).Exec()
-	NewCommand(Set, KK(id, "one"), map[string]string{}, []byte("1")).Exec()
-	NewCommand(Set, KK(id, "two"), map[string]string{}, []byte("22")).Exec()
-	NewCommand(Set, KK(id, "three"), map[string]string{}, []byte("333")).Exec()
+	NewCommand(Set, mustKK(t, id, "one"), map[string]string{}, []byte("1")).Exec()
+	NewCommand(Set, mustKK(t, id, "two"), map[string]string{}, []byte("22")).Exec()
+	NewCommand(Set, mustKK(t, id, "three"), map[string]string{}, []byte("333")).Exec()
 
 	// Test: List with size-limit should exclude items exceeding size
 	data, err := NewCommand(List, idKey, map[string]string{"size-limit": "1"}, []byte{}).Exec()
@@ -346,7 +346,7 @@ func TestMoveRejectsCrossUserDestination(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Setup: user "alice" has a file (Set auto-creates parent dirs via MkdirAll)
-	srcKey := KK("alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "priv", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("secret")).Exec()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -368,7 +368,7 @@ func TestMoveRejectsCrossUserViaRelativePath(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	srcKey := KK("alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "priv", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).Exec()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -388,7 +388,7 @@ func TestMoveRejectsPathTraversal(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	srcKey := KK("alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "priv", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).Exec()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -410,7 +410,7 @@ func TestMoveRejectsEmptyXId(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	srcKey := KK("alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "priv", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": ""}, []byte("data")).Exec()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -430,7 +430,7 @@ func TestMoveAllowsSameUserDestination(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Setup: user "alice" has a file (Set auto-creates parent dirs via MkdirAll)
-	srcKey := KK("alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "priv", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).Exec()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -444,7 +444,7 @@ func TestMoveAllowsSameUserDestination(t *testing.T) {
 	}
 
 	// Verify the data moved
-	data, err := NewCommand(Get, KK("alice", "priv", "renamed"), map[string]string{}, []byte{}).Exec()
+	data, err := NewCommand(Get, mustKK(t, "alice", "priv", "renamed"), map[string]string{}, []byte{}).Exec()
 	if err != nil {
 		t.Errorf("Get moved file failed: %v", err)
 	} else if string(data) != "data" {

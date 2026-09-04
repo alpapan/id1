@@ -25,7 +25,7 @@ func setupAuthTest(t *testing.T) {
 func TestAuthOwnerCanSetOwnPublicKey(t *testing.T) {
 	setupAuthTest(t)
 	// Multi-device: keys at pub/keys/{deviceId}
-	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
+	testid1DeviceKey := mustKK(t, "testid1", "pub", "keys", "device-1")
 	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
 	if !auth("testid1", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{}), "") {
@@ -35,7 +35,7 @@ func TestAuthOwnerCanSetOwnPublicKey(t *testing.T) {
 
 func TestAuthNonOwnerCannotSetOthersKey(t *testing.T) {
 	setupAuthTest(t)
-	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
+	testid1DeviceKey := mustKK(t, "testid1", "pub", "keys", "device-1")
 	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
 	if auth("testid2", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{}), "") {
@@ -45,7 +45,7 @@ func TestAuthNonOwnerCannotSetOthersKey(t *testing.T) {
 
 func TestAuthAnonymousCanReadPublicKeys(t *testing.T) {
 	setupAuthTest(t)
-	testid1DeviceKey := KK("testid1", "pub", "keys", "device-1")
+	testid1DeviceKey := mustKK(t, "testid1", "pub", "keys", "device-1")
 	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
 
 	if !auth("", NewCommand(Get, testid1DeviceKey, map[string]string{}, []byte{}), "") {
@@ -78,7 +78,7 @@ func TestParseClaims(t *testing.T) {
 func TestIdExists(t *testing.T) {
 	setupAuthTest(t)
 	// Multi-device: keys live at pub/keys/{deviceId}
-	deviceKey := KK("testid1", "pub", "keys", "default")
+	deviceKey := mustKK(t, "testid1", "pub", "keys", "default")
 	if _, err := CmdSet(deviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec(); err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -103,13 +103,13 @@ func TestIdExistsMultiDevice(t *testing.T) {
 	}
 
 	// Register a device key at pub/keys/device-1
-	CmdSet(KK(orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-DATA")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-DATA")).Exec()
 	if !idExists(orcid) {
 		t.Errorf("idExists should return true when a device key exists at pub/keys/device-1")
 	}
 
 	// Register a second device - still true
-	CmdSet(KK(orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-DATA-2")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-DATA-2")).Exec()
 	if !idExists(orcid) {
 		t.Errorf("idExists should return true with multiple device keys")
 	}
@@ -117,7 +117,7 @@ func TestIdExistsMultiDevice(t *testing.T) {
 	// Metadata-only (.name files) should not count
 	setupAuthTest(t)
 	orcid2 := "0000-0002-0000-0001"
-	CmdSet(KK(orcid2, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid2}, []byte("My Browser")).Exec()
+	CmdSet(mustKK(t, orcid2, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid2}, []byte("My Browser")).Exec()
 	if idExists(orcid2) {
 		t.Errorf("idExists should return false when only .name metadata files exist")
 	}
@@ -147,7 +147,7 @@ func TestIdExists_SingularPubKey(t *testing.T) {
 	}
 
 	// Write only at the singular path, not under pub/keys/.
-	singularKey := KK("service", "pub", "key")
+	singularKey := mustKK(t, "service", "pub", "key")
 	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).Exec(); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap(t *testing.T) {
 	setupAuthTest(t)
 	t.Setenv("ID1_INTERNAL_SECRET", "test-internal-secret")
 
-	singularKey := KK("service", "pub", "key")
+	singularKey := mustKK(t, "service", "pub", "key")
 
 	// Seed the singular key to simulate a successful prior bootstrap.
 	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).Exec(); err != nil {
@@ -191,7 +191,7 @@ func TestAuth_NewIdBootstrapRequiresInternalSecret(t *testing.T) {
 	setupAuthTest(t)
 	t.Setenv("ID1_INTERNAL_SECRET", "test-internal-secret")
 
-	singularKey := KK("service", "pub", "key")
+	singularKey := mustKK(t, "service", "pub", "key")
 	newCmd := func() Command { return NewCommand(Set, singularKey, map[string]string{}, []byte{}) }
 
 	if auth("", newCmd(), "") {
@@ -213,7 +213,7 @@ func TestAuth_NewIdBootstrapFailsClosedWhenSecretUnset(t *testing.T) {
 	setupAuthTest(t)
 	t.Setenv("ID1_INTERNAL_SECRET", "")
 
-	singularKey := KK("service", "pub", "key")
+	singularKey := mustKK(t, "service", "pub", "key")
 	if auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{}), "") {
 		t.Error("bootstrap must be rejected when ID1_INTERNAL_SECRET is unset")
 	}

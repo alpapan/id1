@@ -11,6 +11,7 @@ package id1
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,9 @@ import (
 )
 
 func (t *Command) set() error {
+	if !keyWithinRoot(t.Key) {
+		return ErrForbidden
+	}
 	if !preflightChecks(t) {
 		return fmt.Errorf("failed preflight checks")
 	}
@@ -56,12 +60,43 @@ func createDotTtl(cmd *Command) {
 	if ttlSec == 0 {
 		return
 	}
+	if cmd.Key.Parent == "" {
+		// A single-segment key (Id == Name, no parent) stores its value at
+		// a path with no directory of its own: dbpath/<id> is a file, not
+		// a directory. dot_after.go's containment check only accepts a
+		// .after./.ttl. pair sitting inside a directory named after the
+		// command's target Id - for every other key shape that directory
+		// is the key's own parent, a sibling location that already exists.
+		// For a single-segment key the only directory containment would
+		// accept is one named identically to the key's own value file,
+		// which cannot be created (a nested write fails with "not a
+		// directory") and cannot be nested at the store root either (the
+		// store root has no owning namespace, so the sweep refuses it -
+		// see dot_after.go's own containment comment). There is no
+		// location that is both safe and writable, so ttl is a no-op on a
+		// single-segment key: the set still succeeds, it just never
+		// expires.
+		log.Printf("createDotTtl: ttl is a no-op on single-segment key %s (no parent directory to nest the schedule under)", cmd.Key.String())
+		return
+	}
 	ttdMs := time.Now().UnixMilli() + (int64(ttlSec) * 1000) //time to die in Ms
-	ttlKey := KK(cmd.Key.Parent, fmt.Sprintf(".ttl.%s", cmd.Key.Name))
-	dotAfterKey := KK(cmd.Key.Parent, fmt.Sprintf(".after.%d", ttdMs))
+	ttlKey, err := KK(cmd.Key.Parent, fmt.Sprintf(".ttl.%s", cmd.Key.Name))
+	if err != nil {
+		log.Printf("createDotTtl: skipping TTL bookkeeping for %s: %v", cmd.Key.String(), err)
+		return
+	}
+	dotAfterKey, err := KK(cmd.Key.Parent, fmt.Sprintf(".after.%d", ttdMs))
+	if err != nil {
+		log.Printf("createDotTtl: skipping TTL bookkeeping for %s: %v", cmd.Key.String(), err)
+		return
+	}
 
 	if oldDotAfter, err := CmdGet(ttlKey).Exec(); err == nil {
-		CmdDel(K(string(oldDotAfter))).Exec()
+		if oldKey, err := K(string(oldDotAfter)); err != nil {
+			log.Printf("createDotTtl: skipping stale .after cleanup for %s: %v", cmd.Key.String(), err)
+		} else {
+			CmdDel(oldKey).Exec()
+		}
 	}
 
 	dotAfterCommand := CmdDel(cmd.Key)

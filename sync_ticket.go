@@ -74,7 +74,12 @@ func HandleSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 		}
 		ticket := base64.RawURLEncoding.EncodeToString(ticketBytes)
 
-		if _, err := CmdSet(KK(syncTicketPrefix, ticket),
+		ticketKey, keyErr := KK(syncTicketPrefix, ticket)
+		if keyErr != nil {
+			http.Error(w, "Failed to store ticket", http.StatusInternalServerError)
+			return
+		}
+		if _, err := CmdSet(ticketKey,
 			map[string]string{"x-id": syncTicketPrefix, "ttl": syncTicketTTL},
 			[]byte(claims.Subject)).Exec(); err != nil {
 			http.Error(w, "Failed to store ticket", http.StatusInternalServerError)

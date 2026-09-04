@@ -24,8 +24,28 @@ type webSocketHandler struct {
 	upgrader websocket.Upgrader
 }
 
-func (t webSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
-	req := K(r.URL.Path)
+// Handle upgrades a request to a WebSocket session. id is the authenticated
+// subject of the caller's verified Bearer token, established by Handle in
+// id1.go - NEVER the first segment of the request path. A path-derived identity
+// let an unauthenticated caller upgrade on {victim}/pub/... (which auth grants
+// as a public read) and then hold owner rights over the victim for the life of
+// the connection.
+//
+// Because the path no longer decides anything, it is not parsed here at all: a
+// malformed path cannot influence a session it has no say in.
+func (t webSocketHandler) Handle(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" {
+		// id1.go refuses an unauthenticated upgrade before reaching this point.
+		// This is the second layer: a session with no proven identity is never
+		// opened, whatever routed us here. This cannot reproduce the ordinary
+		// HTTP path's encrypted challenge - by the time id is empty here, the
+		// caller's claimed account and its public key are no longer available -
+		// so it refuses bare.
+		log.Printf("websocket handle: refusing an unauthenticated upgrade for %q", r.URL.Path)
+		err401(w, "")
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cmdIn := make(chan (Command))
 
@@ -33,9 +53,9 @@ func (t webSocketHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		log.Printf("error upgrading to websocket. %s", err)
 	} else {
 		session := Session{
-			Id:     req.Id,
+			Id:     id,
 			Conn:   conn,
-			CmdOut: pubsub.Subscribe(req.Id),
+			CmdOut: pubsub.Subscribe(id),
 			CmdIn:  cmdIn,
 			Ctx:    ctx,
 			Cancel: cancel,
@@ -63,14 +83,20 @@ func (t *Session) OnConnect() {
 	go t.ping()
 
 	log.Printf("connected: %s", t.Id)
-	if _, err := CmdSet(KK(t.Id, ".online"), map[string]string{}, []byte{}).Exec(); err != nil {
+	if onlineKey, err := KK(t.Id, ".online"); err != nil {
+		log.Printf("onconnect: skipping online marker for %s: %v", t.Id, err)
+	} else if _, err := CmdSet(onlineKey, map[string]string{}, []byte{}).Exec(); err != nil {
 		log.Printf("cmd set error: %s", err)
 	}
 	t.CmdOut = pubsub.Subscribe(t.Id)
 }
 
 func (t *Session) Disconnect() {
-	CmdDel(KK(t.Id, ".online")).Exec()
+	if onlineKey, err := KK(t.Id, ".online"); err != nil {
+		log.Printf("disconnect: skipping online marker cleanup for %s: %v", t.Id, err)
+	} else {
+		CmdDel(onlineKey).Exec()
+	}
 	pubsub.Unsubscribe(t.Id, t.CmdOut)
 	t.Conn.Close()
 	log.Printf("disconnected: %s", t.Id)
@@ -80,7 +106,11 @@ func (t *Session) ping() {
 	for {
 		select {
 		case <-time.After(time.Second * 120):
-			t.CmdOut <- CmdGet(KK(t.Id, ".ping"))
+			if pingKey, err := KK(t.Id, ".ping"); err != nil {
+				log.Printf("ping: skipping ping for %s: %v", t.Id, err)
+			} else {
+				t.CmdOut <- CmdGet(pingKey)
+			}
 		case <-t.Ctx.Done():
 			return
 		}
@@ -135,9 +165,18 @@ func (t *Session) handleCommands() {
 
 			if !authOk {
 				// Use "default" device for WebSocket challenge-response
-				if pubKey, err := CmdGet(KK(t.Id, "pub", "keys", "default")).Exec(); err == nil {
+				defaultKeyKey, keyErr := KK(t.Id, "pub", "keys", "default")
+				if keyErr != nil {
+					log.Println(keyErr)
+					continue
+				}
+				if pubKey, err := CmdGet(defaultKeyKey).Exec(); err == nil {
 					if challenge, err := generateChallenge(t.Id, string(pubKey)); err == nil {
-						t.CmdOut <- CmdSet(KK(t.Id, "auth"), map[string]string{}, []byte(challenge))
+						if authKey, err := KK(t.Id, "auth"); err != nil {
+							log.Println(err)
+						} else {
+							t.CmdOut <- CmdSet(authKey, map[string]string{}, []byte(challenge))
+						}
 					} else {
 						log.Println(err)
 					}
