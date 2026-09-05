@@ -82,7 +82,7 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 			return
 		}
 
-		// Upgrade the inbound (browser → id1) connection
+		// Upgrade the inbound (browser -> id1) connection
 		clientConn, err := clientUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("[sync-proxy] client upgrade failed: %v", err)
@@ -90,7 +90,7 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 		}
 		defer clientConn.Close()
 
-		// Dial the backend (id1 → automerge-sync-server)
+		// Dial the backend (id1 -> automerge-sync-server)
 		dialer := websocket.Dialer{}
 		if tlsConfig != nil {
 			dialer.TLSClientConfig = tlsConfig
@@ -110,12 +110,12 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 
 		errc := make(chan error, 2)
 
-		// client → backend
+		// client -> backend
 		go func() {
 			errc <- pumpFrames(clientConn, backendConn)
 		}()
 
-		// backend → client
+		// backend -> client
 		go func() {
 			errc <- pumpFrames(backendConn, clientConn)
 		}()

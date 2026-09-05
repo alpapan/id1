@@ -286,7 +286,7 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Refresh TTL on ALL device keys for this user.
-	// ORCID proves user identity → all devices benefit.
+	// ORCID proves user identity -> all devices benefit.
 	keysDir := filepath.Join(dbpath, orcidID, "pub", "keys")
 	if entries, err := os.ReadDir(keysDir); err == nil {
 		for _, entry := range entries {

@@ -48,7 +48,7 @@ const maxTimestampSkew = 5 * time.Minute
 //     anonymous POST exemption in auth.go when the identity is new). The
 //     handler tries the multi-device path first, then the singular path.
 //  3. Server verifies RSA-SHA256 signature of "{id}:{timestamp}" using that key
-//  4. Server checks timestamp is within ±5 minutes of server time
+//  4. Server checks timestamp is within +/-5 minutes of server time
 //  5. Server issues RS256 JWT with sub={id} (same signJWT used by ORCID/test endpoints)
 //
 // The signature payload is "{id}:{timestamp}" encoded as UTF-8, signed with
