@@ -10,6 +10,7 @@
 package id1
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -72,6 +73,14 @@ type OrcidHandler struct {
 	frontendURL  string
 	kvStore      KeyValueStore
 	stateTTL     time.Duration // must be set to 5 * time.Minute
+
+	// exchangeTimeout bounds each individual token-exchange HTTP round trip to
+	// ORCID's token endpoint (see orcidExchangeHTTPTimeout). It is independent
+	// of maxExchangeAttempts' backoff, which governs the wait BETWEEN
+	// attempts, not any one attempt's own duration. Zero means "use
+	// orcidExchangeHTTPTimeout" - production code (NewOrcidHandler) always
+	// sets it explicitly; a test may inject a much shorter bound.
+	exchangeTimeout time.Duration
 }
 
 // NewOrcidHandler builds an OrcidHandler from environment variables.
@@ -111,9 +120,10 @@ func NewOrcidHandler(kvStore KeyValueStore) (*OrcidHandler, error) {
 			RedirectURL: redirectURL,
 			Scopes:      []string{"/authenticate"},
 		},
-		frontendURL: frontendURL,
-		kvStore:     kvStore,
-		stateTTL:    5 * time.Minute,
+		frontendURL:     frontendURL,
+		kvStore:         kvStore,
+		stateTTL:        5 * time.Minute,
+		exchangeTimeout: orcidExchangeHTTPTimeout,
 	}, nil
 }
 
@@ -198,6 +208,19 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 // cannot silently drift apart from each other.
 const maxExchangeAttempts = 3
 
+// orcidExchangeHTTPTimeout is the production bound for a single token-exchange
+// HTTP round trip to ORCID's token endpoint. Go's default HTTP transport has
+// no per-request timeout of its own, so a stalled or silently dropped
+// connection otherwise blocks until the OS-level TCP connect timeout - a
+// multi-minute hang on what should be a fast external call. 15s is generous
+// for a healthy IdP round trip while keeping each of maxExchangeAttempts'
+// attempts bounded to seconds, not minutes. Combined with the fixed backoff
+// below (1s+2s between attempts), a fully unresponsive endpoint now costs
+// HandleCallback at most maxExchangeAttempts*orcidExchangeHTTPTimeout + 3s
+// (about 48s at the current maxExchangeAttempts=3) rather than blocking
+// unboundedly.
+const orcidExchangeHTTPTimeout = 15 * time.Second
+
 // maxLoggedValueLen bounds how much of a third-party error string reaches the
 // log: ORCID's raw-body fallback error can carry up to a 1 MiB response body,
 // and dumping that verbatim would flood id1's logs on an ORCID-side outage.
@@ -280,11 +303,22 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound each attempt's own HTTP round trip so a dropped/stalled connection
+	// fails fast instead of blocking on the OS-level TCP connect timeout (see
+	// orcidExchangeHTTPTimeout). This does not change the deliberate backoff
+	// between attempts below - it only bounds one attempt's own duration.
+	exchangeTimeout := h.exchangeTimeout
+	if exchangeTimeout <= 0 {
+		exchangeTimeout = orcidExchangeHTTPTimeout
+	}
+	exchangeHTTPClient := &http.Client{Timeout: exchangeTimeout}
+	exchangeCtx := context.WithValue(r.Context(), oauth2.HTTPClient, exchangeHTTPClient)
+
 	// Exchange with exponential backoff retry (maxExchangeAttempts attempts, max 3 seconds)
 	var token *oauth2.Token
 	var err error
 	for attempt := 0; attempt < maxExchangeAttempts; attempt++ {
-		token, err = h.oauth2Config.Exchange(r.Context(), code, oauth2.VerifierOption(entry.verifier))
+		token, err = h.oauth2Config.Exchange(exchangeCtx, code, oauth2.VerifierOption(entry.verifier))
 		if err == nil {
 			break
 		}

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1184,6 +1185,95 @@ func TestHandleCallback_RedirectsToStoredRedirectURI(t *testing.T) {
 	// Must NOT redirect to the default frontendURL
 	if strings.HasPrefix(location, defaultFrontendURL) {
 		t.Errorf("should redirect to stored redirectURI, not default frontendURL")
+	}
+}
+
+// TestOrcidCallbackTokenExchangeFailsFastOnHungConnection verifies that a
+// single token-exchange attempt is bounded by an explicit HTTP client
+// timeout rather than blocking on Go's OS-level TCP/response behaviour.
+// Without a bounded client, a dropped or stalled connection to ORCID's token
+// endpoint can block oauth2.Config.Exchange until the OS-level TCP connect
+// timeout, which is multi-minute. This test stands up a mock ORCID token
+// server that sleeps past the configured per-attempt timeout, and asserts
+// HandleCallback returns within a bound derived from maxExchangeAttempts, so
+// it stays correct if that constant ever changes.
+func TestOrcidCallbackTokenExchangeFailsFastOnHungConnection(t *testing.T) {
+	const perAttemptTimeout = 50 * time.Millisecond
+	// serverHang only needs to clear perAttemptTimeout by a clear margin, not
+	// approximate the real multi-minute OS-level hang - see maxAcceptable
+	// below for why a small margin still discriminates the fix from its
+	// absence.
+	const serverHang = 400 * time.Millisecond
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(serverHang)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"late","token_type":"bearer","orcid":"0000-0002-1825-0097"}`)
+	}))
+	t.Cleanup(func() {
+		// CloseClientConnections first so Close() does not block the test on
+		// the outstanding handler goroutines' own serverHang sleeps.
+		mockServer.CloseClientConnections()
+		mockServer.Close()
+	})
+
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+	seedState(t, "state1", stateEntry{created: time.Now(), verifier: "test_verifier"})
+
+	h := &OrcidHandler{
+		oauth2Config: &oauth2.Config{
+			ClientID:     "test",
+			ClientSecret: "test",
+			Endpoint: oauth2.Endpoint{
+				AuthURL:   mockServer.URL + "/oauth/authorize",
+				TokenURL:  mockServer.URL + "/oauth/token",
+				AuthStyle: oauth2.AuthStyleInHeader,
+			},
+		},
+		frontendURL: "http://localhost:19001",
+		// real filesystem KV backed by dbpath - never the prohibited
+		// internal-code mock. The exchange fails on every attempt in this
+		// test, so kvStore is never actually read (GetOrCreateSigningKey is
+		// only reached after a successful exchange), but using the real
+		// implementation here keeps this cybersecurity-sensitive test file
+		// free of a new mock of the package's own KeyValueStore interface.
+		kvStore:         ID1KeyValueStore{},
+		stateTTL:        5 * time.Minute,
+		exchangeTimeout: perAttemptTimeout,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code1", nil)
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	h.HandleCallback(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for a token exchange that never completes in time, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "token exchange failed") {
+		t.Errorf("expected 'token exchange failed' in response body, got: %s", rec.Body.String())
+	}
+
+	// Derive the pass/fail threshold from maxExchangeAttempts and the exact
+	// backoff formula HandleCallback uses (1s, 2s, doubling per attempt),
+	// rather than a hardcoded literal, so raising maxExchangeAttempts cannot
+	// silently falsify this assertion instead of adjusting it. A bounded
+	// client finishes near boundedTotal; an unbounded client (the pre-fix
+	// behaviour) finishes near unboundedTotal; maxAcceptable sits at their
+	// midpoint.
+	var backoffFloor time.Duration
+	for attempt := 0; attempt < maxExchangeAttempts-1; attempt++ {
+		backoffFloor += time.Duration(math.Pow(2, float64(attempt))*1000) * time.Millisecond
+	}
+	boundedTotal := backoffFloor + time.Duration(maxExchangeAttempts)*perAttemptTimeout
+	unboundedTotal := backoffFloor + time.Duration(maxExchangeAttempts)*serverHang
+	maxAcceptable := (boundedTotal + unboundedTotal) / 2
+	if elapsed >= maxAcceptable {
+		t.Errorf("expected HandleCallback to fail fast on a hung connection (< %v, bounded-case estimate %v, unbounded-case estimate %v), took %v - the per-attempt HTTP client has no bounded timeout", maxAcceptable, boundedTotal, unboundedTotal, elapsed)
 	}
 }
 
