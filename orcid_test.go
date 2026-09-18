@@ -17,6 +17,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,8 +56,17 @@ func newTestOrcidHandler(tokenServerURL, frontendURL string) *OrcidHandler {
 			ClientID:     "test-client-id",
 			ClientSecret: "test-client-secret",
 			Endpoint: oauth2.Endpoint{
-				AuthURL:   authURL,
-				TokenURL:  tokenURL,
+				AuthURL:  authURL,
+				TokenURL: tokenURL,
+				// Production (NewOrcidHandler) leaves AuthStyle unset
+				// (AuthStyleAutoDetect), so a failing exchange there
+				// issues twice as many outbound requests as this pinned
+				// AuthStyleInHeader does. An exchange-failure error is
+				// still read only from ORCID's response either way (the
+				// client secret and PKCE verifier go in the request, an
+				// Authorization header or POST body, never echoed back),
+				// so pinning here does not change what a failure test
+				// against this handler proves.
 				AuthStyle: oauth2.AuthStyleInHeader,
 			},
 		},
@@ -407,6 +418,89 @@ func TestOrcidCallbackMissingOrcidField(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "missing") {
 		t.Errorf("expected 'missing' in response body, got: %s", rec.Body.String())
+	}
+}
+
+// TestOrcidCallbackLogsExchangeFailureWithoutSecrets covers both shapes the
+// oauth2 library's RetrieveError can take on a failed exchange (an RFC 6749
+// error/error_description pair, and its raw-status/body fallback when the
+// response carries no parseable "error" field) and, for each, verifies
+// HandleCallback logs the real rejection reason while the logged line never
+// carries the client secret, the raw authorization code, or the PKCE
+// verifier.
+func TestOrcidCallbackLogsExchangeFailureWithoutSecrets(t *testing.T) {
+	const rawCode = "raw-authorization-code-must-not-be-logged"
+	const verifier = "test_verifier_12345"
+
+	cases := []struct {
+		name          string
+		handler       http.HandlerFunc
+		wantLogSubstr string
+	}{
+		{
+			name: "rfc6749_error_code",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"error":"invalid_grant","error_description":"the authorization code is invalid or has expired"}`)
+			},
+			wantLogSubstr: "invalid_grant",
+		},
+		{
+			name: "raw_body_fallback",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadGateway)
+				// A marker present only in the body (never in Go's own "502 Bad
+				// Gateway" status text) so the assertion below can only pass if
+				// the raw-body fallback branch of RetrieveError.Error() - not
+				// just the status line - reached the log.
+				fmt.Fprint(w, "<html><body>ORCID-OUTAGE-MARKER</body></html>")
+			},
+			wantLogSubstr: "ORCID-OUTAGE-MARKER",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mockServer := httptest.NewServer(c.handler)
+			defer mockServer.Close()
+
+			states := map[string]stateEntry{
+				"valid_state": {created: time.Now(), verifier: verifier},
+			}
+			h := newTestOrcidHandlerWithState(t, mockServer.URL, getFrontendURL(), states)
+			if h.oauth2Config.ClientSecret == "" {
+				t.Fatal("test handler must have a non-empty client secret, or the secret-absence assertion below is vacuous")
+			}
+
+			getLog := captureLog(t)
+
+			req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code="+rawCode, nil)
+			rec := httptest.NewRecorder()
+			h.HandleCallback(rec, req)
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500 for a failed token exchange, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "token exchange failed") {
+				t.Errorf("expected 'token exchange failed' in response body, got: %s", rec.Body.String())
+			}
+
+			logged := getLog()
+			if !strings.Contains(logged, c.wantLogSubstr) {
+				t.Errorf("expected the real ORCID rejection reason %q in the log, got: %q", c.wantLogSubstr, logged)
+			}
+			if strings.Contains(logged, h.oauth2Config.ClientSecret) {
+				t.Errorf("log must never contain the OAuth client secret, got: %q", logged)
+			}
+			if strings.Contains(logged, rawCode) {
+				t.Errorf("log must never contain the raw authorization code, got: %q", logged)
+			}
+			if strings.Contains(logged, verifier) {
+				t.Errorf("log must never contain the PKCE verifier, got: %q", logged)
+			}
+		})
 	}
 }
 
@@ -846,6 +940,8 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 		stateTTL:    5 * time.Minute,
 	}
 
+	getLog := captureLog(t)
+
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code", nil)
 	rec := httptest.NewRecorder()
 	h.HandleCallback(rec, req)
@@ -855,6 +951,9 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "signing key") && !strings.Contains(rec.Body.String(), "get") {
 		t.Errorf("Expected error message about signing key, got: %s", rec.Body.String())
+	}
+	if logged := getLog(); !strings.Contains(logged, "orcid signing key retrieval failed") {
+		t.Errorf("expected the GetOrCreateSigningKey failure reason to be logged, got: %q", logged)
 	}
 }
 
@@ -1251,13 +1350,172 @@ func TestOrcidStateSetErrorReturns500(t *testing.T) {
 	}
 	dbpath = roDir
 
+	getLog := captureLog(t)
+
 	h := newTestOrcidHandler("", "http://localhost:19001")
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid", nil)
 	w := httptest.NewRecorder()
 	h.HandleBegin(w, req)
 
+	if logged := getLog(); !strings.Contains(logged, "orcid state store failed") {
+		t.Errorf("expected the KV Set failure reason to be logged, got: %q", logged)
+	}
+
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 when KV Set fails, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestTruncatedLogValue verifies the three properties truncatedLogValue exists
+// for: an under-cap value is quoted but otherwise unchanged, an over-cap value
+// is capped at maxLoggedValueLen and suffixed with "...(truncated)", and any
+// embedded newline or control byte never reaches the returned string raw (it is
+// escaped by strconv.Quote), so a multi-line or oversized third-party error
+// (e.g. ORCID's raw-body fallback, which can carry up to a 1 MiB response body)
+// cannot flood or break one-entry-per-line log parsing.
+func TestTruncatedLogValue(t *testing.T) {
+	t.Run("under_cap_value_is_quoted_and_unchanged", func(t *testing.T) {
+		got := truncatedLogValue("short error")
+		want := `"short error"`
+		if got != want {
+			t.Errorf("truncatedLogValue(%q) = %q, want %q", "short error", got, want)
+		}
+	})
+
+	t.Run("over_cap_value_is_capped_and_suffixed", func(t *testing.T) {
+		long := strings.Repeat("x", maxLoggedValueLen+100)
+		got := truncatedLogValue(long)
+		if !strings.HasSuffix(got, `...(truncated)`) {
+			t.Errorf("expected the truncation marker, got suffix: %q", got[len(got)-30:])
+		}
+		// Quoted body is capped at maxLoggedValueLen characters (excluding the
+		// surrounding quotes and the marker) - the input is capped BEFORE quoting.
+		quotedBody := strings.TrimSuffix(got, "...(truncated)")
+		unquoted, err := strconv.Unquote(quotedBody)
+		if err != nil {
+			t.Fatalf("truncated body is not valid Go-quoted text: %v (got %q)", err, got)
+		}
+		if len(unquoted) != maxLoggedValueLen {
+			t.Errorf("expected the capped body to be exactly maxLoggedValueLen (%d) bytes, got %d", maxLoggedValueLen, len(unquoted))
+		}
+	})
+
+	t.Run("embedded_newline_and_control_byte_never_reach_output_raw", func(t *testing.T) {
+		dirty := "line one\nline two\x01end"
+		got := truncatedLogValue(dirty)
+		if strings.Contains(got, "\n") {
+			t.Errorf("expected no raw newline in the logged value, got: %q", got)
+		}
+		if strings.Contains(got, "\x01") {
+			t.Errorf("expected no raw control byte in the logged value, got: %q", got)
+		}
+		// The escaped forms must still be present, so the original content is
+		// recoverable from the log line rather than silently dropped.
+		if !strings.Contains(got, `\n`) {
+			t.Errorf("expected the newline to survive as an escaped \\n, got: %q", got)
+		}
+	})
+}
+
+// TestOrcidCallbackUnmarshalErrorIsLogged verifies HandleCallback returns 400 and
+// logs the reason when the stored state entry's JSON is corrupted (a shape our own
+// code wrote, so a decode failure here is an internal-consistency bug, not attacker
+// input - the state token itself already passed stateTokenPattern and the KV lookup).
+func TestOrcidCallbackUnmarshalErrorIsLogged(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	// Write non-JSON data directly under the state key, bypassing seedState's
+	// json.Marshal so the stored value is not valid stateEntryWire JSON.
+	if _, err := CmdSet(mustKK(t, stateKeyPrefix, "corrupt_state"), map[string]string{"x-id": stateKeyPrefix}, []byte("not valid json")).Exec(); err != nil {
+		t.Fatalf("failed to seed corrupt state: %v", err)
+	}
+
+	h := newTestOrcidHandler("", getFrontendURL())
+
+	getLog := captureLog(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=corrupt_state&code=any_code", nil)
+	rec := httptest.NewRecorder()
+	h.HandleCallback(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for corrupt state data, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid state") {
+		t.Errorf("expected 'invalid state' in response body, got: %s", rec.Body.String())
+	}
+	if logged := getLog(); !strings.Contains(logged, "orcid state unmarshal failed") {
+		t.Errorf("expected the state unmarshal failure reason to be logged, got: %q", logged)
+	}
+}
+
+// TestOrcidCallbackDeleteFailureIsLoggedNotFatal verifies that when the best-effort
+// CmdDel(stateKey) fails (e.g. a KV store write error), HandleCallback still logs the
+// reason but does NOT fail the request - the TTL sweeper remains the backstop, per the
+// existing best-effort comment in HandleCallback. Security-relevant: a delete failure
+// that goes unlogged makes a stuck, undeleted CSRF state entry (a state-replay window)
+// invisible in production.
+func TestOrcidCallbackDeleteFailureIsLoggedNotFatal(t *testing.T) {
+	originalDbpath := dbpath
+	dbpath = t.TempDir()
+	t.Cleanup(func() { dbpath = originalDbpath })
+
+	seedState(t, "del_fail_state", stateEntry{created: time.Now(), verifier: "verifier123"})
+
+	// Block writes (including deletes) under the _authstate namespace directory
+	// while leaving it readable, so CmdGet still succeeds but CmdDel fails.
+	authStateDir := filepath.Join(dbpath, stateKeyPrefix)
+	if err := os.Chmod(authStateDir, 0o500); err != nil {
+		t.Skipf("cannot chmod _authstate dir read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(authStateDir, 0o700) })
+	// Root bypasses 0500; skip if a file can still be created inside.
+	if f, err := os.CreateTemp(authStateDir, "probe"); err == nil {
+		f.Close()
+		t.Skip("_authstate dir is writable despite 0500 (likely running as root); cannot exercise Del failure")
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{
+				"access_token": "token",
+				"orcid": "0000-0001-1111-2222",
+				"scope": "/authenticate"
+			}`)
+		}
+	}))
+	defer mockServer.Close()
+
+	h := &OrcidHandler{
+		oauth2Config: &oauth2.Config{
+			ClientID:     "test",
+			ClientSecret: "test",
+			Endpoint: oauth2.Endpoint{
+				AuthURL:   mockServer.URL + "/oauth/authorize",
+				TokenURL:  mockServer.URL + "/oauth/token",
+				AuthStyle: oauth2.AuthStyleInHeader,
+			},
+		},
+		frontendURL: "http://localhost:19001",
+		kvStore:     ID1KeyValueStore{}, // real filesystem KV backed by dbpath - never the prohibited internal-code mock, so success past this call reflects the real signing-key path, not a mock's zero value.
+		stateTTL:    5 * time.Minute,
+	}
+
+	getLog := captureLog(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=del_fail_state&code=any_code", nil)
+	rec := httptest.NewRecorder()
+	h.HandleCallback(rec, req)
+
+	// Best-effort delete failure must NOT fail the request.
+	if rec.Code != http.StatusFound {
+		t.Errorf("expected 302 redirect despite state-delete failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if logged := getLog(); !strings.Contains(logged, "orcid state delete failed") {
+		t.Errorf("expected the state delete failure reason to be logged, got: %q", logged)
 	}
 }
 
