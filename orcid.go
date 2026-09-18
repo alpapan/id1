@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -182,11 +183,39 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := CmdSet(stateStoreKey, map[string]string{"ttl": ttlSeconds, "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+		// err comes from the KV store's own Set failure (e.g. disk/permission
+		// error), never from request input, so it carries no secret material.
+		log.Printf("orcid state store failed: %s", truncatedLogValue(err.Error()))
 		http.Error(w, "internal error storing auth state", http.StatusInternalServerError)
 		return
 	}
 
 	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), http.StatusFound)
+}
+
+// maxExchangeAttempts bounds the token-exchange retry loop below - a single
+// constant so the loop bound, the backoff cutoff and the "%d/%d" log line
+// cannot silently drift apart from each other.
+const maxExchangeAttempts = 3
+
+// maxLoggedValueLen bounds how much of a third-party error string reaches the
+// log: ORCID's raw-body fallback error can carry up to a 1 MiB response body,
+// and dumping that verbatim would flood id1's logs on an ORCID-side outage.
+const maxLoggedValueLen = 500
+
+// truncatedLogValue returns s capped at maxLoggedValueLen and quoted onto a
+// single line (%q escapes newlines and control characters), so a multi-line
+// or oversized third-party error cannot break one-entry-per-line log parsing.
+func truncatedLogValue(s string) string {
+	truncated := len(s) > maxLoggedValueLen
+	if truncated {
+		s = s[:maxLoggedValueLen]
+	}
+	quoted := strconv.Quote(s)
+	if truncated {
+		quoted += "...(truncated)"
+	}
+	return quoted
 }
 
 // HandleCallback validates the CSRF state (including TTL), deletes it from the
@@ -223,10 +252,18 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Single-use: consume the state immediately. Best-effort - if the delete fails
 	// the TTL sweeper (dotAfter) still collects it, and the created check below is a
 	// defense-in-depth backstop.
-	CmdDel(stateKey).Exec()
+	if _, delErr := CmdDel(stateKey).Exec(); delErr != nil {
+		// err comes from the KV store's own Del failure, never from request
+		// input, so it carries no secret material. Logged, not fatal - the
+		// TTL sweeper still reclaims the key, per the comment above.
+		log.Printf("orcid state delete failed (non-fatal, TTL sweeper will reclaim): %s", truncatedLogValue(delErr.Error()))
+	}
 
 	var wire stateEntryWire
 	if err := json.Unmarshal(data, &wire); err != nil {
+		// err is a JSON decode error describing OUR OWN stored struct shape, not
+		// request input, so it carries no secret material.
+		log.Printf("orcid state unmarshal failed: %s", truncatedLogValue(err.Error()))
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
@@ -243,17 +280,26 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Exchange with exponential backoff retry (3 attempts, max 3 seconds)
+	// Exchange with exponential backoff retry (maxExchangeAttempts attempts, max 3 seconds)
 	var token *oauth2.Token
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < maxExchangeAttempts; attempt++ {
 		token, err = h.oauth2Config.Exchange(r.Context(), code, oauth2.VerifierOption(entry.verifier))
 		if err == nil {
 			break
 		}
 
+		// err derives only from ORCID's own response (an RFC 6749
+		// error/error_description pair, or its raw status/body) or from the
+		// outbound transport error - never from our request fields - so it
+		// cannot carry the client secret, the authorization code or the PKCE
+		// verifier. Logged per attempt: a transient failure on an early
+		// attempt is the informative one, and the code is single-use, so a
+		// later retry's error can mask it once the code has been consumed.
+		log.Printf("orcid token exchange attempt %d/%d failed: %s", attempt+1, maxExchangeAttempts, truncatedLogValue(err.Error()))
+
 		// Retry on any error
-		if attempt < 2 {
+		if attempt < maxExchangeAttempts-1 {
 			// Exponential backoff: 1s, 2s (doubling each time)
 			backoffMs := time.Duration(math.Pow(2, float64(attempt))*1000) * time.Millisecond
 			time.Sleep(backoffMs)
@@ -281,6 +327,9 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Get or create signing key for RS256 JWT
 	keyID, privKey, err := GetOrCreateSigningKey(h.kvStore)
 	if err != nil {
+		// err comes from the KV store or key-generation internals, never from
+		// request input, so it carries no secret material.
+		log.Printf("orcid signing key retrieval failed: %s", truncatedLogValue(err.Error()))
 		http.Error(w, "Failed to get signing key", http.StatusInternalServerError)
 		return
 	}
@@ -308,6 +357,10 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// user row from (see curatorium-backend JIT-provisioning gate).
 	jwtToken, err := signJWT(orcidID, []string{"orcid"}, privKey, keyID)
 	if err != nil {
+		// err comes from the RSA signing internals (key/algorithm state), never
+		// from request input, so it carries no secret material - never the
+		// private key itself.
+		log.Printf("orcid JWT signing failed: %s", truncatedLogValue(err.Error()))
 		http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
 		return
 	}
