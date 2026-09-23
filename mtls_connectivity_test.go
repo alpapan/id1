@@ -30,6 +30,7 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	t.Setenv("SSL_CERTFILE", certFile)
 	t.Setenv("SSL_KEYFILE", keyFile)
 	t.Setenv("SSL_CA_CERTS", caFile)
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
 
 	tlsCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -57,8 +58,8 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	defer server.Close()
 
 	target := strings.TrimPrefix(server.URL, "https://")
-	setupTestKVStore(t)
-	handler, err := SyncProxy(target)
+	kv := setupTestKVStore(t)
+	handler, err := SyncProxy(target, kv)
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
@@ -91,6 +92,7 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 // HTTP when MTLS_ENABLED is false.
 func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +112,8 @@ func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 	defer server.Close()
 
 	target := strings.TrimPrefix(server.URL, "http://")
-	setupTestKVStore(t)
-	handler, err := SyncProxy(target)
+	kv := setupTestKVStore(t)
+	handler, err := SyncProxy(target, kv)
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}

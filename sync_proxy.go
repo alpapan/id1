@@ -11,6 +11,7 @@ package id1
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -31,7 +32,7 @@ import (
 // HandleSyncTicket; without it the collaborative document content was reachable by
 // any anonymous internet caller. The ticket lives in the id1 KV and is burned via a
 // delete-first CmdDel on the leaf key (a single-winner atomic unlink).
-func SyncProxy(target string) (http.HandlerFunc, error) {
+func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 	scheme := "ws"
 	var tlsConfig *tls.Config
 
@@ -70,14 +71,49 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// Recover the ticket's value BEFORE burning it. This CmdGet's result decides nothing -
+		// the CmdDel below remains the sole gate, exactly as SyncProxy's own comment on that
+		// call warns: a CmdGet-presence-then-CmdDel sequence would be a TOCTOU two upgrades
+		// could both pass. We read first only so the value is available AFTER we have already
+		// won the delete.
+		ticketValueBytes, _ := CmdGet(ticketKey).Exec()
+
 		// Burn atomically by delete-first: the ticket is a leaf key, so Command.del
 		// takes the os.Remove branch - a single-winner atomic unlink. Allow the
 		// upgrade ONLY if this call won the delete (err == nil); the loser of a
 		// concurrent burn, an unknown ticket, an expired (TTL-swept) ticket, and a
 		// ".." traversal (rejected by keyWithinRoot) all return a non-nil error.
-		// A CmdGet-presence-then-CmdDel sequence would be a TOCTOU two upgrades could
-		// both pass; delete-first is the single-winner gate.
 		if _, err := CmdDel(ticketKey).Exec(); err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Parse the recovered value. Two shapes exist: the report-scoped JSON
+		// HandleInternalSyncTicket stores, and the plain subject bytes
+		// HandleSyncTicket stores for the unscoped/grid path. Try JSON first; fall
+		// back to treating the raw bytes as a plain subject. An empty subject in
+		// either shape aborts the upgrade rather than proceeding unauthenticated.
+		var subject, scope string
+		var reportID int64
+		var verdict string
+		var reportValue syncTicketReportValue
+		if err := json.Unmarshal(ticketValueBytes, &reportValue); err == nil && reportValue.Subject != "" {
+			subject = reportValue.Subject
+			scope = reportValue.Scope
+			reportID = reportValue.ReportID
+			verdict = reportValue.Verdict
+		} else if len(ticketValueBytes) > 0 {
+			subject = string(ticketValueBytes)
+			scope = "unscoped"
+		}
+		if subject == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		assertion, err := mintSyncAssertion(kvStore, subject, scope, reportID, verdict)
+		if err != nil {
+			log.Printf("[sync-proxy] failed to mint sync assertion: %v", err)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -90,12 +126,15 @@ func SyncProxy(target string) (http.HandlerFunc, error) {
 		}
 		defer clientConn.Close()
 
-		// Dial the backend (id1 -> automerge-sync-server)
+		// Dial the backend (id1 -> automerge-sync-server), attaching the signed
+		// assertion as a header - a server-side handshake id1 controls, which a
+		// browser cannot set on a WebSocket upgrade.
 		dialer := websocket.Dialer{}
 		if tlsConfig != nil {
 			dialer.TLSClientConfig = tlsConfig
 		}
-		backendConn, resp, err := dialer.Dial(backendURL.String()+"/", nil)
+		assertionHeader := http.Header{"X-Curatorium-Sync-Assertion": []string{assertion}}
+		backendConn, resp, err := dialer.Dial(backendURL.String()+"/", assertionHeader)
 		if err != nil {
 			if resp != nil {
 				log.Printf("[sync-proxy] backend dial failed (HTTP %d): %v", resp.StatusCode, err)

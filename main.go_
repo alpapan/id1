@@ -258,13 +258,25 @@ func main() {
 	http.HandleFunc("/auth/sync_ticket", id1.HandleSyncTicket(id1KVStore))
 	fmt.Println("Registered /auth/sync_ticket single-use sync-ticket mint endpoint")
 
+	// Internal report-scoped sync-ticket mint: the backend calls this once it has
+	// evaluated fn_user_can_write_report for a specific report, to mint a ticket
+	// carrying the report scope and the write verdict (same X-ID1-Internal-Secret
+	// gate as /internal/nc-token above). Never on the Traefik public route list -
+	// reachable only in-cluster.
+	if internalSecret != "" {
+		http.HandleFunc("/internal/sync_ticket", id1.HandleInternalSyncTicket(id1KVStore))
+		fmt.Println("Registered /internal/sync_ticket report-scoped sync-ticket mint endpoint")
+	} else {
+		fmt.Println("ID1_INTERNAL_SECRET not set; /internal/sync_ticket endpoint disabled")
+	}
+
 	// Set up Automerge sync proxy (must be registered before the catch-all handler).
 	// The proxy authenticates each upgrade with a single-use ticket burned from the KV.
 	syncServerAddr := os.Getenv("AUTOMERGE_SYNC_SERVER")
 	if syncServerAddr == "" {
 		syncServerAddr = "automerge-sync-server:8100"
 	}
-	syncHandler, err := id1.SyncProxy(syncServerAddr)
+	syncHandler, err := id1.SyncProxy(syncServerAddr, id1KVStore)
 	if err != nil {
 		log.Fatalf("Failed to create sync proxy: %v", err)
 	}

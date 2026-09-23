@@ -9,6 +9,7 @@
 package id1
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,12 +35,30 @@ func stubBackendWS(t *testing.T) *httptest.Server {
 	}))
 }
 
+// stubBackendWSCapturingHeader is stubBackendWS, but records the value of the
+// named request header from the upgrade request id1 dialed with, into
+// captured (protected by capturedMu since the HTTP handler runs on its own
+// goroutine, concurrently with the test body reading the result).
+func stubBackendWSCapturingHeader(t *testing.T, headerName string, captured *string, capturedMu *sync.Mutex) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMu.Lock()
+		*captured = r.Header.Get(headerName)
+		capturedMu.Unlock()
+		up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		c, _ := up.Upgrade(w, r, nil)
+		if c != nil {
+			c.Close()
+		}
+	}))
+}
+
 // TestSyncProxy_NoTicket_Rejected is the load-bearing security test: a /sync upgrade
 // with no ticket must be refused BEFORE the upgrade (the backend is never dialed).
 func TestSyncProxy_NoTicket_Rejected(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
-	setupTestKVStore(t)
-	handler, err := SyncProxy("127.0.0.1:1") // rejected pre-upgrade; backend never dialed
+	kv := setupTestKVStore(t)
+	handler, err := SyncProxy("127.0.0.1:1", kv) // rejected pre-upgrade; backend never dialed
 	require.NoError(t, err)
 	srv := httptest.NewServer(http.HandlerFunc(handler))
 	defer srv.Close()
@@ -55,8 +74,8 @@ func TestSyncProxy_NoTicket_Rejected(t *testing.T) {
 // returns not-found -> the same reject path.
 func TestSyncProxy_ExpiredOrUnknownTicket_Rejected(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
-	setupTestKVStore(t)
-	handler, err := SyncProxy("127.0.0.1:1")
+	kv := setupTestKVStore(t)
+	handler, err := SyncProxy("127.0.0.1:1", kv)
 	require.NoError(t, err)
 	srv := httptest.NewServer(http.HandlerFunc(handler))
 	defer srv.Close()
@@ -71,13 +90,13 @@ func TestSyncProxy_ExpiredOrUnknownTicket_Rejected(t *testing.T) {
 // upgrade and is then burned (deleted) so a second use is rejected.
 func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
-	setupTestKVStore(t)
+	kv := setupTestKVStore(t)
 	// seed a ticket as the mint endpoint would
 	CmdSet(mustKK(t, "_syncticket", "good-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
 		[]byte("0000-0001-2345-6789")).Exec()
 	backend := stubBackendWS(t)
 	defer backend.Close()
-	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"))
+	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
 	require.NoError(t, err)
 	srv := httptest.NewServer(http.HandlerFunc(handler))
 	defer srv.Close()
@@ -103,12 +122,12 @@ func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 // under a race: two simultaneous upgrades with the same ticket, exactly one wins.
 func TestSyncProxy_ConcurrentTicketUse_SingleWinner(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
-	setupTestKVStore(t)
+	kv := setupTestKVStore(t)
 	CmdSet(mustKK(t, "_syncticket", "race-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
 		[]byte("0000-0001-2345-6789")).Exec()
 	backend := stubBackendWS(t)
 	defer backend.Close()
-	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"))
+	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
 	require.NoError(t, err)
 	srv := httptest.NewServer(http.HandlerFunc(handler))
 	defer srv.Close()
@@ -149,9 +168,114 @@ func TestSyncProxy_ConcurrentTicketUse_SingleWinner(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, loserStatus[0]+loserStatus[1], "the loser of the race must be rejected 401")
 }
 
+// TestSyncProxy_AttachesSignedAssertion_UnscopedTicket verifies the backend
+// dial carries a signed assertion in X-Curatorium-Sync-Assertion when the
+// ticket's value is a plain subject string (today's unscoped/grid shape),
+// and that the assertion's subject matches what was stored.
+func TestSyncProxy_AttachesSignedAssertion_UnscopedTicket(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
+	kv := setupTestKVStore(t)
+	CmdSet(mustKK(t, "_syncticket", "plain-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		[]byte("0000-0001-2345-6789")).Exec()
+
+	var captured string
+	var capturedMu sync.Mutex
+	backend := stubBackendWSCapturingHeader(t, "X-Curatorium-Sync-Assertion", &captured, &capturedMu)
+	defer backend.Close()
+
+	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/sync?ticket=plain-ticket"
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer c.Close()
+	time.Sleep(50 * time.Millisecond) // let the backend dial's goroutine record the header
+
+	capturedMu.Lock()
+	assertionStr := captured
+	capturedMu.Unlock()
+	require.NotEmpty(t, assertionStr, "the backend dial must carry a signed assertion")
+
+	claims := parseSyncAssertion(t, kv, assertionStr)
+	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
+	assert.Equal(t, "unscoped", claims.Scope)
+}
+
+// TestSyncProxy_AttachesSignedAssertion_ReportScopedTicket verifies the
+// backend dial's assertion carries the report scope, id and verdict when the
+// ticket's value is the report-scoped JSON shape (syncTicketReportValue).
+func TestSyncProxy_AttachesSignedAssertion_ReportScopedTicket(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
+	kv := setupTestKVStore(t)
+	value, err := json.Marshal(syncTicketReportValue{
+		Subject: "0000-0001-2345-6789", Scope: "report", ReportID: 42, Verdict: "allowed",
+	})
+	require.NoError(t, err)
+	CmdSet(mustKK(t, "_syncticket", "report-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		value).Exec()
+
+	var captured string
+	var capturedMu sync.Mutex
+	backend := stubBackendWSCapturingHeader(t, "X-Curatorium-Sync-Assertion", &captured, &capturedMu)
+	defer backend.Close()
+
+	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/sync?ticket=report-ticket"
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer c.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	capturedMu.Lock()
+	assertionStr := captured
+	capturedMu.Unlock()
+	require.NotEmpty(t, assertionStr)
+
+	claims := parseSyncAssertion(t, kv, assertionStr)
+	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
+	assert.Equal(t, "report", claims.Scope)
+	assert.Equal(t, int64(42), claims.ReportID)
+	assert.Equal(t, "allowed", claims.Write)
+}
+
+// TestSyncProxy_EmptyTicketValue_AbortsUpgrade verifies a ticket that burns
+// successfully but whose stored value is empty (neither valid JSON nor a
+// usable subject) never lets the upgrade proceed unauthenticated: the client
+// upgrade itself must fail.
+func TestSyncProxy_EmptyTicketValue_AbortsUpgrade(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
+	kv := setupTestKVStore(t)
+	CmdSet(mustKK(t, "_syncticket", "empty-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		[]byte("")).Exec()
+
+	backend := stubBackendWS(t)
+	defer backend.Close()
+	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/sync?ticket=empty-ticket"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.Error(t, err, "an empty ticket value must never let the upgrade proceed")
+	if resp != nil {
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	}
+}
+
 func TestSyncProxyInvalidURL(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
-	_, err := SyncProxy("[::1")
+	_, err := SyncProxy("[::1", ID1KeyValueStore{})
 	if err == nil {
 		t.Error("expected error for invalid target URL")
 	}
@@ -182,8 +306,8 @@ func TestSyncProxyRelaysFrames(t *testing.T) {
 	defer upstream.Close()
 
 	target := strings.TrimPrefix(upstream.URL, "http://")
-	setupTestKVStore(t)
-	handler, err := SyncProxy(target)
+	kv := setupTestKVStore(t)
+	handler, err := SyncProxy(target, kv)
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
@@ -238,8 +362,8 @@ func TestSyncProxyBinaryFrames(t *testing.T) {
 	defer upstream.Close()
 
 	target := strings.TrimPrefix(upstream.URL, "http://")
-	setupTestKVStore(t)
-	handler, err := SyncProxy(target)
+	kv := setupTestKVStore(t)
+	handler, err := SyncProxy(target, kv)
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
@@ -275,8 +399,8 @@ func TestSyncProxyBinaryFrames(t *testing.T) {
 
 func TestSyncProxyUpstreamUnavailable(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
-	setupTestKVStore(t)
-	handler, err := SyncProxy("127.0.0.1:19999")
+	kv := setupTestKVStore(t)
+	handler, err := SyncProxy("127.0.0.1:19999", kv)
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
