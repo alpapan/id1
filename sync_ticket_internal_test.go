@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -253,4 +254,208 @@ func TestInternalSyncTicket_GarbageCollectedByDotAfter(t *testing.T) {
 	if _, err := CmdGet(mustKK(t, syncTicketPrefix, "internal-gc-ticket")).Exec(); err == nil {
 		t.Error("expired report-scoped sync ticket was not garbage-collected by dotAfter (check x-id authorization)")
 	}
+}
+
+// gridTicketRequestBody builds the request body for a grid-scoped internal
+// sync-ticket mint: {"subject":...,"scope":"grid","automerge_id":...}. Unlike
+// internalTicketRequestBody (report-scope shape: subject/report_id/verdict),
+// this omits report_id and verdict entirely - a grid mint must never send them.
+func gridTicketRequestBody(t *testing.T, subject, automergeID string) *bytes.Reader {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"subject":      subject,
+		"scope":        "grid",
+		"automerge_id": automergeID,
+	})
+	require.NoError(t, err)
+	return bytes.NewReader(body)
+}
+
+// gridTicketRequestBodyWithFields builds a grid-scoped request body that also
+// carries report_id and/or verdict, for the tests proving the route rejects a
+// grid mint that smuggles report fields.
+func gridTicketRequestBodyWithFields(t *testing.T, subject, automergeID string, reportID int64, verdict string) *bytes.Reader {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"subject":      subject,
+		"scope":        "grid",
+		"automerge_id": automergeID,
+		"report_id":    reportID,
+		"verdict":      verdict,
+	})
+	require.NoError(t, err)
+	return bytes.NewReader(body)
+}
+
+// validGridAutomergeID is a 24-character base58 string matching
+// automergeIDPattern, used as a valid id across the grid-scope tests below.
+const validGridAutomergeID = "4NMNbHrKADgnbtGJVXVyubc4"
+
+// TestInternalSyncTicket_MintsGridScopedTicket verifies a valid grid-scoped
+// request mints a ticket whose stored KV value carries scope "grid" and the
+// automerge_id, with report_id and verdict left at their zero values.
+func TestInternalSyncTicket_MintsGridScopedTicket(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "s3cret")
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync_ticket",
+		gridTicketRequestBody(t, "0000-0001-2345-6789", validGridAutomergeID))
+	req.Header.Set("X-ID1-Internal-Secret", "s3cret")
+	rec := httptest.NewRecorder()
+	HandleInternalSyncTicket(kv)(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var body struct {
+		Ticket string `json:"ticket"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.NotEmpty(t, body.Ticket)
+
+	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).Exec()
+	require.NoError(t, err)
+	var stored struct {
+		Subject     string `json:"subject"`
+		Scope       string `json:"scope"`
+		ReportID    int64  `json:"report_id"`
+		Verdict     string `json:"verdict"`
+		AutomergeID string `json:"automerge_id"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &stored))
+	assert.Equal(t, "0000-0001-2345-6789", stored.Subject)
+	assert.Equal(t, "grid", stored.Scope)
+	assert.Equal(t, int64(0), stored.ReportID)
+	assert.Equal(t, "", stored.Verdict)
+	assert.Equal(t, validGridAutomergeID, stored.AutomergeID)
+}
+
+// TestInternalSyncTicket_GridRejectsNonZeroReportID verifies a grid-scoped
+// request carrying a non-zero report_id is refused with no ticket stored -
+// a grid mint must never smuggle a report identity.
+func TestInternalSyncTicket_GridRejectsNonZeroReportID(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "s3cret")
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync_ticket",
+		gridTicketRequestBodyWithFields(t, "0000-0001-2345-6789", validGridAutomergeID, 42, ""))
+	req.Header.Set("X-ID1-Internal-Secret", "s3cret")
+	rec := httptest.NewRecorder()
+	HandleInternalSyncTicket(kv)(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assertNoTicketStored(t)
+}
+
+// TestInternalSyncTicket_GridRejectsNonEmptyVerdict verifies a grid-scoped
+// request carrying a non-empty verdict is refused with no ticket stored -
+// the write-verdict claim belongs to the report scope only.
+func TestInternalSyncTicket_GridRejectsNonEmptyVerdict(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "s3cret")
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync_ticket",
+		gridTicketRequestBodyWithFields(t, "0000-0001-2345-6789", validGridAutomergeID, 0, "allowed"))
+	req.Header.Set("X-ID1-Internal-Secret", "s3cret")
+	rec := httptest.NewRecorder()
+	HandleInternalSyncTicket(kv)(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assertNoTicketStored(t)
+}
+
+// TestInternalSyncTicket_GridRejectsBadOrEmptyAutomergeID verifies a grid
+// mint with an automerge_id that fails automergeIDPattern (including empty)
+// is refused with no ticket stored. Beyond the shape-level cases (empty, too
+// short, containing spaces), three cases isolate a single specific fault
+// each: a forbidden-character-only fault (a leading '0', which the base58
+// alphabet excludes, on an otherwise-valid 24-character id, so a widened
+// character class - not the length check - is what must catch it), a
+// length-only fault (65 characters, all otherwise-valid base58 characters,
+// one over the 64-character ceiling), and an id carrying the "automerge:"
+// prefix that must never be included in the stored id.
+func TestInternalSyncTicket_GridRejectsBadOrEmptyAutomergeID(t *testing.T) {
+	tooLong := strings.Repeat("A", 65)
+	badIDs := []string{
+		"", "short", "has spaces in it 1234567890",
+		"0NMNbHrKADgnbtGJVXVyubc4", // only fault: leading '0', excluded from the base58 alphabet
+		tooLong,                    // only fault: 65 chars, one over the 64-char ceiling
+		"automerge:4NMNbHrKADgnbtGJVXVyubc4", // carries the forbidden "automerge:" prefix
+	}
+	for _, badID := range badIDs {
+		kv := setupTestKVStore(t)
+		t.Setenv("ID1_INTERNAL_SECRET", "s3cret")
+		req := httptest.NewRequest(http.MethodPost, "/internal/sync_ticket",
+			gridTicketRequestBody(t, "0000-0001-2345-6789", badID))
+		req.Header.Set("X-ID1-Internal-Secret", "s3cret")
+		rec := httptest.NewRecorder()
+		HandleInternalSyncTicket(kv)(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "automerge_id %q must be refused", badID)
+		assertNoTicketStored(t)
+	}
+}
+
+// TestInternalSyncTicket_ReportScopeRejectsAutomergeID verifies a report (or
+// default/empty) scope request that also carries a non-empty automerge_id is
+// refused - the two scopes' identifying fields must never mix.
+func TestInternalSyncTicket_ReportScopeRejectsAutomergeID(t *testing.T) {
+	for _, scope := range []string{"", "report"} {
+		kv := setupTestKVStore(t)
+		t.Setenv("ID1_INTERNAL_SECRET", "s3cret")
+		body, err := json.Marshal(map[string]any{
+			"subject":      "0000-0001-2345-6789",
+			"scope":        scope,
+			"report_id":    42,
+			"verdict":      "allowed",
+			"automerge_id": validGridAutomergeID,
+		})
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/internal/sync_ticket", bytes.NewReader(body))
+		req.Header.Set("X-ID1-Internal-Secret", "s3cret")
+		rec := httptest.NewRecorder()
+		HandleInternalSyncTicket(kv)(rec, req)
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "scope %q with automerge_id must be refused", scope)
+		assertNoTicketStored(t)
+	}
+}
+
+// TestInternalSyncTicket_RejectsUnknownScope verifies a scope value other
+// than "", "report" or "grid" is refused with no ticket stored.
+func TestInternalSyncTicket_RejectsUnknownScope(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "s3cret")
+	body, err := json.Marshal(map[string]any{
+		"subject": "0000-0001-2345-6789",
+		"scope":   "bogus",
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync_ticket", bytes.NewReader(body))
+	req.Header.Set("X-ID1-Internal-Secret", "s3cret")
+	rec := httptest.NewRecorder()
+	HandleInternalSyncTicket(kv)(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assertNoTicketStored(t)
+}
+
+// TestInternalSyncTicket_GridTicketValueRoundTrips verifies the JSON value
+// this route stores for a grid mint decodes back into syncTicketReportValue
+// (the shared shape SyncProxy parses) with automerge_id intact and the report
+// fields at their zero values - the round trip SyncProxy depends on.
+func TestInternalSyncTicket_GridTicketValueRoundTrips(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_INTERNAL_SECRET", "s3cret")
+	req := httptest.NewRequest(http.MethodPost, "/internal/sync_ticket",
+		gridTicketRequestBody(t, "0000-0001-2345-6789", validGridAutomergeID))
+	req.Header.Set("X-ID1-Internal-Secret", "s3cret")
+	rec := httptest.NewRecorder()
+	HandleInternalSyncTicket(kv)(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var body struct {
+		Ticket string `json:"ticket"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+
+	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).Exec()
+	require.NoError(t, err)
+	var decoded syncTicketReportValue
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	assert.Equal(t, "0000-0001-2345-6789", decoded.Subject)
+	assert.Equal(t, "grid", decoded.Scope)
+	assert.Equal(t, int64(0), decoded.ReportID)
+	assert.Equal(t, "", decoded.Verdict)
+	assert.Equal(t, validGridAutomergeID, decoded.AutomergeID)
 }
