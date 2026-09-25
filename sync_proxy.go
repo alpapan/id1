@@ -29,8 +29,8 @@ import (
 // rather than httputil.ReverseProxy which doesn't handle WebSocket streaming.
 //
 // Auth: every upgrade must present a valid single-use ?ticket= minted by
-// HandleSyncTicket; without it the collaborative document content was reachable by
-// any anonymous internet caller. The ticket lives in the id1 KV and is burned via a
+// HandleSyncTicket - without one, an anonymous internet caller cannot reach the
+// collaborative document content. The ticket lives in the id1 KV and is burned via a
 // delete-first CmdDel on the leaf key (a single-winner atomic unlink).
 func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 	scheme := "ws"
@@ -72,10 +72,9 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 			return
 		}
 		// Recover the ticket's value BEFORE burning it. This CmdGet's result decides nothing -
-		// the CmdDel below remains the sole gate, exactly as SyncProxy's own comment on that
-		// call warns: a CmdGet-presence-then-CmdDel sequence would be a TOCTOU two upgrades
-		// could both pass. We read first only so the value is available AFTER we have already
-		// won the delete.
+		// the CmdDel below remains the sole gate: a CmdGet-presence-then-CmdDel sequence would
+		// be a TOCTOU where two upgrades could both pass. We read first only so the value is
+		// available AFTER we have already won the delete.
 		ticketValueBytes, _ := CmdGet(ticketKey).Exec()
 
 		// Burn atomically by delete-first: the ticket is a leaf key, so Command.del
@@ -88,20 +87,23 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 			return
 		}
 
-		// Parse the recovered value. Two shapes exist: the report-scoped JSON
-		// HandleInternalSyncTicket stores, and the plain subject bytes
-		// HandleSyncTicket stores for the unscoped/grid path. Try JSON first; fall
-		// back to treating the raw bytes as a plain subject. An empty subject in
-		// either shape aborts the upgrade rather than proceeding unauthenticated.
+		// Parse the recovered value. Two shapes exist: the report-or-grid-scoped
+		// JSON HandleInternalSyncTicket stores, and the plain subject bytes
+		// HandleSyncTicket stores for the browser-minted unscoped/grid path. Try
+		// JSON first; fall back to treating the raw bytes as a plain subject. An
+		// empty subject in either shape aborts the upgrade rather than proceeding
+		// unauthenticated.
 		var subject, scope string
 		var reportID int64
 		var verdict string
+		var automergeID string
 		var reportValue syncTicketReportValue
 		if err := json.Unmarshal(ticketValueBytes, &reportValue); err == nil && reportValue.Subject != "" {
 			subject = reportValue.Subject
 			scope = reportValue.Scope
 			reportID = reportValue.ReportID
 			verdict = reportValue.Verdict
+			automergeID = reportValue.AutomergeID
 		} else if len(ticketValueBytes) > 0 {
 			subject = string(ticketValueBytes)
 			scope = "unscoped"
@@ -110,8 +112,12 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if scope == "grid" && automergeID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
 
-		assertion, err := mintSyncAssertion(kvStore, subject, scope, reportID, verdict)
+		assertion, err := mintSyncAssertion(kvStore, subject, scope, reportID, verdict, automergeID)
 		if err != nil {
 			log.Printf("[sync-proxy] failed to mint sync assertion: %v", err)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)

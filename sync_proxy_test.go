@@ -273,6 +273,82 @@ func TestSyncProxy_EmptyTicketValue_AbortsUpgrade(t *testing.T) {
 	}
 }
 
+// TestSyncProxy_AttachesSignedAssertion_GridScopedTicket verifies the backend
+// dial's assertion carries the grid scope and automerge id when the ticket's
+// value is the grid-scoped JSON shape (syncTicketReportValue with Scope
+// "grid" and AutomergeID set).
+func TestSyncProxy_AttachesSignedAssertion_GridScopedTicket(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
+	kv := setupTestKVStore(t)
+	value, err := json.Marshal(syncTicketReportValue{
+		Subject: "0000-0001-2345-6789", Scope: "grid", AutomergeID: "4NMNbHrKADgnbtGJVXVyubc4",
+	})
+	require.NoError(t, err)
+	CmdSet(mustKK(t, "_syncticket", "grid-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		value).Exec()
+
+	var captured string
+	var capturedMu sync.Mutex
+	backend := stubBackendWSCapturingHeader(t, "X-Curatorium-Sync-Assertion", &captured, &capturedMu)
+	defer backend.Close()
+
+	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/sync?ticket=grid-ticket"
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer c.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	capturedMu.Lock()
+	assertionStr := captured
+	capturedMu.Unlock()
+	require.NotEmpty(t, assertionStr)
+
+	claims := parseSyncAssertion(t, kv, assertionStr)
+	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
+	assert.Equal(t, "grid", claims.Scope)
+	assert.Equal(t, "4NMNbHrKADgnbtGJVXVyubc4", claims.AutomergeID)
+}
+
+// TestSyncProxy_GridTicketWithEmptyAutomergeID_AbortsUpgradeAndBurnsTicket
+// verifies a grid-scoped ticket value with an empty AutomergeID never lets
+// the upgrade proceed - the client dial must fail - and that the ticket was
+// still burned (deleted) before this refusal, since ticket-burning happens
+// before the scope/automerge_id check runs.
+func TestSyncProxy_GridTicketWithEmptyAutomergeID_AbortsUpgradeAndBurnsTicket(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
+	kv := setupTestKVStore(t)
+	value, err := json.Marshal(syncTicketReportValue{
+		Subject: "0000-0001-2345-6789", Scope: "grid", AutomergeID: "",
+	})
+	require.NoError(t, err)
+	CmdSet(mustKK(t, "_syncticket", "grid-empty-id-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		value).Exec()
+
+	backend := stubBackendWS(t)
+	defer backend.Close()
+	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/sync?ticket=grid-empty-id-ticket"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.Error(t, err, "a grid ticket with an empty automerge_id must never let the upgrade proceed")
+	if resp != nil {
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	}
+
+	_, getErr := CmdGet(mustKK(t, "_syncticket", "grid-empty-id-ticket")).Exec()
+	assert.Error(t, getErr, "the ticket must still be burned even though the upgrade was refused")
+}
+
 func TestSyncProxyInvalidURL(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	_, err := SyncProxy("[::1", ID1KeyValueStore{})

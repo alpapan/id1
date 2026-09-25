@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_assertion_test.go
+// apps/id1/sync_assertion_test.go
 //
 // group: middleware
 // tags: sync, jwt, assertion, testing
@@ -37,7 +37,7 @@ func parseSyncAssertion(t *testing.T, kv KeyValueStore, tokenStr string) syncAss
 func TestMintSyncAssertion_ReportScope(t *testing.T) {
 	kv := setupTestKVStore(t)
 	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
-	tokenStr, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "report", 42, "allowed")
+	tokenStr, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "report", 42, "allowed", "")
 	require.NoError(t, err)
 
 	claims := parseSyncAssertion(t, kv, tokenStr)
@@ -59,7 +59,7 @@ func TestMintSyncAssertion_ReportScope(t *testing.T) {
 func TestMintSyncAssertion_UnscopedOmitsReportFields(t *testing.T) {
 	kv := setupTestKVStore(t)
 	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
-	tokenStr, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "unscoped", 0, "")
+	tokenStr, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "unscoped", 0, "", "")
 	require.NoError(t, err)
 
 	claims := parseSyncAssertion(t, kv, tokenStr)
@@ -73,7 +73,7 @@ func TestMintSyncAssertion_UnscopedOmitsReportFields(t *testing.T) {
 func TestMintSyncAssertion_ShortLived(t *testing.T) {
 	kv := setupTestKVStore(t)
 	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
-	tokenStr, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "report", 1, "allowed")
+	tokenStr, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "report", 1, "allowed", "")
 	require.NoError(t, err)
 	claims := parseSyncAssertion(t, kv, tokenStr)
 	lifetime := claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time)
@@ -88,6 +88,50 @@ func TestMintSyncAssertion_RejectsUnsetIssuer(t *testing.T) {
 	kv := setupTestKVStore(t)
 	t.Setenv("ID1_JWT_ISSUER", "")
 	assert.Panics(t, func() {
-		_, _ = mintSyncAssertion(kv, "0000-0001-2345-6789", "report", 1, "allowed")
+		_, _ = mintSyncAssertion(kv, "0000-0001-2345-6789", "report", 1, "allowed", "")
 	})
+}
+
+// TestMintSyncAssertion_GridScope verifies a grid-scoped mint carries the
+// subject, "grid" scope and the automerge id, with no report_id/write claims
+// set at all. reportID and verdict are passed as a non-zero id and a
+// caller-supplied verdict (as a caller might, by mistake or malice), to
+// prove the grid scope actually drops them - passing their zero values
+// would still pass even if mintSyncAssertion's `scope == "report"` guard
+// were deleted entirely.
+func TestMintSyncAssertion_GridScope(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
+	tokenStr, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "grid", 99, "allowed", "4NMNbHrKADgnbtGJVXVyubc4")
+	require.NoError(t, err)
+
+	claims := parseSyncAssertion(t, kv, tokenStr)
+	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
+	assert.Equal(t, "grid", claims.Scope)
+	assert.Equal(t, "4NMNbHrKADgnbtGJVXVyubc4", claims.AutomergeID)
+	assert.Equal(t, int64(0), claims.ReportID)
+	assert.Equal(t, "", claims.Write)
+}
+
+// TestMintSyncAssertion_NonGridScopesOmitAutomergeID verifies neither a
+// report-scoped nor an unscoped mint ever carries an automerge_id claim -
+// the field is exclusive to the grid scope. Both mints pass a real automerge
+// id (as a caller might, by mistake or malice) to prove it is the scope
+// guard doing the omitting, not simply that no id was ever supplied - a test
+// passing "" for both would still pass if the `scope == "grid"` guard in
+// mintSyncAssertion were deleted entirely.
+func TestMintSyncAssertion_NonGridScopesOmitAutomergeID(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
+	const suppliedAutomergeID = "4NMNbHrKADgnbtGJVXVyubc4"
+
+	reportToken, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "report", 42, "allowed", suppliedAutomergeID)
+	require.NoError(t, err)
+	reportClaims := parseSyncAssertion(t, kv, reportToken)
+	assert.Equal(t, "", reportClaims.AutomergeID)
+
+	unscopedToken, err := mintSyncAssertion(kv, "0000-0001-2345-6789", "unscoped", 0, "", suppliedAutomergeID)
+	require.NoError(t, err)
+	unscopedClaims := parseSyncAssertion(t, kv, unscopedToken)
+	assert.Equal(t, "", unscopedClaims.AutomergeID)
 }
