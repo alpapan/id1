@@ -18,29 +18,47 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 )
 
+// automergeIDPattern matches a bs58check-encoded Automerge DocumentId (base58
+// alphabet, no LIKE metacharacter, the "automerge:" prefix never included).
+// Shared, letter-for-letter, with the equivalent pattern in the Starlette
+// backend and the Automerge sync server - the three must never drift apart.
+var automergeIDPattern = regexp.MustCompile(`^[1-9A-HJ-NP-Za-km-z]{20,64}$`)
+
 // syncTicketReportValue is the JSON value stored in the KV for a
-// report-scoped sync ticket minted by this route. It differs from
-// HandleSyncTicket's plain-subject-bytes value, which the unscoped
-// (grid-sync) path still uses; SyncProxy (sync_proxy.go) must parse both
-// shapes when it recovers a ticket's value before burning it.
+// report-scoped or grid-scoped sync ticket minted by this route. It differs
+// from HandleSyncTicket's plain-subject-bytes value, which the unscoped
+// (browser-minted grid) path still uses; SyncProxy (sync_proxy.go) must parse
+// both shapes when it recovers a ticket's value before burning it.
+// AutomergeID is populated only for a "grid" scope value; ReportID and
+// Verdict are populated only for a "report" scope value - the two identifying
+// shapes never overlap in one stored value.
 type syncTicketReportValue struct {
-	Subject  string `json:"subject"`
-	Scope    string `json:"scope"`
-	ReportID int64  `json:"report_id"`
-	Verdict  string `json:"verdict"`
+	Subject     string `json:"subject"`
+	Scope       string `json:"scope"`
+	ReportID    int64  `json:"report_id"`
+	Verdict     string `json:"verdict"`
+	AutomergeID string `json:"automerge_id,omitempty"`
 }
 
 // internalSyncTicketRequest is the JSON body POST /internal/sync_ticket expects.
+// Scope is "" or "report" (the pre-existing report-scoped shape: report_id and
+// verdict required, automerge_id must be empty) or "grid" (automerge_id
+// required and must match automergeIDPattern; report_id must be 0 and verdict
+// must be empty). Any other scope value is refused.
 type internalSyncTicketRequest struct {
-	Subject  string `json:"subject"`
-	ReportID int64  `json:"report_id"`
-	Verdict  string `json:"verdict"`
+	Subject     string `json:"subject"`
+	Scope       string `json:"scope"`
+	ReportID    int64  `json:"report_id"`
+	Verdict     string `json:"verdict"`
+	AutomergeID string `json:"automerge_id"`
 }
 
-// HandleInternalSyncTicket mints a report-scoped, single-use sync ticket for a
-// subject the BACKEND has already cleared to write a specific report.
+// HandleInternalSyncTicket mints a report-scoped or grid-scoped, single-use sync ticket
+// for a subject the BACKEND has already cleared to write a specific report (report scope)
+// or has minted for a specific Automerge grid (grid scope).
 //
 // Auth contract: internal only, never authenticated. The caller MUST present
 // a header matching ID1_INTERNAL_SECRET (validInternalSecret, the same gate
@@ -49,9 +67,13 @@ type internalSyncTicketRequest struct {
 // route is not on Traefik's public route list (apps/id1/CLAUDE.md) and is
 // reachable only in-cluster.
 //
-// A verdict that is not exactly "allowed" (fn_user_can_write_report's other
-// two return values are "forbidden" and "frozen") is refused: the route never
-// mints a ticket for a subject the backend did not clear to write.
+// Scope "" or "report": a verdict that is not exactly "allowed"
+// (fn_user_can_write_report's other two return values are "forbidden" and
+// "frozen") is refused - the route never mints a ticket for a subject the
+// backend did not clear to write. Scope "grid": automerge_id must match
+// automergeIDPattern and report_id/verdict must be absent - the route never
+// mints a ticket that mixes the two scopes' identifying fields. Any other
+// scope value is refused with 400.
 //
 // The minted ticket is stored at _syncticket/{ticket} - the SAME KV namespace
 // and TTL (syncTicketPrefix, syncTicketTTL) HandleSyncTicket uses, so it is
@@ -78,12 +100,53 @@ func HandleInternalSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "subject required", http.StatusBadRequest)
 			return
 		}
-		if body.ReportID <= 0 {
-			http.Error(w, "report_id required", http.StatusBadRequest)
-			return
+
+		resolvedScope := body.Scope
+		if resolvedScope == "" {
+			resolvedScope = "report"
 		}
-		if body.Verdict != "allowed" {
-			http.Error(w, "verdict must be allowed", http.StatusForbidden)
+
+		var value syncTicketReportValue
+		switch resolvedScope {
+		case "report":
+			if body.AutomergeID != "" {
+				http.Error(w, "automerge_id must be empty for scope report", http.StatusBadRequest)
+				return
+			}
+			if body.ReportID <= 0 {
+				http.Error(w, "report_id required", http.StatusBadRequest)
+				return
+			}
+			if body.Verdict != "allowed" {
+				http.Error(w, "verdict must be allowed", http.StatusForbidden)
+				return
+			}
+			value = syncTicketReportValue{
+				Subject:  body.Subject,
+				Scope:    "report",
+				ReportID: body.ReportID,
+				Verdict:  body.Verdict,
+			}
+		case "grid":
+			if !automergeIDPattern.MatchString(body.AutomergeID) {
+				http.Error(w, "invalid automerge_id", http.StatusBadRequest)
+				return
+			}
+			if body.ReportID != 0 {
+				http.Error(w, "report_id must be zero for scope grid", http.StatusBadRequest)
+				return
+			}
+			if body.Verdict != "" {
+				http.Error(w, "verdict must be empty for scope grid", http.StatusBadRequest)
+				return
+			}
+			value = syncTicketReportValue{
+				Subject:     body.Subject,
+				Scope:       "grid",
+				AutomergeID: body.AutomergeID,
+			}
+		default:
+			http.Error(w, "unknown scope", http.StatusBadRequest)
 			return
 		}
 
@@ -100,12 +163,6 @@ func HandleInternalSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		value := syncTicketReportValue{
-			Subject:  body.Subject,
-			Scope:    "report",
-			ReportID: body.ReportID,
-			Verdict:  body.Verdict,
-		}
 		valueBytes, err := json.Marshal(value)
 		if err != nil {
 			http.Error(w, "failed to store ticket", http.StatusInternalServerError)
