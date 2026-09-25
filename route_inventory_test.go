@@ -108,6 +108,7 @@ var wantRoutes = map[string]exposure{
 	// gate is the second line of defence; not being routed is the first.
 	"/internal/nc-token":           exposureInternal,
 	"/internal/nc-provision":       exposureInternal,
+	"/internal/sync_ticket":        exposureInternal,
 	"/internal/sovereign/register": exposureInternal,
 	// Kubernetes probe target. Returns a fixed status object and no identity.
 	"/health": exposureInternal,
