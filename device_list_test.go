@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -243,4 +245,98 @@ func TestHandleDeleteDeviceRejectsHostileDeviceIdBeforeAuth(t *testing.T) {
 	HandleDeleteDevice(kv)(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+}
+
+// TestHandleListDevicesRefusesSymlinkedKeysDir verifies that HandleListDevices
+// does not follow a symlink planted at {orcidId}/pub/keys. Today's os.ReadDir
+// call follows any symlinked directory and would surface a device name that
+// lives entirely outside the KV store.
+func TestHandleListDevicesRefusesSymlinkedKeysDir(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	orcid := "0000-0001-2345-6789"
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "rogue-device"), []byte("OUTSIDE-DEVICE-PEM"), 0644); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	orcidPubDir := filepath.Join(dbpath, orcid, "pub")
+	if err := os.MkdirAll(orcidPubDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(orcidPubDir, "keys")); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/sovereign/devices?id="+orcid, nil)
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	rec := httptest.NewRecorder()
+
+	HandleListDevices(kv)(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp DeviceListResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	if len(resp.Devices) != 0 {
+		t.Error("listing must not follow a symlinked pub/keys directory and must not surface a device name from outside the store")
+	}
+}
+
+// TestHandleListDevicesRefusesInStoreRelativeSymlinkedKeysDir verifies that
+// HandleListDevices does not follow an in-store RELATIVE symlink planted at
+// {attackerId}/pub/keys whose target stays inside the store but names a
+// different identity's namespace (attacker/pub/keys -> ../../victim/pub/keys).
+// os.Root only refuses an absolute symlink or one that leaves the store; this
+// relative, in-store shape is exactly what pathIsSymlinkFree closes. Without
+// it, readDeviceKeysDir would list victim's real device file, and its name
+// reaches the JSON response directly from entry.Name() with no further
+// per-entry guard - so the attacker would see victim's device id under their
+// own identity.
+func TestHandleListDevicesRefusesInStoreRelativeSymlinkedKeysDir(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	victim := "0000-0001-1111-1111"
+	attacker := "0000-0002-2222-2222"
+
+	victimKeysDir := filepath.Join(dbpath, victim, "pub", "keys")
+	if err := os.MkdirAll(victimKeysDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(victimKeysDir, "device-1"), []byte("VICTIM-DEVICE-PEM"), 0644); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	attackerPubDir := filepath.Join(dbpath, attacker, "pub")
+	if err := os.MkdirAll(attackerPubDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", victim, "pub", "keys"), filepath.Join(attackerPubDir, "keys")); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	jwt, err := signJWT(attacker, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/sovereign/devices?id="+attacker, nil)
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	rec := httptest.NewRecorder()
+
+	HandleListDevices(kv)(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp DeviceListResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	if len(resp.Devices) != 0 {
+		t.Error("listing must not follow an in-store relative symlinked pub/keys directory and must not surface victim's device id under the attacker's identity")
+	}
 }

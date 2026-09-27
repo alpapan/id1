@@ -33,15 +33,24 @@ func (t *Command) add() error {
 	if strings.HasPrefix(t.Key.Name, ".after.") {
 		return ErrForbidden
 	}
-	filePath := filepath.Join(dbpath, t.Key.String())
-	dir := filepath.Dir(filePath)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		if mkdirErr := os.MkdirAll(dir, 0770); mkdirErr != nil {
-			return mkdirErr
-		}
+
+	root, err := openStoreRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
+	rel := t.Key.String()
+	if !pathIsSymlinkFree(root, rel) {
+		return ErrForbidden
 	}
 
-	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	dir := filepath.Dir(rel)
+	if err := root.MkdirAll(dir, 0770); err != nil {
+		return err
+	}
+
+	f, err := root.OpenFile(rel, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}

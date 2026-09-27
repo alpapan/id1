@@ -13,7 +13,6 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,20 +23,34 @@ scans a folder for .after.<time> files, if time is after now, reads end executes
 *
 */
 func dotAfter(dir string) {
-	filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
-		if info == nil {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		log.Printf("dotAfter: error opening root %s: %s", dir, err)
+		return
+	}
+	defer root.Close()
+
+	fs.WalkDir(root.FS(), ".", func(relPath string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			log.Printf("dotAfter: walk error at %s: %s", relPath, walkErr)
 			return nil
 		}
-		isDotAfterFile := strings.HasPrefix(info.Name(), ".after.")
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		isDotAfterFile := strings.HasPrefix(d.Name(), ".after.")
 		if !isDotAfterFile {
 			return nil
 		}
-		timestampMS, _ := strconv.Atoi(strings.Split(info.Name(), ".")[2])
+		timestampMS, _ := strconv.Atoi(strings.Split(d.Name(), ".")[2])
 		timestampIsPast := time.Now().UnixMilli() > int64(timestampMS)
 		if !timestampIsPast {
 			return nil
 		}
-		dotAfterContent, _ := os.ReadFile(path)
+		dotAfterContent, _ := root.ReadFile(relPath)
 		dotAfterCommand, parseError := ParseCommand(dotAfterContent)
 
 		// Containment. The command body - x-id included - comes from a file on
@@ -56,12 +69,17 @@ func dotAfter(dir string) {
 		// Genuine schedules are unaffected: createDotTtl (cmd_set.go) writes the
 		// file at the target key's own parent, so file and target share a
 		// namespace by construction.
+		//
+		// relPath is already store-root-relative and slash-separated (fs.WalkDir's
+		// own contract), and it never traverses a symlinked component - the check
+		// above skips any symlinked entry before descending into it, and the same
+		// check refuses a symlinked LEAF entry outright - so a file reached only
+		// through a symlink is never visited here at all, and owningId is always
+		// the file's own real, physical first path segment.
 		owningId := ""
-		if relPath, relErr := filepath.Rel(dir, path); relErr == nil {
-			segs := strings.Split(filepath.ToSlash(relPath), "/")
-			if len(segs) > 1 {
-				owningId = segs[0]
-			}
+		segs := strings.Split(relPath, "/")
+		if len(segs) > 1 {
+			owningId = segs[0]
 		}
 		contained := owningId != "" &&
 			parseError == nil &&
@@ -76,7 +94,7 @@ func dotAfter(dir string) {
 		} else {
 			log.Printf("unauthorised .after command by '%s': %s %s", dotAfterCommand.Args["x-id"], dotAfterCommand.Op, dotAfterCommand.Key)
 		}
-		os.Remove(path)
+		root.Remove(relPath)
 		time.Sleep(time.Millisecond)
 		return nil
 	})

@@ -12,7 +12,6 @@ package id1
 import (
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,14 +25,23 @@ func (t *Command) set() error {
 	if !preflightChecks(t) {
 		return fmt.Errorf("failed preflight checks")
 	}
-	keyPath := filepath.Join(dbpath, t.Key.String())
-	dir := filepath.Dir(keyPath)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		if mkdirErr := os.MkdirAll(dir, 0770); mkdirErr != nil {
-			return mkdirErr
-		}
+
+	root, err := openStoreRoot()
+	if err != nil {
+		return err
 	}
-	if err := os.WriteFile(keyPath, t.Data, 0644); err != nil {
+	defer root.Close()
+
+	rel := t.Key.String()
+	if !pathIsSymlinkFree(root, rel) {
+		return ErrForbidden
+	}
+
+	dir := filepath.Dir(rel)
+	if err := root.MkdirAll(dir, 0770); err != nil {
+		return err
+	}
+	if err := root.WriteFile(rel, t.Data, 0644); err != nil {
 		return err
 	} else {
 		pubsub.Publish(t)

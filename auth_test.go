@@ -12,6 +12,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -216,5 +218,88 @@ func TestAuth_NewIdBootstrapFailsClosedWhenSecretUnset(t *testing.T) {
 	singularKey := mustKK(t, "service", "pub", "key")
 	if auth("", NewCommand(Set, singularKey, map[string]string{}, []byte{}), "") {
 		t.Error("bootstrap must be rejected when ID1_INTERNAL_SECRET is unset")
+	}
+}
+
+// TestIdExistsRefusesSymlinkedSingularKey verifies that idExists does not
+// follow a symlink planted at {id}/pub/key. Today's os.Stat call follows any
+// symlink; an id whose only "key" is a symlink pointing at a real file
+// elsewhere on the filesystem must NOT be reported as existing.
+func TestIdExistsRefusesSymlinkedSingularKey(t *testing.T) {
+	setupAuthTest(t)
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("OUTSIDE-KEY-PEM"), 0644); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	attackerPubDir := filepath.Join(dbpath, "attacker", "pub")
+	if err := os.MkdirAll(attackerPubDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(attackerPubDir, "key")); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	if idExists("attacker") {
+		t.Error("idExists must refuse a symlinked pub/key file, not follow it and report the id as existing")
+	}
+}
+
+// TestIdExistsRefusesSymlinkedKeysDir verifies that idExists does not follow
+// a symlink planted at {id}/pub/keys (the multi-device directory). Today's
+// os.ReadDir call follows any symlinked directory; an id whose "keys"
+// directory is a symlink to a real directory elsewhere must NOT be reported
+// as existing just because that outside directory happens to contain files.
+func TestIdExistsRefusesSymlinkedKeysDir(t *testing.T) {
+	setupAuthTest(t)
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "device-1"), []byte("OUTSIDE-DEVICE-PEM"), 0644); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	attackerDir := filepath.Join(dbpath, "attacker", "pub")
+	if err := os.MkdirAll(attackerDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(attackerDir, "keys")); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	if idExists("attacker") {
+		t.Error("idExists must refuse a symlinked pub/keys directory, not follow it and report the id as existing")
+	}
+}
+
+// TestIdExistsRefusesInStoreRelativeSymlinkedSingularKey verifies that
+// idExists does not follow an in-store RELATIVE symlink planted at
+// {id}/pub/key whose target stays inside the store but names a different
+// identity's namespace. os.Root only refuses an absolute symlink or one that
+// leaves the store; a relative symlink that resolves to another identity's
+// real key file is exactly what pathIsSymlinkFree exists to close. Without
+// that guard, idExists("attacker") would borrow victim's real pub/key file
+// and incorrectly report the attacker's id as already existing.
+func TestIdExistsRefusesInStoreRelativeSymlinkedSingularKey(t *testing.T) {
+	setupAuthTest(t)
+
+	victimPubDir := filepath.Join(dbpath, "victim", "pub")
+	if err := os.MkdirAll(victimPubDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(victimPubDir, "key"), []byte("VICTIM-KEY-PEM"), 0644); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	attackerPubDir := filepath.Join(dbpath, "attacker", "pub")
+	if err := os.MkdirAll(attackerPubDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", "victim", "pub", "key"), filepath.Join(attackerPubDir, "key")); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	if idExists("attacker") {
+		t.Error("idExists must refuse an in-store relative symlink at pub/key, not follow it into victim's namespace and report the attacker's id as existing")
 	}
 }

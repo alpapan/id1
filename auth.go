@@ -13,7 +13,6 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -55,15 +54,23 @@ func secretMatches(header, secret string) bool {
 }
 
 func idExists(id string) bool {
+	root, err := openStoreRoot()
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+
 	// Singular service-identity path: {id}/pub/key (bootstrapped via the
 	// anonymous POST exemption below, read as a fallback by HandleSovereignToken).
-	singularPath := filepath.Join(dbpath, id, "pub", "key")
-	if info, err := os.Stat(singularPath); err == nil && !info.IsDir() {
-		return true
+	singularRel := id + "/pub/key"
+	if pathIsSymlinkFree(root, singularRel) {
+		if info, err := root.Stat(singularRel); err == nil && !info.IsDir() {
+			return true
+		}
 	}
+
 	// Multi-device ORCID path: {id}/pub/keys/{deviceId} files in a directory.
-	keysDir := filepath.Join(dbpath, id, "pub", "keys")
-	entries, err := os.ReadDir(keysDir)
+	entries, err := readDeviceKeysDir(id)
 	if err != nil {
 		return false
 	}

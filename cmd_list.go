@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -91,19 +90,35 @@ func (t *Command) list() ([]byte, error) {
 		return []byte{}, fmt.Errorf("recursive can't be true if children is true")
 	}
 
-	dirPath := filepath.Join(dbpath, listKey.String())
+	root, err := openStoreRoot()
+	if err != nil {
+		return []byte{}, ErrNotFound
+	}
+	defer root.Close()
 
-	if stat, err := os.Stat(dirPath); err != nil || !stat.IsDir() {
+	// The listing TARGET's own path must not itself be reached through a
+	// symlink. This is a different case from a symlink found while walking a
+	// real directory's contents (which listDir/walkDir each handle on their
+	// own): here the key names the symlink directly, so nothing below this
+	// point would ever see it as a "found entry" to skip.
+	relDir := listKey.String()
+	if !pathIsSymlinkFree(root, relDir) {
+		return []byte{}, ErrForbidden
+	}
+
+	if stat, statErr := root.Stat(relDir); statErr != nil || !stat.IsDir() {
 		return []byte{}, ErrNotFound
 	}
 
+	dirPath := filepath.Join(dbpath, listKey.String())
+
 	var results map[string][]byte
-	var err error = nil
+	var listErr error = nil
 
 	if opt.Recursive {
-		results, err = walkDir(dirPath, opt)
+		results, listErr = walkDir(dirPath, opt)
 	} else {
-		results, err = listDir(dirPath, opt)
+		results, listErr = listDir(dirPath, opt)
 	}
 
 	list := []string{}
@@ -119,54 +134,85 @@ func (t *Command) list() ([]byte, error) {
 	if opt.Children || opt.Keys {
 		sort.Strings(list)
 	}
-	return []byte(strings.Join(list, "\n")), err
+	return []byte(strings.Join(list, "\n")), listErr
 }
 
 func listDir(path string, opt ListOptions) (map[string][]byte, error) {
 	results := map[string][]byte{}
 	totalSize := 0
 	dbpathClean := filepath.Clean(dbpath)
-	if entries, err := os.ReadDir(path); err != nil {
+
+	root, err := openStoreRoot()
+	if err != nil {
 		log.Printf("error listing dir %s: %s", path, err)
-	} else {
-		for _, e := range entries {
-			if len(results) >= opt.Limit {
-				break
-			}
-			itemPath := filepath.Join(path, e.Name())
-			if stat, err := os.Stat(itemPath); err != nil {
-				log.Printf("cmd list error, %s", err)
-			} else if !stat.IsDir() && stat.Size() > int64(opt.SizeLimit) {
-				continue
-			} else if opt.Children {
-				results[e.Name()] = []byte{}
-				continue
-			} else if stat.IsDir() {
-				continue
-			}
+		return results, nil
+	}
+	defer root.Close()
 
-			key := strings.TrimPrefix(itemPath, dbpathClean)
-			key = strings.TrimPrefix(key, "/")
+	relDir := strings.TrimPrefix(path, dbpathClean)
+	relDir = strings.TrimPrefix(relDir, "/")
 
-			if totalSize+len(key) > opt.TotalSizeLimit {
-				return results, ErrLimitExceeded
-			} else {
-				totalSize += len(key)
-			}
+	if !pathIsSymlinkFree(root, relDir) {
+		return results, nil
+	}
 
-			if opt.Keys {
-				results[key] = []byte{}
-				continue
-			}
+	dirFile, err := root.Open(relDir)
+	if err != nil {
+		log.Printf("error listing dir %s: %s", path, err)
+		return results, nil
+	}
+	defer dirFile.Close()
 
-			if data, err := os.ReadFile(itemPath); err != nil {
-				log.Printf("cmd list error, %s", err)
-			} else if totalSize+len(data) > opt.TotalSizeLimit {
-				return results, ErrLimitExceeded
-			} else {
-				results[key] = data
-				totalSize += len(data)
-			}
+	entries, err := dirFile.ReadDir(-1)
+	if err != nil {
+		log.Printf("error listing dir %s: %s", path, err)
+		return results, nil
+	}
+
+	for _, e := range entries {
+		if len(results) >= opt.Limit {
+			break
+		}
+		if e.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
+
+		itemRel := e.Name()
+		if relDir != "" {
+			itemRel = relDir + "/" + e.Name()
+		}
+
+		if info, err := root.Lstat(itemRel); err != nil {
+			log.Printf("cmd list error, %s", err)
+		} else if !info.IsDir() && info.Size() > int64(opt.SizeLimit) {
+			continue
+		} else if opt.Children {
+			results[e.Name()] = []byte{}
+			continue
+		} else if info.IsDir() {
+			continue
+		}
+
+		key := itemRel
+
+		if totalSize+len(key) > opt.TotalSizeLimit {
+			return results, ErrLimitExceeded
+		} else {
+			totalSize += len(key)
+		}
+
+		if opt.Keys {
+			results[key] = []byte{}
+			continue
+		}
+
+		if data, err := root.ReadFile(itemRel); err != nil {
+			log.Printf("cmd list error, %s", err)
+		} else if totalSize+len(data) > opt.TotalSizeLimit {
+			return results, ErrLimitExceeded
+		} else {
+			results[key] = data
+			totalSize += len(data)
 		}
 	}
 	return results, nil
@@ -176,23 +222,48 @@ func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 	results := map[string][]byte{}
 	totalSize := 0
 	dbpathClean := filepath.Clean(dbpath)
-	err := filepath.WalkDir(path, func(itemPath string, d fs.DirEntry, err error) error {
+
+	root, err := openStoreRoot()
+	if err != nil {
+		log.Printf("error listing dir %s: %s", path, err)
+		return results, nil
+	}
+	defer root.Close()
+
+	relStart := strings.TrimPrefix(path, dbpathClean)
+	relStart = strings.TrimPrefix(relStart, "/")
+	if relStart == "" {
+		relStart = "."
+	}
+
+	if !pathIsSymlinkFree(root, relStart) {
+		return results, nil
+	}
+
+	walkErr := fs.WalkDir(root.FS(), relStart, func(relItemPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			log.Printf("cmd list error, %s", err)
+			return nil
+		}
 		if len(results) >= opt.Limit {
 			return nil
 		}
-		if stat, err := os.Stat(itemPath); err != nil {
-			log.Printf("cmd list error, %s", err)
-		} else if !stat.IsDir() && stat.Size() > int64(opt.SizeLimit) {
-			return nil
-		} else if opt.Children {
-			results[stat.Name()] = []byte{}
-			return nil
-		} else if stat.IsDir() {
+		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
 
-		key := strings.TrimPrefix(itemPath, dbpathClean)
-		key = strings.TrimPrefix(key, "/")
+		if info, err := d.Info(); err != nil {
+			log.Printf("cmd list error, %s", err)
+		} else if !info.IsDir() && info.Size() > int64(opt.SizeLimit) {
+			return nil
+		} else if opt.Children {
+			results[info.Name()] = []byte{}
+			return nil
+		} else if info.IsDir() {
+			return nil
+		}
+
+		key := relItemPath
 
 		if totalSize+len(key) > opt.TotalSizeLimit {
 			return ErrLimitExceeded
@@ -201,7 +272,7 @@ func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 
 		if opt.Keys {
 			results[key] = []byte{}
-		} else if data, err := os.ReadFile(itemPath); err != nil {
+		} else if data, err := root.ReadFile(relItemPath); err != nil {
 			log.Printf("cmd list error: %s", err)
 		} else if totalSize+len(data) > opt.TotalSizeLimit {
 			return ErrLimitExceeded
@@ -211,5 +282,5 @@ func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 		}
 		return nil
 	})
-	return results, err
+	return results, walkErr
 }

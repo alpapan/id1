@@ -57,6 +57,17 @@ func K(s string) (Id1Key, error) {
 		if seg == ".." || seg == "." || seg == "" {
 			return Id1Key{}, ErrInvalidKey
 		}
+		// A NUL byte can never appear in a real path: open(2) takes a
+		// NUL-terminated string, so the kernel refuses the whole call. Left
+		// unrejected here, such a key travels through the guards as though it
+		// were ordinary and fails much later as an opaque I/O error, and any
+		// component that logs or compares the key sees a value truncated at
+		// the NUL rather than the value the guards checked. Refusing it at
+		// construction keeps the key the guards inspect and the key the
+		// filesystem receives the same string.
+		if strings.ContainsRune(seg, 0) {
+			return Id1Key{}, ErrInvalidKey
+		}
 	}
 	if !filepath.IsLocal(s) {
 		return Id1Key{}, ErrInvalidKey
