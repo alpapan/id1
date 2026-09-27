@@ -63,7 +63,8 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
-	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
@@ -117,7 +118,8 @@ func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
-	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()

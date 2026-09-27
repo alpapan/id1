@@ -22,6 +22,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// gridTicketValue returns the JSON-encoded grid-scoped ticket value tests use
+// as their generic "valid ticket" fixture. A plain-subject (unscoped) value
+// is always rejected pre-upgrade (TestSyncProxy_UnscopedTicket_RejectedPreUpgrade),
+// so a test that only needs SOME admissible ticket to reach the upgrade uses
+// this instead of a bare subject string.
+func gridTicketValue(t *testing.T, subject, automergeID string) []byte {
+	t.Helper()
+	value, err := json.Marshal(syncTicketReportValue{Subject: subject, Scope: "grid", AutomergeID: automergeID})
+	require.NoError(t, err)
+	return value
+}
+
 // stubBackendWS is a minimal upstream WebSocket server that accepts an upgrade and
 // immediately closes; enough for a valid /sync upgrade to complete on the client side.
 func stubBackendWS(t *testing.T) *httptest.Server {
@@ -93,7 +105,7 @@ func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 	kv := setupTestKVStore(t)
 	// seed a ticket as the mint endpoint would
 	CmdSet(mustKK(t, "_syncticket", "good-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		[]byte("0000-0001-2345-6789")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
 	backend := stubBackendWS(t)
 	defer backend.Close()
 	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
@@ -124,7 +136,7 @@ func TestSyncProxy_ConcurrentTicketUse_SingleWinner(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	kv := setupTestKVStore(t)
 	CmdSet(mustKK(t, "_syncticket", "race-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		[]byte("0000-0001-2345-6789")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
 	backend := stubBackendWS(t)
 	defer backend.Close()
 	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
@@ -168,11 +180,13 @@ func TestSyncProxy_ConcurrentTicketUse_SingleWinner(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, loserStatus[0]+loserStatus[1], "the loser of the race must be rejected 401")
 }
 
-// TestSyncProxy_AttachesSignedAssertion_UnscopedTicket verifies the backend
-// dial carries a signed assertion in X-Curatorium-Sync-Assertion when the
-// ticket's value is a plain subject string (today's unscoped/grid shape),
-// and that the assertion's subject matches what was stored.
-func TestSyncProxy_AttachesSignedAssertion_UnscopedTicket(t *testing.T) {
+// TestSyncProxy_UnscopedTicket_NeverDialsBackend verifies a ticket whose
+// value is a plain subject string (the unscoped shape) is refused before
+// SyncProxy ever attempts the backend dial: the backend's own capturing stub
+// never sees the request at all (the captured header stays empty), which
+// proves the rejection happens at the client-facing upgrade, not merely at
+// the backend admission gate.
+func TestSyncProxy_UnscopedTicket_NeverDialsBackend(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
 	kv := setupTestKVStore(t)
@@ -190,19 +204,16 @@ func TestSyncProxy_AttachesSignedAssertion_UnscopedTicket(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/sync?ticket=plain-ticket"
-	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	require.NoError(t, err)
-	defer c.Close()
-	time.Sleep(50 * time.Millisecond) // let the backend dial's goroutine record the header
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.Error(t, err, "an unscoped ticket must never let the upgrade proceed")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	time.Sleep(50 * time.Millisecond) // give a wrongly-issued backend dial time to land
 
 	capturedMu.Lock()
 	assertionStr := captured
 	capturedMu.Unlock()
-	require.NotEmpty(t, assertionStr, "the backend dial must carry a signed assertion")
-
-	claims := parseSyncAssertion(t, kv, assertionStr)
-	assert.Equal(t, "0000-0001-2345-6789", claims.Subject)
-	assert.Equal(t, "unscoped", claims.Scope)
+	assert.Empty(t, assertionStr, "the backend must never be dialed for an unscoped ticket")
 }
 
 // TestSyncProxy_AttachesSignedAssertion_ReportScopedTicket verifies the
@@ -349,6 +360,35 @@ func TestSyncProxy_GridTicketWithEmptyAutomergeID_AbortsUpgradeAndBurnsTicket(t 
 	assert.Error(t, getErr, "the ticket must still be burned even though the upgrade was refused")
 }
 
+// TestSyncProxy_UnscopedTicket_RejectedPreUpgrade verifies a ticket whose
+// stored value is the plain-subject (unscoped) shape is refused with 403
+// BEFORE the client-facing upgrade completes. The backend admission rule
+// (automerge-sync-server) always refuses an unscoped assertion, so the
+// browser must never see a successful upgrade first. The backend target is
+// deliberately unreachable ("127.0.0.1:1"): if the rejection did not happen
+// pre-upgrade, the client-facing upgrade would still succeed (the unreachable
+// backend is only dialed afterward), which this test would catch as a nil
+// dial error.
+func TestSyncProxy_UnscopedTicket_RejectedPreUpgrade(t *testing.T) {
+	t.Setenv("MTLS_ENABLED", "false")
+	kv := setupTestKVStore(t)
+	CmdSet(mustKK(t, "_syncticket", "unscoped-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		[]byte("0000-0001-2345-6789")).Exec()
+	handler, err := SyncProxy("127.0.0.1:1", kv)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(handler))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/sync?ticket=unscoped-ticket"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.Error(t, err, "an unscoped ticket must never let the upgrade proceed")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	_, getErr := CmdGet(mustKK(t, "_syncticket", "unscoped-ticket")).Exec()
+	assert.Error(t, getErr, "the ticket must still be burned even though the upgrade was refused")
+}
+
 func TestSyncProxyInvalidURL(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	_, err := SyncProxy("[::1", ID1KeyValueStore{})
@@ -387,7 +427,8 @@ func TestSyncProxyRelaysFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
-	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
 
 	// Proxy server
 	proxy := httptest.NewServer(handler)
@@ -443,7 +484,8 @@ func TestSyncProxyBinaryFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
-	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
 
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
@@ -480,7 +522,8 @@ func TestSyncProxyUpstreamUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
-	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"}, []byte("0000-0001-2345-6789")).Exec()
+	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
 
 	// The proxy authenticates the ticket, upgrades the client, then dials the backend.
 	// If the backend is unreachable, the upgraded connection closes immediately.

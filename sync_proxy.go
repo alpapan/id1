@@ -89,10 +89,10 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 
 		// Parse the recovered value. Two shapes exist: the report-or-grid-scoped
 		// JSON HandleInternalSyncTicket stores, and the plain subject bytes
-		// HandleSyncTicket stores for the browser-minted unscoped/grid path. Try
-		// JSON first; fall back to treating the raw bytes as a plain subject. An
-		// empty subject in either shape aborts the upgrade rather than proceeding
-		// unauthenticated.
+		// HandleSyncTicket stores for the browser-minted unscoped path (always
+		// refused below). Try JSON first; fall back to treating the raw bytes as
+		// a plain subject. An empty subject in either shape aborts the upgrade
+		// rather than proceeding unauthenticated.
 		var subject, scope string
 		var reportID int64
 		var verdict string
@@ -114,6 +114,16 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 		}
 		if scope == "grid" && automergeID == "" {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// The backend's admission rule (automerge-sync-server) refuses an
+		// unscoped assertion unconditionally, whatever binding it is checked
+		// against - so an unscoped ticket can never lead to an admitted
+		// connection. Reject it here, before the client-facing upgrade, so
+		// the browser sees a plain 403 rather than a 101 that is torn down a
+		// moment later once the backend dial is refused.
+		if scope == "unscoped" {
+			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
 

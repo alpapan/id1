@@ -32,9 +32,10 @@ const syncAssertionTTL = 60 * time.Second
 
 // syncAssertionClaims extends jwt.RegisteredClaims with the report-scope,
 // write-verdict and grid-automerge-id fields the sync server's admission gate
-// consults. Scope is "report", "unscoped" (the browser-minted grid-sync path,
-// still ungated) or "grid" (a backend-minted grid ticket naming one Automerge
-// id). ReportID and Write use `omitempty` and are
+// consults. Scope is "report", "unscoped" (the browser-minted plain-subject
+// ticket shape, refused unconditionally by both SyncProxy and the sync
+// server's admission gate) or "grid" (a backend-minted grid ticket naming one
+// Automerge id). ReportID and Write use `omitempty` and are
 // populated only for a "report" scope mint; AutomergeID uses `omitempty` and
 // is populated only for a "grid" scope mint - each scope's identifying claim
 // is entirely absent, not zero-valued, on every other scope, so a decoder
