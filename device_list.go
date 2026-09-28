@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -63,9 +62,9 @@ func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Read pub/keys/ directory
-		keysDir := filepath.Join(dbpath, orcidId, "pub", "keys")
-		entries, err := os.ReadDir(keysDir)
+		// Read pub/keys/ directory through the store root, refusing a
+		// symlinked path component instead of following it.
+		entries, err := readDeviceKeysDir(orcidId)
 		if err != nil {
 			// No keys directory - return empty list
 			w.Header().Set("Content-Type", "application/json")
@@ -153,6 +152,36 @@ func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"status":"deleted","deviceId":"%s"}`, deviceId)
 	}
+}
+
+// readDeviceKeysDir opens {orcidID}/pub/keys through the directory-scoped
+// store root and returns its entries, refusing to follow a symlinked path
+// component anywhere from the store root down to (and including) the
+// directory itself. Every call site that previously read this directory
+// with a raw os.ReadDir on a hand-joined path treats a non-nil error the
+// same way a genuinely missing directory has always been treated (no
+// devices registered yet / skip this identity's refresh), so mapping a
+// symlink refusal onto that same error path changes no observable
+// behaviour for the non-symlink case.
+func readDeviceKeysDir(orcidID string) ([]os.DirEntry, error) {
+	root, err := openStoreRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	rel := orcidID + "/pub/keys"
+	if !pathIsSymlinkFree(root, rel) {
+		return nil, os.ErrNotExist
+	}
+
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	return f.ReadDir(-1)
 }
 
 type deviceJWTClaims struct {

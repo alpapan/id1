@@ -27,14 +27,16 @@ var hostileKeys = []struct {
 	{"leading dotdot", "../victim/priv/salt"},
 	{"empty middle segment", "mallory//victim"},
 	{"root slash only", "/"},
+	{"nul byte in segment", "mallory/ev\x00il"},
+	{"bare nul segment", "\x00"},
 }
 
 // TestKeyContainmentCaseListIsIntact is the tripwire over the table above.
 // Deleting a row from hostileKeys also has to delete an assertion here, so a
 // dropped case fails a test instead of passing quietly.
 func TestKeyContainmentCaseListIsIntact(t *testing.T) {
-	if len(hostileKeys) != 10 {
-		t.Fatalf("hostileKeys length changed: got %d, want 10", len(hostileKeys))
+	if len(hostileKeys) != 12 {
+		t.Fatalf("hostileKeys length changed: got %d, want 12", len(hostileKeys))
 	}
 	seen := map[string]bool{}
 	for _, c := range hostileKeys {
@@ -51,6 +53,8 @@ func TestKeyContainmentCaseListIsIntact(t *testing.T) {
 		"leading dotdot",
 		"empty middle segment",
 		"root slash only",
+		"nul byte in segment",
+		"bare nul segment",
 	} {
 		if !seen[want] {
 			t.Errorf("hostileKeys is missing the %q case", want)
@@ -84,6 +88,22 @@ func TestKeyContainmentRejectsHostileKeysViaKK(t *testing.T) {
 	k2, err2 := KK("mallory", ". .", "victim")
 	if !errors.Is(err2, ErrInvalidKey) {
 		t.Errorf("KK with a space-obfuscated segment: got err=%v, want ErrInvalidKey (segments=%v)", err2, k2.Segments)
+	}
+}
+
+// TestKeyContainmentRejectsNulByteViaKK proves the NUL rejection is inherited by
+// the variadic constructor. A NUL byte cannot survive a real open(2) - the
+// kernel refuses it - so this is not a traversal on its own. It is rejected at
+// the same boundary as every other malformed segment so that a key which cannot
+// name a real file is refused where keys are built, rather than deep inside an
+// operation where the failure reads as an unexplained I/O error.
+func TestKeyContainmentRejectsNulByteViaKK(t *testing.T) {
+	k, err := KK("mallory", "pub", "keys", "dev\x00ice")
+	if !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("KK with a NUL-byte segment: got err=%v, want ErrInvalidKey (segments=%v)", err, k.Segments)
+	}
+	if len(k.Segments) != 0 {
+		t.Errorf("KK with a NUL-byte segment: rejected key must be the zero Id1Key, got segments=%v", k.Segments)
 	}
 }
 

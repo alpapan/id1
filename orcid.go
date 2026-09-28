@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -369,9 +368,10 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Refresh TTL on ALL device keys for this user.
-	// ORCID proves user identity -> all devices benefit.
-	keysDir := filepath.Join(dbpath, orcidID, "pub", "keys")
-	if entries, err := os.ReadDir(keysDir); err == nil {
+	// ORCID proves user identity -> all devices benefit. Read through the
+	// store root so a symlinked pub/keys directory is refused rather than
+	// followed.
+	if entries, err := readDeviceKeysDir(orcidID); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), ".name") {
 				continue

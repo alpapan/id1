@@ -1728,4 +1728,144 @@ func TestOrcidCallback_StampsOrcidAMR(t *testing.T) {
 	}
 }
 
+// TestOrcidCallbackRefusesSymlinkedKeysDirDuringRefresh verifies that
+// HandleCallback's device-key TTL refresh loop does not follow a symlink
+// planted at {orcidID}/pub/keys. Today's os.ReadDir call on that path
+// follows any symlinked directory, and the subsequent CmdSet TTL-refresh
+// writes scheduling files (.after.*, .ttl.*) into whatever the symlink
+// points at - a write into a filesystem location entirely outside the KV
+// store, controlled by whoever planted the symlink. The login itself must
+// keep succeeding (302 with a token); the outside directory must be left
+// exactly as seeded.
+func TestOrcidCallbackRefusesSymlinkedKeysDirDuringRefresh(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+	kv := ID1KeyValueStore{}
+	if _, _, err := GetOrCreateSigningKey(kv); err != nil {
+		t.Fatalf("signing key: %v", err)
+	}
+
+	orcid := "0000-0002-1825-0097"
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "rogue-device"), []byte("OUTSIDE-DEVICE-PEM"), 0644); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	orcidPubDir := filepath.Join(dbpath, orcid, "pub")
+	if err := os.MkdirAll(orcidPubDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(orcidPubDir, "keys")); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"t","token_type":"bearer","orcid":%q,"scope":"/authenticate"}`, orcid)
+	}))
+	defer mockServer.Close()
+
+	h := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
+	seedState(t, "symlink_state", stateEntry{created: time.Now(), verifier: "v"})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=symlink_state&code=c", nil)
+	rec := httptest.NewRecorder()
+	h.HandleCallback(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	outsideEntries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("reading outside dir: %v", err)
+	}
+	if len(outsideEntries) != 1 || outsideEntries[0].Name() != "rogue-device" {
+		t.Error("device-key TTL refresh must not follow a symlinked pub/keys directory and write scheduling files outside the store")
+	}
+}
+
+// TestOrcidCallbackRefusesInStoreRelativeSymlinkedKeysDirDuringRefresh
+// verifies that HandleCallback's device-key TTL refresh loop does not follow
+// an in-store RELATIVE symlink planted at {attackerId}/pub/keys whose target
+// stays inside the store but names a different identity's namespace
+// (attacker/pub/keys -> ../../victim/pub/keys). os.Root only refuses an
+// absolute symlink or one that leaves the store, so the existing
+// TestOrcidCallbackRefusesSymlinkedKeysDirDuringRefresh (an absolute,
+// outside-store link) would still pass with readDeviceKeysDir's
+// pathIsSymlinkFree check removed - os.Root's own containment already closes
+// that case. This test proves the guard itself, for the case only it closes:
+// readDeviceKeysDir(orcidID) must not report entries drawn from victim's
+// directory as attacker's devices. The login must keep succeeding (302 with
+// a token); victim's real device file must be left exactly as seeded.
+func TestOrcidCallbackRefusesInStoreRelativeSymlinkedKeysDirDuringRefresh(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalDbpath := dbpath
+	dbpath = tmpDir
+	t.Cleanup(func() { dbpath = originalDbpath })
+	kv := ID1KeyValueStore{}
+	if _, _, err := GetOrCreateSigningKey(kv); err != nil {
+		t.Fatalf("signing key: %v", err)
+	}
+
+	attacker := "0000-0002-1825-0097"
+	victim := "0000-0003-1111-2222"
+
+	victimKeysDir := filepath.Join(dbpath, victim, "pub", "keys")
+	if err := os.MkdirAll(victimKeysDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	victimDeviceContent := []byte("VICTIM-DEVICE-PEM")
+	if err := os.WriteFile(filepath.Join(victimKeysDir, "device-1"), victimDeviceContent, 0644); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	attackerPubDir := filepath.Join(dbpath, attacker, "pub")
+	if err := os.MkdirAll(attackerPubDir, 0770); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "..", victim, "pub", "keys"), filepath.Join(attackerPubDir, "keys")); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":"t","token_type":"bearer","orcid":%q,"scope":"/authenticate"}`, attacker)
+	}))
+	defer mockServer.Close()
+
+	h := newTestOrcidHandlerWithKVStore(mockServer.URL, "http://localhost:19001", kv)
+	seedState(t, "instore_symlink_state", stateEntry{created: time.Now(), verifier: "v"})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=instore_symlink_state&code=c", nil)
+	rec := httptest.NewRecorder()
+	h.HandleCallback(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	entries, err := readDeviceKeysDir(attacker)
+	if err == nil {
+		t.Errorf("readDeviceKeysDir(attacker) must refuse the in-store relative symlinked pub/keys directory, got %d entries with no error", len(entries))
+	}
+
+	victimEntries, err := os.ReadDir(victimKeysDir)
+	if err != nil {
+		t.Fatalf("reading victim keys dir: %v", err)
+	}
+	if len(victimEntries) != 1 || victimEntries[0].Name() != "device-1" {
+		t.Fatalf("victim's keys directory must be left with exactly its original device file, got %v", victimEntries)
+	}
+	content, err := os.ReadFile(filepath.Join(victimKeysDir, "device-1"))
+	if err != nil {
+		t.Fatalf("reading victim device file: %v", err)
+	}
+	if string(content) != string(victimDeviceContent) {
+		t.Error("device-key TTL refresh must not follow an in-store relative symlinked pub/keys directory and rewrite victim's device file")
+	}
+}
+
 // __END_OF_FILE_MARKER__

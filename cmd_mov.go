@@ -80,24 +80,39 @@ func (t *Command) move() error {
 		return ErrForbidden
 	}
 
-	oldPath := filepath.Join(dbpathClean, oldKey)
-	newDir := filepath.Dir(newPath)
+	root, err := openStoreRoot()
+	if err != nil {
+		return ErrNotFound
+	}
+	defer root.Close()
 
-	if _, err := os.Stat(oldPath); err != nil {
+	// Both the source and the destination are checked for symlink
+	// components. relPath is already root-relative (computed above via
+	// filepath.Rel against dbpathClean), so it is used directly here rather
+	// than recomputed.
+	if !pathIsSymlinkFree(root, oldKey) {
+		return ErrForbidden
+	}
+	if !pathIsSymlinkFree(root, relPath) {
+		return ErrForbidden
+	}
+
+	if _, err := root.Stat(oldKey); err != nil {
 		return ErrNotFound
 	}
 
-	if _, err := os.Stat(newPath); err == nil {
+	if _, err := root.Stat(relPath); err == nil {
 		return ErrExists
 	}
 
-	if _, err := os.Stat(newDir); os.IsNotExist(err) {
-		if mkdirErr := os.MkdirAll(newDir, 0770); mkdirErr != nil {
+	newDirRel := filepath.Dir(relPath)
+	if _, err := root.Stat(newDirRel); os.IsNotExist(err) {
+		if mkdirErr := root.MkdirAll(newDirRel, 0770); mkdirErr != nil {
 			return mkdirErr
 		}
 	}
 
-	if err := os.Rename(oldPath, newPath); err != nil {
+	if err := root.Rename(oldKey, relPath); err != nil {
 		log.Printf("cmd: mov error, %s", err)
 		return err
 	}
