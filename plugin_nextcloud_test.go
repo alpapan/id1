@@ -779,6 +779,111 @@ func captureLog(t *testing.T) func() string {
 	return buf.String
 }
 
+// captureStdout redirects os.Stdout for the duration of a test - some of this
+// file's error logging goes through fmt.Printf rather than the log package,
+// so captureLog cannot see it. The returned func restores os.Stdout and
+// returns everything written since the call; it is single-shot, call it once
+// after the code under test has run.
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	previous := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var buf strings.Builder
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	return func() string {
+		os.Stdout = previous
+		require.NoError(t, w.Close())
+		out := <-done
+		require.NoError(t, r.Close())
+		return out
+	}
+}
+
+// ncLogInjectionCase names one handler whose default failure branch logs a
+// formatOCSError-wrapped error with %v, plus the OCS statuscode that reaches
+// that branch for it (any code neither of a handler's own special-cased
+// codes recognises).
+type ncLogInjectionCase struct {
+	name       string
+	ocsCode    int
+	newHandler func(ncURL string) http.HandlerFunc
+	newRequest func() *http.Request
+}
+
+var ncLogInjectionCases = []ncLogInjectionCase{
+	{
+		name:    "HandleNcProvision",
+		ocsCode: 101,
+		newHandler: func(ncURL string) http.HandlerFunc {
+			return HandleNcProvision(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+		},
+		newRequest: func() *http.Request {
+			req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
+			req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+			return req
+		},
+	},
+	{
+		name:    "HandleNcToken",
+		ocsCode: 999,
+		newHandler: func(ncURL string) http.HandlerFunc {
+			return HandleNcToken(&NextcloudClient{URL: ncURL}, []byte("test-key"), "internal-secret", 2*time.Second)
+		},
+		newRequest: func() *http.Request {
+			req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+			req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+			return req
+		},
+	},
+}
+
+// formatOCSError's message argument comes verbatim from Nextcloud's own OCS
+// response. HandleNcProvision and HandleNcToken each print the resulting
+// error with %v when it falls through to their default failure branch, so an
+// unquoted embedded newline in that message would forge an extra line in
+// id1's own log output - exactly the risk MintAppToken's own rejection-shape
+// log line already guards against by quoting its message with %q. A
+// Nextcloud response is not something id1 fully controls, so this must hold
+// regardless of whether Nextcloud itself, or something it echoes back, is
+// the source of the embedded newline.
+func TestHandleNcProvisionAndHandleNcToken_LogNextcloudErrorMessageOnOneLine(t *testing.T) {
+	wantCaseNames := []string{"HandleNcProvision", "HandleNcToken"}
+	require.Len(t, ncLogInjectionCases, len(wantCaseNames),
+		"the case list must carry exactly these cases; a deleted case must fail this guard rather than pass quietly")
+	gotCaseNames := make([]string, 0, len(ncLogInjectionCases))
+	for _, tc := range ncLogInjectionCases {
+		gotCaseNames = append(gotCaseNames, tc.name)
+	}
+	assert.ElementsMatch(t, wantCaseNames, gotCaseNames,
+		"the case list must carry exactly these named cases; a deleted, renamed, or added case must fail this guard rather than pass quietly")
+
+	for _, tc := range ncLogInjectionCases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"ocs":{"meta":{"statuscode":%d,"status":"failure","message":"line one\nFAKE LOG LINE: forged"},"data":null}}`, tc.ocsCode)
+			}))
+			defer srv.Close()
+
+			handler := tc.newHandler(srv.URL)
+			stop := captureStdout(t)
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, tc.newRequest())
+
+			output := stop()
+			lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+			assert.Len(t, lines, 1, "an embedded newline in Nextcloud's message must not forge a second log line: got %q", output)
+		})
+	}
+}
+
 // An account that does not exist yet is refused with HTTP 401, so that shape is
 // the expected answer on a brand-new user's first login and must not be logged:
 // otherwise every normal first login reads exactly like a misconfiguration. The
@@ -1082,6 +1187,181 @@ func TestHandleNcProvision_IsIdempotent(t *testing.T) {
 
 	assert.Equal(t, int32(2), atomic.LoadInt32(&userCalls))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&mintCalls), "a repeat provision must create no credential")
+}
+
+// concurrencyTrackingNextcloud starts a fake Nextcloud whose /cloud/users
+// endpoint records the peak number of requests it served at once. Each
+// request waits, up to one second, for wantConcurrent requests to have
+// arrived together before it answers - a barrier rather than a fixed sleep,
+// so the test's result does not depend on how promptly the Go scheduler runs
+// each goroutine. A request serialised by id1's own lock never sees a second
+// arrival before the timeout, so it falls through on its own after roughly a
+// second; wantConcurrent requests that reach Nextcloud with nothing
+// serialising them release each other immediately instead.
+func concurrencyTrackingNextcloud(t *testing.T, wantConcurrent int) (ncURL string, peak *int32, cleanup func()) {
+	t.Helper()
+	var inFlight, observedPeak int32
+	arrived := make(chan struct{}, wantConcurrent)
+	release := make(chan struct{})
+	var closeOnce sync.Once
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := atomic.AddInt32(&inFlight, 1)
+		for {
+			prevPeak := atomic.LoadInt32(&observedPeak)
+			if current <= prevPeak || atomic.CompareAndSwapInt32(&observedPeak, prevPeak, current) {
+				break
+			}
+		}
+
+		arrived <- struct{}{}
+		if len(arrived) == wantConcurrent {
+			closeOnce.Do(func() { close(release) })
+		}
+		select {
+		case <-release:
+		case <-time.After(time.Second):
+		}
+
+		atomic.AddInt32(&inFlight, -1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":100,"status":"ok","message":"OK"},"data":{}}}`)
+	}))
+	return srv.URL, &observedPeak, srv.Close
+}
+
+// provisionConcurrently fires len(orcids) concurrent provisioning requests
+// against handler, one per entry, and waits for all of them to answer 204.
+func provisionConcurrently(t *testing.T, handler http.HandlerFunc, orcids []string) {
+	t.Helper()
+	var wg sync.WaitGroup
+	for _, orcid := range orcids {
+		wg.Add(1)
+		go func(orcid string) {
+			defer wg.Done()
+			req := httptest.NewRequest("POST", "/internal/nc-provision?orcid="+orcid, nil)
+			req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			assert.Equal(t, http.StatusNoContent, rr.Code)
+		}(orcid)
+	}
+	wg.Wait()
+}
+
+// ncProvisionConcurrencyCase names one mix of ORCIDs fired at HandleNcProvision
+// concurrently, and the peak number of those requests that must be in flight
+// against Nextcloud at once.
+type ncProvisionConcurrencyCase struct {
+	name     string
+	orcids   []string
+	wantPeak int32
+}
+
+var ncProvisionConcurrencyCases = []ncProvisionConcurrencyCase{
+	{
+		name:     "SameOrcidSerialises",
+		orcids:   []string{"0009-0002-8023-3658", "0009-0002-8023-3658"},
+		wantPeak: 1,
+	},
+	{
+		name:     "DifferentOrcidsRunConcurrently",
+		orcids:   []string{"0009-0002-8023-3658", "0000-0002-1825-0097"},
+		wantPeak: 2,
+	},
+}
+
+// Nextcloud's own provisioning_api UsersController::addUser checks
+// userExists then calls createUser with no transactional protection between
+// the two, so two concurrent provisioning requests for the same ORCID can
+// both pass the existence check before either commits the insert; the loser
+// gets OCS 101 ("invalid input") from the unique-constraint violation
+// instead of the idempotent 102 EnsureUserExists already treats as success.
+// id1 must never let two such requests reach Nextcloud concurrently for the
+// same ORCID - serialising means the second caller's HTTP request starts
+// only after the first one has finished, so it lands on the idempotent path.
+//
+// That serialisation must be scoped to the ORCID being provisioned, not a
+// single lock shared by every caller: a global lock would also make the
+// same-ORCID case pass while quietly serialising every unrelated user's
+// provisioning behind whichever request happened to arrive first, each
+// holding the wide NcProvisionTimeout budget. Two distinct ORCIDs must be
+// free to provision fully concurrently, which the second case checks.
+func TestHandleNcProvision_ConcurrencyIsScopedToOrcid(t *testing.T) {
+	wantCaseNames := []string{"SameOrcidSerialises", "DifferentOrcidsRunConcurrently"}
+	require.Len(t, ncProvisionConcurrencyCases, len(wantCaseNames),
+		"the case list must carry exactly these cases; a deleted case must fail this guard rather than pass quietly")
+	gotCaseNames := make([]string, 0, len(ncProvisionConcurrencyCases))
+	for _, tc := range ncProvisionConcurrencyCases {
+		gotCaseNames = append(gotCaseNames, tc.name)
+	}
+	assert.ElementsMatch(t, wantCaseNames, gotCaseNames,
+		"the case list must carry exactly these named cases; a deleted, renamed, or added case must fail this guard rather than pass quietly")
+
+	for _, tc := range ncProvisionConcurrencyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ncURL, peak, cleanup := concurrencyTrackingNextcloud(t, len(tc.orcids))
+			defer cleanup()
+
+			nc := &NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}
+			handler := HandleNcProvision(nc, []byte("test-key"), "internal-secret", 2*time.Second)
+
+			provisionConcurrently(t, handler, tc.orcids)
+
+			assert.Equal(t, tc.wantPeak, atomic.LoadInt32(peak))
+		})
+	}
+}
+
+// The per-ORCID lock entries are reference-counted and removed only once no
+// request is holding or waiting on them, so the map never grows without bound
+// across the lifetime of the process - it tracks in-flight provisioning
+// attempts, not every ORCID ever provisioned. This drives the real two-caller
+// shape: while the first caller holds the lock, a second concurrent caller
+// for the same ORCID must share that exact lock (never mint a second one for
+// the same key) and must keep the map entry alive until it, too, releases.
+func TestNextcloudClient_ProvisionLockLifecycle(t *testing.T) {
+	nc := &NextcloudClient{}
+	const orcid = "0009-0002-8023-3658"
+
+	first := nc.acquireProvisionLock(orcid)
+	first.mu.Lock()
+
+	secondAcquired := make(chan *ncProvisionLock, 1)
+	secondLocked := make(chan struct{})
+	go func() {
+		second := nc.acquireProvisionLock(orcid)
+		secondAcquired <- second
+		second.mu.Lock()
+		close(secondLocked)
+	}()
+
+	second := <-secondAcquired
+	require.Same(t, first, second, "a concurrent acquire for the same ORCID must share the in-flight lock, not create a second one")
+
+	// The second caller is now blocked in Lock(). Releasing the first
+	// reference must not remove the map entry while the second is still
+	// outstanding, or a third caller arriving now would mint a fresh lock and
+	// run alongside the second instead of behind it.
+	nc.releaseProvisionLock(orcid, first)
+
+	select {
+	case <-secondLocked:
+	case <-time.After(time.Second):
+		t.Fatal("second caller never acquired the lock after the first released it")
+	}
+
+	nc.provisionLocksMu.Lock()
+	_, stillTracked := nc.provisionLocks[orcid]
+	nc.provisionLocksMu.Unlock()
+	assert.True(t, stillTracked, "the second caller is still holding the lock; the entry must not be removed yet")
+
+	nc.releaseProvisionLock(orcid, second)
+
+	nc.provisionLocksMu.Lock()
+	_, stillTracked = nc.provisionLocks[orcid]
+	nc.provisionLocksMu.Unlock()
+	assert.False(t, stillTracked, "once every reference is released, the entry must be removed")
 }
 
 func TestHandleNcProvision_RejectsNonPost(t *testing.T) {
