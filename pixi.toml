@@ -12,7 +12,13 @@ platforms = ["linux-64"]
 # stays empty and fast: this manifest is a task runner, not a build environment.
 [tasks]
 # `pixi run -m apps/id1/pixi.toml test`
-test = "go test ./..."
+# Covers every id1 build shape this repo ships - untagged (the annot8r_id1
+# shape), curatoriumdemo (production), and testmint,curatoriumdemo (dev/test)
+# - failing if any of the three fails, so a change that breaks one shape's
+# compilation or tests cannot land silently through the other two. The
+# pre-commit hook runs the task named exactly `test`, so this chain, not a
+# separate task, is what actually gates a commit.
+test = "go test ./... && go test -tags=curatoriumdemo ./... && go test -tags=testmint,curatoriumdemo ./..."
 
 # `pixi run -m apps/id1/pixi.toml test-testmint`
 # The dev/test image shape: compiles testmint_on.go (the arbitrary-ORCID
@@ -55,7 +61,10 @@ test-integration-curatoriumdemo = "go test -tags=integration,curatoriumdemo ./..
 test-race = "go test -race ./..."
 
 # `pixi run -m apps/id1/pixi.toml lint`  (mirrors bin/lint.sh's id1 go-vet step)
-lint = "go vet ./..."
+# Same three-shape rationale as the `test` task above - `go vet ./...` only
+# inspects the files the currently-selected build tags compile, so an
+# untagged-only vet never looks at demo_on.go or testmint_on.go at all.
+lint = "go vet ./... && go vet -tags=curatoriumdemo ./... && go vet -tags=testmint,curatoriumdemo ./..."
 
 # `pixi run -m apps/id1/pixi.toml lint-testmint`
 # `go vet ./...` only inspects the files the current tag selection compiles, so
