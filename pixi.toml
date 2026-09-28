@@ -45,6 +45,15 @@ test-curatoriumdemo = "go test -tags=curatoriumdemo ./..."
 # the same reason as test-integration-testmint above.
 test-integration-curatoriumdemo = "go test -tags=integration,curatoriumdemo ./..."
 
+# `pixi run -m apps/id1/pixi.toml test-race`
+# The untagged `test` task (and the pre-commit gate that runs it) carries no
+# -race: a data race in the pub/sub or WebSocket session layer passes silently
+# there and only shows up under this task. Not wired into the pre-commit gate
+# - that is a policy decision (every id1 commit would pay the race detector's
+# runtime overhead) outside this task's scope; run it explicitly, e.g. after
+# touching pub_sub.go, ws_handler.go, or any other concurrent session code.
+test-race = "go test -race ./..."
+
 # `pixi run -m apps/id1/pixi.toml lint`  (mirrors bin/lint.sh's id1 go-vet step)
 lint = "go vet ./..."
 
