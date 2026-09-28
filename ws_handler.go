@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -23,6 +24,19 @@ import (
 type webSocketHandler struct {
 	upgrader websocket.Upgrader
 }
+
+// sessionWG is a test synchronisation point: it counts a WebSocket session's
+// Handle call and its four worker goroutines (handleCommands, readCommands,
+// writeCommands, ping) until every one of them has returned.
+// httptest.Server.Close treats a hijacked connection as done for its own
+// waitgroup the moment the upgrade succeeds, so nothing otherwise blocks a
+// caller until a session has actually finished touching shared package state
+// (dbpath, above all - handleCommands reads it via auth()/cmd.Exec() and can
+// still be mid-command when Handle's own <-ctx.Done() unblocks). A test that
+// swaps dbpath via t.Cleanup right after closing its connection needs this
+// real synchronisation point rather than a timing assumption. There is no
+// production waiter.
+var sessionWG sync.WaitGroup
 
 // Handle upgrades a request to a WebSocket session. id is the authenticated
 // subject of the caller's verified Bearer token, established by Handle in
@@ -49,20 +63,37 @@ func (t webSocketHandler) Handle(w http.ResponseWriter, r *http.Request, id stri
 	ctx, cancel := context.WithCancel(context.Background())
 	cmdIn := make(chan (Command))
 
-	if conn, err := t.upgrader.Upgrade(w, r, nil); err != nil {
+	// Add(1) before Upgrade, not after: Upgrade itself writes the 101
+	// response, so a caller synchronised on sessionWG (a test's Wait after
+	// its own dial succeeds) could otherwise observe the counter still at
+	// zero for the instant between that response going out and this
+	// goroutine reaching the line that increments it.
+	sessionWG.Add(1)
+	conn, err := t.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		// Upgrade never hijacked the connection - there is no session, and
+		// nothing else will ever cancel ctx. Returning here (rather than
+		// falling through to <-ctx.Done()) is what stops this goroutine, and
+		// the HTTP connection it serves, from leaking forever on every
+		// malformed upgrade attempt.
 		log.Printf("error upgrading to websocket. %s", err)
-	} else {
-		session := Session{
-			Id:     id,
-			Conn:   conn,
-			CmdOut: pubsub.Subscribe(id),
-			CmdIn:  cmdIn,
-			Ctx:    ctx,
-			Cancel: cancel,
-		}
-		defer session.Disconnect()
-		session.OnConnect()
+		sessionWG.Done()
+		cancel()
+		return
 	}
+
+	session := Session{
+		Id:     id,
+		Conn:   conn,
+		CmdOut: pubsub.Subscribe(id),
+		CmdIn:  cmdIn,
+		Ctx:    ctx,
+		Cancel: cancel,
+	}
+	defer sessionWG.Done()
+	defer session.Disconnect()
+	session.OnConnect()
+
 	<-ctx.Done()
 	cancel()
 }
@@ -77,6 +108,7 @@ type Session struct {
 }
 
 func (t *Session) OnConnect() {
+	sessionWG.Add(4)
 	go t.handleCommands()
 	go t.readCommands()
 	go t.writeCommands()
@@ -88,7 +120,6 @@ func (t *Session) OnConnect() {
 	} else if _, err := CmdSet(onlineKey, map[string]string{}, []byte{}).Exec(); err != nil {
 		log.Printf("cmd set error: %s", err)
 	}
-	t.CmdOut = pubsub.Subscribe(t.Id)
 }
 
 func (t *Session) Disconnect() {
@@ -102,14 +133,27 @@ func (t *Session) Disconnect() {
 	log.Printf("disconnected: %s", t.Id)
 }
 
+// send delivers cmd to the session's writer. It never blocks past the
+// session's own lifetime: once Ctx is done, writeCommands has stopped
+// reading CmdOut, and a bare channel send here would leak the calling
+// goroutine forever (or, from Publish's perspective, would need the same
+// escape hatch - see pub_sub.go).
+func (t *Session) send(cmd Command) {
+	select {
+	case t.CmdOut <- cmd:
+	case <-t.Ctx.Done():
+	}
+}
+
 func (t *Session) ping() {
+	defer sessionWG.Done()
 	for {
 		select {
 		case <-time.After(time.Second * 120):
 			if pingKey, err := KK(t.Id, ".ping"); err != nil {
 				log.Printf("ping: skipping ping for %s: %v", t.Id, err)
 			} else {
-				t.CmdOut <- CmdGet(pingKey)
+				t.send(CmdGet(pingKey))
 			}
 		case <-t.Ctx.Done():
 			return
@@ -118,6 +162,7 @@ func (t *Session) ping() {
 }
 
 func (t *Session) readCommands() {
+	defer sessionWG.Done()
 	for {
 		if _, data, err := t.Conn.ReadMessage(); err != nil {
 			t.Conn.Close()
@@ -126,12 +171,21 @@ func (t *Session) readCommands() {
 		} else if cmd, err := ParseCommand(data); err != nil {
 			log.Printf("error parsing websocket message: %s", err)
 		} else {
-			t.CmdIn <- cmd
+			// handleCommands may already have returned (its own 600s idle
+			// timeout, or a cancellation racing this read); CmdIn is
+			// unbuffered, so a bare send here would otherwise leak this
+			// goroutine - and with it, sessionWG - forever.
+			select {
+			case t.CmdIn <- cmd:
+			case <-t.Ctx.Done():
+				return
+			}
 		}
 	}
 }
 
 func (t *Session) writeCommands() {
+	defer sessionWG.Done()
 	for {
 		select {
 		case cmd := <-t.CmdOut:
@@ -147,6 +201,7 @@ func (t *Session) writeCommands() {
 }
 
 func (t *Session) handleCommands() {
+	defer sessionWG.Done()
 	timeout := time.Second * 600
 	for {
 		select {
@@ -175,7 +230,7 @@ func (t *Session) handleCommands() {
 						if authKey, err := KK(t.Id, "auth"); err != nil {
 							log.Println(err)
 						} else {
-							t.CmdOut <- CmdSet(authKey, map[string]string{}, []byte(challenge))
+							t.send(CmdSet(authKey, map[string]string{}, []byte(challenge)))
 						}
 					} else {
 						log.Println(err)
@@ -187,9 +242,9 @@ func (t *Session) handleCommands() {
 			}
 
 			if data, err := cmd.Exec(); err == nil {
-				t.CmdOut <- CmdSet(cmd.Key, map[string]string{}, data)
+				t.send(CmdSet(cmd.Key, map[string]string{}, data))
 			} else if errors.Is(ErrNotFound, err) {
-				t.CmdOut <- CmdDel(cmd.Key)
+				t.send(CmdDel(cmd.Key))
 			} else {
 				log.Printf("error executing command: %s", err)
 			}

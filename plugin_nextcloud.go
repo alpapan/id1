@@ -185,12 +185,15 @@ func NcPreviousKeyForFallback(previousKeyHex string, currentKey []byte) (previou
 }
 
 // formatOCSError returns a diagnostic error wrapping (code, message, hint).
-// hints is the applicable code->hint map (provisioning vs auth).
+// hints is the applicable code->hint map (provisioning vs auth). message is
+// whatever Nextcloud's OCS response returned, so it is quoted (%q, not %s):
+// this error is logged verbatim wherever it surfaces, and an unescaped
+// embedded newline would otherwise forge additional log lines.
 func formatOCSError(endpoint string, code int, message string, hints map[int]string) error {
 	if hint, ok := hints[code]; ok {
-		return fmt.Errorf("OCS error %d at %s: %s (%s)", code, endpoint, message, hint)
+		return fmt.Errorf("OCS error %d at %s: %q (%s)", code, endpoint, message, hint)
 	}
-	return fmt.Errorf("OCS error %d at %s: %s", code, endpoint, message)
+	return fmt.Errorf("OCS error %d at %s: %q", code, endpoint, message)
 }
 
 // OCSResponse represents the OCS API response format used by Nextcloud.
@@ -229,8 +232,10 @@ const ncRejectionStreakMaxTracked = 10000
 
 // NextcloudClient is a minimal HTTP client for Nextcloud's OCS API. It is safe
 // to share across goroutines: its configuration is fixed once constructed, and
-// the one piece of mutable state - the per-user rejection streaks behind
-// MintAppToken's misconfiguration alert - is mutex-guarded.
+// its two pieces of mutable state - the per-user mint-rejection streaks used
+// for a misconfiguration alert, and the per-ORCID provisioning locks used to
+// serialise concurrent provisioning attempts - are each guarded by their own
+// mutex.
 type NextcloudClient struct {
 	URL      string
 	Username string
@@ -242,6 +247,69 @@ type NextcloudClient struct {
 	// authenticate; nothing reads it for control flow.
 	rejectionStreaksMu sync.Mutex
 	rejectionStreaks   map[string]int
+
+	// provisionLocks holds one entry per ORCID with a provisioning attempt
+	// currently in flight against this client. Nextcloud's provisioning_api
+	// UsersController::addUser checks userExists then calls createUser with no
+	// transactional protection between the two, so two callers racing the same
+	// ORCID can both pass the existence check before either commits the insert;
+	// the loser's insert then fails with a unique-constraint violation, which
+	// Nextcloud reports as OCS 101 ("invalid input") rather than the idempotent
+	// 102 EnsureUserExists already treats as success. Holding the per-ORCID
+	// mutex for the duration of a provisioning attempt guarantees the second
+	// caller's HTTP request to Nextcloud starts only after the first one has
+	// returned, so it never races the first one's insert (whatever the first
+	// one's own outcome was). Entries are reference-counted and deleted once
+	// no request for that ORCID is waiting or in flight, so the map holds at
+	// most one entry per ORCID currently being provisioned, never one per
+	// ORCID ever seen.
+	provisionLocksMu sync.Mutex
+	provisionLocks   map[string]*ncProvisionLock
+}
+
+// ncProvisionLock is one ORCID's provisioning mutex plus the count of
+// requests currently holding a reference to it, so the entry can be removed
+// from NextcloudClient.provisionLocks the moment no request needs it any
+// more.
+type ncProvisionLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// acquireProvisionLock returns the (possibly new) lock guarding provisioning
+// attempts for orcid against this client, incrementing its reference count.
+// The caller must call releaseProvisionLock exactly once, after unlocking, to
+// balance this call.
+func (c *NextcloudClient) acquireProvisionLock(orcid string) *ncProvisionLock {
+	c.provisionLocksMu.Lock()
+	defer c.provisionLocksMu.Unlock()
+	if c.provisionLocks == nil {
+		c.provisionLocks = make(map[string]*ncProvisionLock)
+	}
+	lock, ok := c.provisionLocks[orcid]
+	if !ok {
+		lock = &ncProvisionLock{}
+		c.provisionLocks[orcid] = lock
+	}
+	lock.refs++
+	return lock
+}
+
+// releaseProvisionLock unlocks lock and drops this caller's reference,
+// removing orcid's entry from the map once no request holds or awaits it.
+// Deleting is guarded by both the key and a pointer-identity check against
+// the map's current value for it: the count reaching zero means no reference
+// to lock itself remains outstanding, but only deleting the entry that still
+// equals lock stops this call from ever discarding a different, newer entry
+// that acquireProvisionLock may since have created under the same key.
+func (c *NextcloudClient) releaseProvisionLock(orcid string, lock *ncProvisionLock) {
+	c.provisionLocksMu.Lock()
+	lock.refs--
+	if lock.refs == 0 && c.provisionLocks[orcid] == lock {
+		delete(c.provisionLocks, orcid)
+	}
+	c.provisionLocksMu.Unlock()
+	lock.mu.Unlock()
 }
 
 // NewNextcloudClient reads configuration from environment variables
@@ -563,6 +631,26 @@ func HandleNcProvision(nc *NextcloudClient, derivationKey []byte, internalSecret
 
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
+
+		// Serialise by ORCID: a second concurrent provisioning request for the
+		// same ORCID must run strictly after the first one returns, or it races
+		// Nextcloud's own check-then-insert and gets OCS 101 instead of 102.
+		// This closes the race between two requests id1 has in flight at once;
+		// it cannot close a race against Nextcloud still finishing a createUser
+		// server-side after id1 gave up waiting for its response (a caller
+		// disconnect cancels ctx and this handler returns immediately, but
+		// Nextcloud's PHP process is not guaranteed to have aborted). ctx's
+		// deadline is fixed above, before this lock wait, so a queued request
+		// counts its wait against its own NcProvisionTimeout budget rather than
+		// getting a fresh one once the lock is free: if that budget is already
+		// spent by the time the lock is acquired, EnsureUserExists sees an
+		// already-expired ctx and answers 504 without another Nextcloud round
+		// trip. A burst of concurrent requests for the same ORCID therefore
+		// finishes within roughly one NcProvisionTimeout in total, not one per
+		// queued request.
+		lock := nc.acquireProvisionLock(orcid)
+		lock.mu.Lock()
+		defer nc.releaseProvisionLock(orcid, lock)
 
 		if err := nc.EnsureUserExists(ctx, orcid, pw); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
