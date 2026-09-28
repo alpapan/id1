@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestPubSubBasicRouting verifies a single message is routed from publisher to subscriber.
@@ -101,6 +102,59 @@ func TestPubSubMultipleSubscribers(t *testing.T) {
 			t.Errorf("subscriber %d did not receive message", i)
 		}
 	}
+}
+
+// TestPubSubConcurrentPublishSubscribeUnsubscribe drives Publish against the
+// same id concurrently with churning Subscribe/Unsubscribe calls, under
+// -race. Publish reads the subs map while Subscribe/Unsubscribe mutate it -
+// without a shared lock this is a concurrent map read/write; with
+// Unsubscribe closing a channel Publish might already be sending on, it is
+// also a send-on-closed-channel panic. Neither assertion beyond "it runs
+// without the race detector or a panic firing" is meaningful here: this test
+// exists to be run with `go test -race`, not the untagged `test` task.
+func TestPubSubConcurrentPublishSubscribeUnsubscribe(t *testing.T) {
+	pubsub := NewPubSub()
+	id := "concurrent-id"
+	key := mustKK(t, id, "note")
+	cmd := CmdSet(key, map[string]string{}, []byte{})
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					pubsub.Publish(&cmd)
+				}
+			}
+		}()
+	}
+
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					ch := pubsub.Subscribe(id)
+					pubsub.Unsubscribe(id, ch)
+				}
+			}
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
 
 // TestPubSubMultiplePublishers verifies multiple publishers can send to multiple subscribers.

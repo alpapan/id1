@@ -87,6 +87,31 @@ func TestWebSocketRefusesUnauthenticatedUpgrade(t *testing.T) {
 	}
 }
 
+// TestWebSocketHandleReturnsWhenUpgradeFails - a request carrying an Upgrade
+// header but missing the rest of the handshake (Connection, Sec-WebSocket-Key,
+// Sec-WebSocket-Version) makes upgrader.Upgrade fail without hijacking the
+// connection. Handle must still return in that case: nothing else ever
+// cancels the context it then waits on.
+func TestWebSocketHandleReturnsWhenUpgradeFails(t *testing.T) {
+	h := webSocketHandler{upgrader: websocket.Upgrader{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/someid", nil)
+	req.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		h.Handle(w, req, "someid")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Handle did not return after a failed Upgrade - it blocks forever on <-ctx.Done() with nothing to cancel it")
+	}
+}
+
 // TestWebSocketBindsSessionToTokenSubjectNotPath - the core property. Alice
 // authenticates, but opens the socket on the victim's public path. The session
 // must be Alice's, so a command naming the victim's namespace is refused.
@@ -108,7 +133,17 @@ func TestWebSocketBindsSessionToTokenSubjectNotPath(t *testing.T) {
 		}
 		t.Fatalf("an authenticated upgrade must be accepted: %v (status %d)", err, status)
 	}
-	defer conn.Close()
+	// The server-side session's teardown (Session.Disconnect) touches the
+	// package-level dbpath. srv.Close (registered via t.Cleanup in
+	// startKVServer) does not wait for a hijacked WebSocket connection's
+	// goroutine, and seedVictim's t.Cleanup restores dbpath right after.
+	// Registering this AFTER seedVictim's cleanup means it runs first (t.Cleanup
+	// is LIFO) on every exit path, including an early t.Fatalf, so the dbpath
+	// restore always gets a real happens-after edge instead of racing it.
+	t.Cleanup(func() {
+		conn.Close()
+		sessionWG.Wait()
+	})
 
 	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("set:/victim/pub/keys/default\nATTACKER-KEY")); err != nil {
 		t.Fatalf("writing the frame: %v", err)
@@ -143,7 +178,14 @@ func TestWebSocketAuthenticatedSessionWritesItsOwnNamespace(t *testing.T) {
 		}
 		t.Fatalf("an authenticated upgrade must be accepted: %v (status %d)", err, status)
 	}
-	defer conn.Close()
+	// See the matching comment in TestWebSocketBindsSessionToTokenSubjectNotPath:
+	// registering this after seedVictim's cleanup makes it run first (LIFO) on
+	// every exit path, so the server-side session finishes tearing down before
+	// seedVictim's dbpath restore ever races Disconnect's KV access.
+	t.Cleanup(func() {
+		conn.Close()
+		sessionWG.Wait()
+	})
 
 	if err := conn.WriteMessage(websocket.BinaryMessage, []byte("set:/alice/note\nhello")); err != nil {
 		t.Fatalf("writing the frame: %v", err)
