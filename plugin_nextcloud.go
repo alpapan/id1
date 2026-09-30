@@ -66,6 +66,19 @@ var ocsAuthHints = map[int]string{
 var ErrNextcloudCredentialsRejected = errors.New("nextcloud rejected the derived credentials")
 var ErrNextcloudRateLimited = errors.New("nextcloud is rate-limiting requests")
 
+// ncThrottleRecovery is appended to every log line reporting that Nextcloud
+// answered HTTP 429. Nextcloud's brute-force protection records failed logins
+// against the caller's address, and a throttled address is refused before its
+// credentials are checked, so no successful login can clear the recorded
+// attempts. Repairing the credential that caused the failures therefore leaves
+// this caller throttled until the recorded attempts age out or an operator
+// clears them. Without the command named here, an operator who has fixed the
+// credential sees the throttle persist and concludes the fix did not work.
+const ncThrottleRecovery = "Nextcloud brute-force protection is throttling the id1 pod's IP address; " +
+	"repairing the credential does not clear it - clear it by running " +
+	"php occ security:bruteforce:reset ID1_POD_IP in the Nextcloud pod, " +
+	"with ID1_POD_IP replaced by the id1 pod's IP address"
+
 // ncHTTPClientTimeout bounds a single OCS round trip. Every handler budget
 // below must be strictly smaller, or the handler's own context stops being the
 // binding bound and becomes decoration.
@@ -351,6 +364,14 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// Nextcloud is throttling the id1 pod's address. The body is not an
+		// OCS document, so decoding it would misreport throttling as a
+		// malformed response and hide the one fact the operator needs.
+		log.Printf("nc-provision: nextcloud rate-limited for %s (HTTP 429) - %s", orcid, ncThrottleRecovery)
+		return ErrNextcloudRateLimited
+	}
+
 	var ocsResult OCSResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
 		return fmt.Errorf("decode OCS response: %w", err)
@@ -409,7 +430,7 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		// Nextcloud is rate-limiting. This says nothing about which key is right;
 		// retrying would double the load on a service that is already throttling.
-		log.Printf("nc-mint: nextcloud rate-limited for %s (HTTP 429)", orcid)
+		log.Printf("nc-mint: nextcloud rate-limited for %s (HTTP 429) - %s", orcid, ncThrottleRecovery)
 		return "", ErrNextcloudRateLimited
 	}
 
@@ -662,6 +683,13 @@ func HandleNcProvision(nc *NextcloudClient, derivationKey []byte, internalSecret
 				// nothing has gone wrong with Nextcloud, so say nothing rather
 				// than log a false outage. The eager background provisioning
 				// hook abandons requests routinely at backend shutdown.
+				return
+			}
+			if errors.Is(err, ErrNextcloudRateLimited) {
+				// Already logged, with the recovery command, by EnsureUserExists.
+				// Answered as /internal/nc-token answers it, so a caller sees one
+				// status for throttling on either endpoint.
+				http.Error(w, "nextcloud rate limited", http.StatusServiceUnavailable)
 				return
 			}
 			fmt.Printf("nc-provision: EnsureUserExists failed for %s: %v\n", orcid, err)
