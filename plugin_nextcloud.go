@@ -38,7 +38,7 @@ var orcidPattern = regexp.MustCompile(`^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$`)
 // diagnose failures without looking up the code in Nextcloud docs.
 // Reference: https://docs.nextcloud.com/server/latest/admin_manual/configuration_user/instruction_set_for_users.html
 var ocsProvisioningHints = map[int]string{
-	101: "invalid input (check userid format and password policy)",
+	101: "invalid input (check userid format and password policy; Nextcloud also answers 101 when a concurrent request created the same user first)",
 	103: "unknown error while adding user",
 	104: "group does not exist",
 	105: "insufficient privileges for group",
@@ -59,10 +59,10 @@ var ocsAuthHints = map[int]string{
 }
 
 // ErrNextcloudCredentialsRejected reports that Nextcloud refused the derived
-// login password. Two conditions produce it and neither is recoverable by
-// minting alone: the account does not exist yet, or it exists with a password
-// that no longer matches what the derivation key produces. The caller decides
-// whether to provision and retry.
+// login password. Normally it means the account exists with a password that no
+// longer matches what the derivation key produces. The account not existing
+// also produces it, but only for a caller that has not read existence first;
+// HandleNcToken reads it first. Neither is recoverable by minting alone.
 var ErrNextcloudCredentialsRejected = errors.New("nextcloud rejected the derived credentials")
 var ErrNextcloudRateLimited = errors.New("nextcloud is rate-limiting requests")
 
@@ -79,6 +79,40 @@ const ncThrottleRecovery = "Nextcloud brute-force protection is throttling the i
 	"php occ security:bruteforce:reset ID1_POD_IP in the Nextcloud pod, " +
 	"with ID1_POD_IP replaced by the id1 pod's IP address"
 
+// ocsUserLookupHints maps the OCS statuscodes Nextcloud's single-user read
+// (GET /cloud/users/{userid}) can answer, other than success and 404, to hints.
+// 998 is what UsersController answers when the calling account has no rights
+// over the target user: the provisioning account has lost its admin group,
+// which is a fault in id1's own configuration, never evidence that the user is
+// missing.
+var ocsUserLookupHints = map[int]string{
+	997: "unauthorised (the provisioning account's credentials were refused - check NC_PROVISIONER_USER and NC_PROVISIONER_PASSWORD)",
+	998: "user not visible to the provisioning account (NC_PROVISIONER_USER must be in Nextcloud's admin group)",
+}
+
+// ncPasswordBlockCooldown is how long id1 attempts no login for a user whose
+// existing Nextcloud account refused every derivation key. Nextcloud's
+// brute-force protection counts failed logins per caller address over a
+// 30-minute window (auth.bruteforce.max-attempts, default 10), and id1 is one
+// address for every user, so each further attempt for an account that cannot
+// authenticate spends a budget that every other user's logins draw on. No
+// login can succeed while the block holds, because the block skips the login
+// itself: it lifts only when the cooldown expires, so a user whose password is
+// repaired stays refused for up to this long.
+const ncPasswordBlockCooldown = 30 * time.Minute
+
+// ncPasswordBlockMaxTracked bounds the password-block table. Entries are
+// removed once their cooldown has passed, so it holds only users currently
+// blocked - normally none. Past the bound, lifted blocks are dropped first and
+// then the block that lifts soonest, one ORCID at a time, so the table stays
+// bounded without ever releasing every block at once.
+const ncPasswordBlockMaxTracked = 10000
+
+// ncNow is the clock the password block reads. A package variable rather than
+// direct time.Now calls so a test can move time past the cooldown without
+// sleeping through it.
+var ncNow = time.Now
+
 // ncHTTPClientTimeout bounds a single OCS round trip. Every handler budget
 // below must be strictly smaller, or the handler's own context stops being the
 // binding bound and becomes decoration.
@@ -91,24 +125,24 @@ const ncHTTPClientTimeout = 30 * time.Second
 // revocation matches on it, so changing it changes which tokens are selectable.
 const NcMintUserAgent = "curatorium-auth/1"
 
-// NcTokenTimeout bounds the mint-only token handler. The warm path costs
-// ~1.24s against a healthy Nextcloud in the steady state (one attempt); with
-// a rotation fallback armed, the worst case is two sequential attempts under
-// one shared budget, so headroom is tighter. A 5s budget is sufficient for two
-// healthy round trips with margin, and must stay strictly smaller than
-// ncHTTPClientTimeout (30s) so socket timeouts do not hide handler timeouts.
+// NcTokenTimeout bounds the mint-only token handler. One shared budget covers
+// every Nextcloud round trip a request makes. In the steady state that is two:
+// the provisioning account's existence read, then one token request (~1.24s
+// for a token request against a healthy Nextcloud). During a rotation it is
+// one further token request per armed previous derivation key, so three with
+// one previous key. A missing account is answered 409 by the existence read
+// alone, with no login as the user, so it never reaches a token request. The
+// budget must stay strictly smaller than ncHTTPClientTimeout (30s) so socket
+// timeouts do not hide handler timeouts.
 //
-// Edge case: a brand-new user's first request is a credentials rejection by
-// construction (the account does not exist yet), so with the fallback armed it
-// always takes the two-attempt path. If the second attempt alone exhausts the
-// remaining shared budget, the handler answers 504 instead of 409, and the
-// caller's provisioning path (nextcloud_credentials.py in the backend)
-// provisions only on 409 - a 504 is simply not provisioned on that request,
-// and it self-corrects on the caller's next one. This is accepted rather than
-// sized against len(keys) round trips because the rotation window, when the
-// ~1.24s warm-path figure above is least trustworthy (Nextcloud is also mid
-// password-reset pass), is transient, and a wider budget would slow the
-// steady-state timeout too.
+// Edge case: if a slow existence read or token request exhausts the shared
+// budget, the handler answers 504, and the caller's provisioning path
+// (nextcloud_credentials.py in the backend) provisions only on 409 - a 504 is
+// simply not provisioned on that request, and it self-corrects on the
+// caller's next one. This is accepted rather than sized against len(keys)
+// round trips because the rotation window, when Nextcloud is also mid
+// password-reset pass and the ~1.24s figure is least trustworthy, is
+// transient, and a wider budget would slow the steady-state timeout too.
 const NcTokenTimeout = 5 * time.Second
 
 // NcProvisionTimeout bounds the account-provisioning handler. Account creation
@@ -229,11 +263,13 @@ type OCSMeta struct {
 
 // ncRejectionStreakAlertThreshold is how many mint rejections one user must
 // collect, with no successful mint of their own between them, before the run is
-// reported. An account that does not exist yet is refused with HTTP 401, so a
-// lone rejection is ordinary first-login traffic; a user refused over and over
-// is not, whether because NEXTCLOUD_URL is misaimed or because their password
-// has diverged from the derivation key. Provisioning cannot repair the latter,
-// so nothing else would ever report it.
+// reported. HandleNcToken reads account existence first and mints only for an
+// account that exists, so a rejection normally means an existing account whose
+// password has diverged from the derivation key; a missing account reaches a
+// mint only in a race (deleted between the read and the mint) or through a
+// caller that skips the existence read. A user refused over and over is
+// reported whether the cause is that divergence or a misaimed NEXTCLOUD_URL.
+// Provisioning cannot repair either, so nothing else would ever report it.
 const ncRejectionStreakAlertThreshold = 5
 
 // ncRejectionStreakMaxTracked bounds the streak table. Entries are removed on a
@@ -245,10 +281,11 @@ const ncRejectionStreakMaxTracked = 10000
 
 // NextcloudClient is a minimal HTTP client for Nextcloud's OCS API. It is safe
 // to share across goroutines: its configuration is fixed once constructed, and
-// its two pieces of mutable state - the per-user mint-rejection streaks used
-// for a misconfiguration alert, and the per-ORCID provisioning locks used to
-// serialise concurrent provisioning attempts - are each guarded by their own
-// mutex.
+// its three pieces of mutable state - the per-user mint-rejection streaks used
+// for a misconfiguration alert, the per-ORCID provisioning locks used to
+// serialise concurrent provisioning attempts, and the per-ORCID password
+// blocks that stop logins for an account refusing every derivation key - are
+// each guarded by their own mutex.
 type NextcloudClient struct {
 	URL      string
 	Username string
@@ -278,6 +315,14 @@ type NextcloudClient struct {
 	// ORCID ever seen.
 	provisionLocksMu sync.Mutex
 	provisionLocks   map[string]*ncProvisionLock
+
+	// passwordBlocks maps an ORCID to the instant its password block lifts.
+	// An ORCID is entered when its account exists and refused every
+	// derivation key, and HandleNcToken attempts no login for it until that
+	// instant. Separate from rejectionStreaks, which only counts refusals for
+	// an alert and is never read for control flow.
+	passwordBlocksMu sync.Mutex
+	passwordBlocks   map[string]time.Time
 }
 
 // ncProvisionLock is one ORCID's provisioning mutex plus the count of
@@ -420,9 +465,10 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword 
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		// Not logged per occurrence: HTTP 401 is exactly what Nextcloud answers
-		// for an account that does not exist yet, so every brand-new user's
-		// first mint arrives here and logging each one would bury the case that
-		// matters in the case that does not.
+		// for an account that does not exist yet, and a caller that has not
+		// read existence first arrives here on every brand-new user's first
+		// mint; logging each one would bury the case that matters in the case
+		// that does not. noteRejection reports a run of them instead.
 		c.noteRejection(orcid, "HTTP 401")
 		return "", ErrNextcloudCredentialsRejected
 	}
@@ -509,15 +555,147 @@ func (c *NextcloudClient) clearRejectionStreak(orcid string) {
 	c.rejectionStreaksMu.Unlock()
 }
 
+// UserExists asks Nextcloud, as the provisioning account, whether an account
+// named orcid exists. It reads GET /ocs/v2.php/cloud/users/{orcid} and decides
+// on the OCS statuscode in the body, never the HTTP status alone, because
+// Nextcloud serves both a missing user (OCS 404) and a provisioning account
+// without rights over the user (OCS 998) as HTTP 404. Only OCS 404 means the
+// account is missing; OCS 998 and every other code is an error. HTTP 429 is
+// reported as ErrNextcloudRateLimited.
+//
+// The provisioning account's login succeeds, so the read adds nothing to
+// Nextcloud's failed-login count, unlike a login as a user who does not exist.
+func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, error) {
+	endpoint := c.URL + "/ocs/v2.php/cloud/users/" + url.PathEscape(orcid) + "?format=json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("OCS-APIREQUEST", "true")
+	req.SetBasicAuth(c.Username, c.Password)
+
+	client := &http.Client{Timeout: ncHTTPClientTimeout}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		// Throttling, not an answer about the account. The body is not an OCS
+		// document, so decoding it would hide the one fact the operator needs.
+		log.Printf("nc-exists: nextcloud rate-limited for %s (HTTP 429) - %s", orcid, ncThrottleRecovery)
+		return false, ErrNextcloudRateLimited
+	}
+
+	var ocsResult OCSResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
+		return false, fmt.Errorf("decode OCS response: %w", err)
+	}
+	switch ocsResult.OCS.Meta.Statuscode {
+	case 100, 200:
+		return true, nil
+	case 404:
+		return false, nil
+	default:
+		return false, formatOCSError("/cloud/users/{userid}", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsUserLookupHints)
+	}
+}
+
+// passwordBlocked reports whether orcid is inside a password block. An entry
+// whose cooldown has passed is removed here, so an ORCID leaves the table on
+// its first request after the block lifts.
+func (c *NextcloudClient) passwordBlocked(orcid string) bool {
+	c.passwordBlocksMu.Lock()
+	defer c.passwordBlocksMu.Unlock()
+	until, ok := c.passwordBlocks[orcid]
+	if !ok {
+		return false
+	}
+	if ncNow().Before(until) {
+		return true
+	}
+	delete(c.passwordBlocks, orcid)
+	return false
+}
+
+// blockPassword starts orcid's password block, lasting ncPasswordBlockCooldown
+// from now. When the table is full, blocks that have already lifted are
+// dropped first; if it is still full, the block that lifts soonest is
+// released, so the table stays bounded without clearing every block at once.
+func (c *NextcloudClient) blockPassword(orcid string) {
+	now := ncNow()
+	c.passwordBlocksMu.Lock()
+	defer c.passwordBlocksMu.Unlock()
+	if c.passwordBlocks == nil {
+		c.passwordBlocks = make(map[string]time.Time)
+	}
+	if _, present := c.passwordBlocks[orcid]; !present && len(c.passwordBlocks) >= ncPasswordBlockMaxTracked {
+		for blocked, until := range c.passwordBlocks {
+			if !now.Before(until) {
+				delete(c.passwordBlocks, blocked)
+			}
+		}
+		if len(c.passwordBlocks) >= ncPasswordBlockMaxTracked {
+			soonest := ""
+			var soonestUntil time.Time
+			for blocked, until := range c.passwordBlocks {
+				if soonest == "" || until.Before(soonestUntil) {
+					soonest, soonestUntil = blocked, until
+				}
+			}
+			delete(c.passwordBlocks, soonest)
+		}
+	}
+	c.passwordBlocks[orcid] = now.Add(ncPasswordBlockCooldown)
+}
+
+// writeNcPasswordRejected answers 409 with the code that tells the caller the
+// account exists but refuses every derivation key. The backend provisions only
+// for nextcloud_credentials_rejected, so this code never creates an account.
+func writeNcPasswordRejected(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	fmt.Fprint(w, `{"error":"nextcloud_password_rejected"}`)
+}
+
+// answerNcTokenFailure answers /internal/nc-token for a failure of step
+// (UserExists or MintAppToken) that is not a credentials rejection.
+func answerNcTokenFailure(w http.ResponseWriter, step, orcid string, err error) {
+	switch {
+	case errors.Is(err, ErrNextcloudRateLimited):
+		http.Error(w, "nextcloud rate limited", http.StatusServiceUnavailable)
+	case errors.Is(err, context.DeadlineExceeded):
+		http.Error(w, "nextcloud timeout", http.StatusGatewayTimeout)
+	case errors.Is(err, context.Canceled):
+		// The caller hung up. There is no connection left to answer and
+		// nothing has gone wrong with Nextcloud, so say nothing rather
+		// than log a false outage on every abandoned request.
+	default:
+		fmt.Printf("nc-token: %s failed for %s: %v\n", step, orcid, err)
+		http.Error(w, "nextcloud unavailable", http.StatusBadGateway)
+	}
+}
+
 // HandleNcToken returns an HTTP handler for GET /internal/nc-token?orcid=<X>.
 // It requires header X-ID1-Internal-Secret to match internalSecret.
 //
 // The handler mints only. It does NOT create the Nextcloud account: that is
-// /internal/nc-provision's job, on its own wider budget. When Nextcloud
-// refuses the derived password - the account does not exist, or its password
-// diverged from the derivation key - the handler answers 409 with
-// {"error":"nextcloud_credentials_rejected"} so the caller can provision and
-// retry once rather than treating it as an outage.
+// /internal/nc-provision's job, on its own wider budget. Before any login as
+// the user it asks Nextcloud, as the provisioning account, whether the account
+// exists, because Nextcloud records a login to a missing account as a failed
+// login against id1's own address, which every user shares. Its two 409
+// answers:
+//
+//   - {"error":"nextcloud_credentials_rejected"}: the account does not exist,
+//     so the caller can provision and retry once. No login was attempted.
+//   - {"error":"nextcloud_password_rejected"}: the account exists and refused
+//     every derivation key. Provisioning cannot repair that, so the caller
+//     must not provision. id1 then attempts no login for that ORCID until
+//     ncPasswordBlockCooldown has passed, answering the same code meanwhile.
 //
 // id1 registers no server-side ReadTimeout or WriteTimeout, so the handler
 // bounds itself with timeout rather than relying on the caller's socket.
@@ -560,8 +738,31 @@ func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret str
 			return
 		}
 
+		// A user whose existing account refused every key is not logged in as
+		// again until the cooldown expires: each attempt would be one more
+		// failed login against id1's own address, shared with every user.
+		if nc.passwordBlocked(orcid) {
+			writeNcPasswordRejected(w)
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
+
+		// Never log in as an account not known to exist: Nextcloud records that
+		// as a failed login against id1's address, so a burst of brand-new users
+		// would throttle id1 for everyone. The read shares this request's budget.
+		exists, err := nc.UserExists(ctx, orcid)
+		if err != nil {
+			answerNcTokenFailure(w, "UserExists", orcid, err)
+			return
+		}
+		if !exists {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"error":"nextcloud_credentials_rejected"}`)
+			return
+		}
 
 		// One budget covers every attempt. A per-attempt timeout would let a
 		// slow Nextcloud hold the caller for the sum of them.
@@ -571,7 +772,6 @@ func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret str
 		// HTTP 429, which MintAppToken detects and returns ErrNextcloudRateLimited.
 		// This is a known cost of the fallback during the rotation window.
 		var token string
-		var err error
 		for _, key := range keys {
 			var pw string
 			pw, err = DeriveNextcloudPassword(key, orcid)
@@ -586,23 +786,17 @@ func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret str
 			}
 		}
 		if err != nil {
-			switch {
-			case errors.Is(err, ErrNextcloudCredentialsRejected):
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				fmt.Fprint(w, `{"error":"nextcloud_credentials_rejected"}`)
-			case errors.Is(err, ErrNextcloudRateLimited):
-				http.Error(w, "nextcloud rate limited", http.StatusServiceUnavailable)
-			case errors.Is(err, context.DeadlineExceeded):
-				http.Error(w, "nextcloud timeout", http.StatusGatewayTimeout)
-			case errors.Is(err, context.Canceled):
-				// The caller hung up. There is no connection left to answer and
-				// nothing has gone wrong with Nextcloud, so say nothing rather
-				// than log a false outage on every abandoned request.
-			default:
-				fmt.Printf("nc-token: MintAppToken failed for %s: %v\n", orcid, err)
-				http.Error(w, "nextcloud unavailable", http.StatusBadGateway)
+			if errors.Is(err, ErrNextcloudCredentialsRejected) {
+				// The account exists, so provisioning cannot help: its password
+				// differs from every key id1 holds. Stop logging in as it.
+				nc.blockPassword(orcid)
+				log.Printf("nc-token: the existing Nextcloud account %s refused every derivation key; "+
+					"no login is attempted for it for %s - its password does not match what "+
+					"NC_DERIVATION_KEY derives", orcid, ncPasswordBlockCooldown)
+				writeNcPasswordRejected(w)
+				return
 			}
+			answerNcTokenFailure(w, "MintAppToken", orcid, err)
 			return
 		}
 

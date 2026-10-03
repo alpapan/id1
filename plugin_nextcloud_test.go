@@ -206,6 +206,24 @@ func TestNextcloudClient_EnsureUserExists_KnownErrorCodesAreExplained(t *testing
 	}
 }
 
+// Nextcloud's UsersController::addUser maps any unexpected exception to OCS
+// 101, including the unique-constraint failure of the loser of two concurrent
+// creates of one user. A hint naming only input format and password policy
+// sends the reader the wrong way.
+func TestNextcloudClient_EnsureUserExists_101HintNamesTheConcurrentCreate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":101,"status":"failure","message":"Bad request"},"data":null}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "concurrent request created the same user")
+}
+
 func TestNextcloudClient_EnsureUserExists_UnknownCodeFallsBackToGenericHint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -351,13 +369,40 @@ func TestHandleNcToken_NextcloudDown(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, rr.Code)
 }
 
+// ncUserLookupPrefix is the path prefix of Nextcloud's single-user read,
+// GET /ocs/v2.php/cloud/users/{userid}, which HandleNcToken calls as the
+// provisioning account before any login as the user.
+const ncUserLookupPrefix = "/ocs/v2.php/cloud/users/"
+
+// withAccountLookup answers Nextcloud's single-user read with an account that
+// exists (OCS 200, as the v2 endpoint answers) or is missing (OCS 404 served
+// as HTTP 404, as Nextcloud serves it), and passes every other request to
+// next. A fake that answers every request the same way would otherwise also
+// answer the existence read.
+func withAccountLookup(exists bool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, ncUserLookupPrefix) {
+			next(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if exists {
+			fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"0009-0002-8023-3658","enabled":true}}}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":404,"status":"failure","message":"User does not exist"},"data":[]}}`)
+	}
+}
+
 // countingNextcloud starts a fake Nextcloud that records which OCS endpoints
 // were called, so a test can assert that a request never reached Nextcloud at
 // all - the difference between "rejected at the gate" and "rejected later".
+// The single-user read answers that the account exists.
 func countingNextcloud(t *testing.T, tokenToReturn string) (ncURL string, users *int32, mints *int32, cleanup func()) {
 	t.Helper()
 	var userCalls, mintCalls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/ocs/v2.php/cloud/users":
@@ -411,16 +456,21 @@ func TestHandleNcToken_RejectsNonGet(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 }
 
-// Nextcloud answers a getapppassword for an account that does not exist with
-// HTTP 401. The backend needs that distinguishable from "Nextcloud is down" so
-// it can provision and retry exactly once.
-func TestHandleNcToken_CredentialsRejectedReturns409(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// Nextcloud records a login to an account that does not exist as a failed
+// login against the caller's address, and id1 is one address for every user.
+// So for an account Nextcloud reports missing, HandleNcToken answers 409
+// nextcloud_credentials_rejected - the code the backend provisions on -
+// without attempting a single login as the user, even with a previous
+// derivation key armed.
+func TestHandleNcToken_MissingAccountIsNeverLoggedInAs(t *testing.T) {
+	var logins int32
+	srv := httptest.NewServer(withAccountLookup(false, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&logins, 1)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("current-key"), "internal-secret", 2*time.Second, []byte("previous-key"))
 
 	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -431,6 +481,7 @@ func TestHandleNcToken_CredentialsRejectedReturns409(t *testing.T) {
 	var body map[string]string
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
 	assert.Equal(t, "nextcloud_credentials_rejected", body["error"])
+	assert.Equal(t, int32(0), atomic.LoadInt32(&logins), "a missing account must never be logged in as")
 }
 
 // Nextcloud can answer HTTP 200 with an OCS failure statuscode instead. id1's
@@ -441,7 +492,7 @@ func TestHandleNcToken_CredentialsRejectedReturns409(t *testing.T) {
 func TestHandleNcToken_OCSAuthFailuresReturn409(t *testing.T) {
 	for _, code := range []int{997, 403} {
 		t.Run(fmt.Sprintf("ocs_%d", code), func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprintf(w, `{"ocs":{"meta":{"statuscode":%d,"status":"failure","message":"denied"},"data":null}}`, code)
 			}))
@@ -454,7 +505,9 @@ func TestHandleNcToken_OCSAuthFailuresReturn409(t *testing.T) {
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
 
-			assert.Equal(t, http.StatusConflict, rr.Code)
+			require.Equal(t, http.StatusConflict, rr.Code)
+			assert.JSONEq(t, `{"error":"nextcloud_password_rejected"}`, rr.Body.String(),
+				"an existing account that refuses the key is not a missing account, so the caller must not provision")
 		})
 	}
 }
@@ -486,8 +539,9 @@ func TestHandleNcToken_FallsBackToThePreviousDerivationKey(t *testing.T) {
 	var presented []string
 
 	// This account's Nextcloud password has NOT been reset yet, so only the
-	// previous key's derivation authenticates.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// previous key's derivation authenticates. The account exists, so the
+	// existence read never reaches this recorder.
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		_, password, _ := r.BasicAuth()
 		mu.Lock()
 		presented = append(presented, password)
@@ -525,9 +579,13 @@ func TestHandleNcToken_FallsBackToThePreviousDerivationKey(t *testing.T) {
 // provisions on 409. Exhausting the keys must reach exactly the same answer as
 // having no previous key at all, or the lazy provisioning path stops firing for
 // every new user for the duration of a rotation.
+// An existing account whose password matches NEITHER key is not something
+// provisioning can repair: its password has diverged from every key id1 holds.
+// Exhausting the keys answers nextcloud_password_rejected, the code the backend
+// never provisions on, after exactly one attempt per key.
 func TestHandleNcToken_ReturnsConflictWhenNoKeyAuthenticates(t *testing.T) {
 	var attempts int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -543,7 +601,7 @@ func TestHandleNcToken_ReturnsConflictWhenNoKeyAuthenticates(t *testing.T) {
 	require.Equal(t, http.StatusConflict, rr.Code)
 	var body map[string]string
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
-	assert.Equal(t, "nextcloud_credentials_rejected", body["error"])
+	assert.Equal(t, "nextcloud_password_rejected", body["error"])
 	assert.Equal(t, int32(2), atomic.LoadInt32(&attempts), "both keys tried, neither retried further")
 }
 
@@ -553,7 +611,7 @@ func TestHandleNcToken_ReturnsConflictWhenNoKeyAuthenticates(t *testing.T) {
 // while still answering 502.
 func TestHandleNcToken_DoesNotRetryOnAFailureThatIsNotACredentialsRejection(t *testing.T) {
 	var attempts int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":998,"status":"failure","message":"not found"},"data":null}}`)
@@ -575,7 +633,7 @@ func TestHandleNcToken_DoesNotRetryOnAFailureThatIsNotACredentialsRejection(t *t
 // attempt, and the previous-key machinery is invisible.
 func TestHandleNcToken_WithNoPreviousKeyMakesExactlyOneAttempt(t *testing.T) {
 	var attempts int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -598,7 +656,7 @@ func TestHandleNcToken_WithNoPreviousKeyMakesExactlyOneAttempt(t *testing.T) {
 // that is already throttling while still failing.
 func TestHandleNcToken_DoesNotRetryOnHTTP429(t *testing.T) {
 	var attempts int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.WriteHeader(http.StatusTooManyRequests) // HTTP 429
 	}))
@@ -615,10 +673,318 @@ func TestHandleNcToken_DoesNotRetryOnHTTP429(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&attempts), "HTTP 429 is not a credentials rejection, so the previous key is never tried")
 }
 
+// A throttled existence read is answered as a throttled mint is, 503, and no
+// login as the user is attempted: a login would be refused by the same
+// throttle and would only add to it.
+func TestHandleNcToken_ThrottledExistenceReadReturns503WithoutALogin(t *testing.T) {
+	var logins int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, ncUserLookupPrefix) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		atomic.AddInt32(&logins, 1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"SHOULD-NOT-BE-MINTED"}}}`)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+	assert.Equal(t, int32(0), atomic.LoadInt32(&logins), "no login while Nextcloud throttles the existence read")
+}
+
+// Nextcloud answers the single-user read with OCS 998, served as HTTP 404,
+// when the calling account has no rights over the target user - here, the
+// provisioning account has lost its admin group. That is a fault in id1's own
+// configuration, never evidence the account is missing: answering 409
+// nextcloud_credentials_rejected would make the backend try to create an
+// account that may already exist.
+func TestHandleNcToken_ProvisionerWithoutRightsIsNotAMissingAccount(t *testing.T) {
+	var logins int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, ncUserLookupPrefix) {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":998,"status":"failure","message":""},"data":[]}}`)
+			return
+		}
+		atomic.AddInt32(&logins, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadGateway, rr.Code)
+	assert.Equal(t, int32(0), atomic.LoadInt32(&logins), "no login when existence could not be established")
+}
+
+// Owner ruling: an existing account that rejects the derived password gets no
+// retry and a block of at least 30 minutes. A second request for the same ORCID
+// inside the block is answered without any login.
+func TestHandleNcToken_PasswordRejectionBlocksFurtherLoginsForThatUser(t *testing.T) {
+	var logins int32
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&logins, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+		req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusConflict, rr.Code, "request %d", attempt)
+		assert.JSONEq(t, `{"error":"nextcloud_password_rejected"}`, rr.Body.String(), "request %d", attempt)
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&logins), "the second request must not log in while the block holds")
+}
+
+// The block is per user: one user's diverged password must not stop another
+// user's mint.
+func TestHandleNcToken_PasswordBlockIsPerUser(t *testing.T) {
+	const blockedOrcid = "0009-0002-8023-3658"
+	const otherOrcid = "0000-0002-1825-0097"
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
+		user, _, _ := r.BasicAuth()
+		if user == blockedOrcid {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"OTHER-USER-TOKEN"}}}`)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	call := func(orcid string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/internal/nc-token?orcid="+orcid, nil)
+		req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	require.Equal(t, http.StatusConflict, call(blockedOrcid).Code)
+	rr := call(otherOrcid)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.JSONEq(t, `{"token":"OTHER-USER-TOKEN"}`, rr.Body.String())
+}
+
+// setNcNow replaces the clock the password block reads for the duration of a
+// test and returns a func that moves it.
+func setNcNow(t *testing.T, start time.Time) func(time.Time) {
+	t.Helper()
+	now := start
+	previous := ncNow
+	ncNow = func() time.Time { return now }
+	t.Cleanup(func() { ncNow = previous })
+	return func(next time.Time) { now = next }
+}
+
+// Owner ruling: the block lasts at least 30 minutes.
+func TestNcPasswordBlockCooldownIsAtLeastThirtyMinutes(t *testing.T) {
+	assert.GreaterOrEqual(t, ncPasswordBlockCooldown, 30*time.Minute)
+}
+
+// No login can succeed while the block holds, because the block skips the
+// login itself: a repaired password is not noticed until the cooldown ends.
+// At the cooldown exactly one login is attempted, and a success then leaves
+// the user unblocked.
+func TestHandleNcToken_PasswordBlockLiftsAfterTheCooldown(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	moveClock := setNcNow(t, start)
+
+	var logins int32
+	var repaired atomic.Bool
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&logins, 1)
+		if !repaired.Load() {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"AFTER-REPAIR"}}}`)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	call := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+		req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	require.Equal(t, http.StatusConflict, call().Code)
+	require.Equal(t, int32(1), atomic.LoadInt32(&logins))
+
+	repaired.Store(true)
+	moveClock(start.Add(ncPasswordBlockCooldown - time.Second))
+	rr := call()
+	require.Equal(t, http.StatusConflict, rr.Code)
+	assert.JSONEq(t, `{"error":"nextcloud_password_rejected"}`, rr.Body.String())
+	assert.Equal(t, int32(1), atomic.LoadInt32(&logins), "no login inside the cooldown")
+
+	moveClock(start.Add(ncPasswordBlockCooldown))
+	rr = call()
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&logins), "exactly one login once the cooldown has passed")
+
+	rr = call()
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, int32(3), atomic.LoadInt32(&logins), "a success leaves the user unblocked")
+}
+
+// The block table is bounded. When it is full, blocks that have already
+// lifted are dropped first.
+func TestNextcloudClient_PasswordBlockTableDropsLiftedBlocksFirst(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	setNcNow(t, start)
+
+	c := &NextcloudClient{passwordBlocks: make(map[string]time.Time)}
+	for i := 0; i < ncPasswordBlockMaxTracked; i++ {
+		until := start.Add(time.Minute)
+		if i%2 == 0 {
+			until = start.Add(-time.Minute)
+		}
+		c.passwordBlocks[fmt.Sprintf("held-%05d", i)] = until
+	}
+
+	c.blockPassword("0009-0002-8023-3658")
+
+	assert.Len(t, c.passwordBlocks, ncPasswordBlockMaxTracked/2+1, "every lifted block is dropped, every live one kept")
+	assert.True(t, c.passwordBlocked("0009-0002-8023-3658"))
+	assert.True(t, c.passwordBlocked("held-00001"), "a live block survives the clean-up")
+}
+
+// When the full table holds only live blocks, the one that lifts soonest is
+// released - one ORCID, never the whole table.
+func TestNextcloudClient_PasswordBlockTableReleasesTheSoonestLiftingBlock(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	setNcNow(t, start)
+
+	c := &NextcloudClient{passwordBlocks: make(map[string]time.Time)}
+	for i := 0; i < ncPasswordBlockMaxTracked; i++ {
+		c.passwordBlocks[fmt.Sprintf("held-%05d", i)] = start.Add(time.Duration(i+1) * time.Second)
+	}
+
+	c.blockPassword("0009-0002-8023-3658")
+
+	assert.Len(t, c.passwordBlocks, ncPasswordBlockMaxTracked, "the table never grows past its bound")
+	assert.NotContains(t, c.passwordBlocks, "held-00000", "the block that lifts soonest is released")
+	assert.Contains(t, c.passwordBlocks, "held-00001", "only one block is released")
+	assert.True(t, c.passwordBlocked("0009-0002-8023-3658"))
+}
+
+func TestNextcloudClient_UserExists_ExistingAccount(t *testing.T) {
+	for _, code := range []int{100, 200} {
+		t.Run(fmt.Sprintf("ocs_%d", code), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"ocs":{"meta":{"statuscode":%d,"status":"ok","message":"OK"},"data":{"id":"0009-0002-8023-3658"}}}`, code)
+			}))
+			defer srv.Close()
+
+			c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+			exists, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
+
+			require.NoError(t, err)
+			assert.True(t, exists)
+		})
+	}
+}
+
+func TestNextcloudClient_UserExists_MissingAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":404,"status":"failure","message":"User does not exist"},"data":[]}}`)
+	}))
+	defer srv.Close()
+
+	c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+	exists, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
+
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestNextcloudClient_UserExists_ProvisionerWithoutRightsIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":998,"status":"failure","message":""},"data":[]}}`)
+	}))
+	defer srv.Close()
+
+	c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+	exists, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
+
+	require.Error(t, err, "OCS 998 means the provisioning account cannot see the user, not that the user is missing")
+	assert.False(t, exists)
+	assert.Contains(t, err.Error(), "998")
+	assert.Contains(t, err.Error(), "admin group")
+}
+
+func TestNextcloudClient_UserExists_RateLimitIsReportedAsRateLimit(t *testing.T) {
+	srv := throttlingNextcloud(t)
+	logged := captureLog(t)
+
+	c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+	_, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
+
+	require.ErrorIs(t, err, ErrNextcloudRateLimited)
+	assert.Contains(t, logged(), ncThrottleResetCommand,
+		"a throttled existence read must tell the operator how to clear the throttle")
+}
+
+// The read is made as the provisioning account, never as the user: a login as
+// the user is exactly the failed login the read exists to avoid.
+func TestNextcloudClient_UserExists_ReadsAsTheProvisioningAccount(t *testing.T) {
+	var method, path, user, password, ocsHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		user, password, _ = r.BasicAuth()
+		ocsHeader = r.Header.Get("OCS-APIREQUEST")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"0009-0002-8023-3658"}}}`)
+	}))
+	defer srv.Close()
+
+	c := &NextcloudClient{URL: srv.URL, Username: "provisioner", Password: "provisioner-secret"}
+	_, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
+
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodGet, method)
+	assert.Equal(t, "/ocs/v2.php/cloud/users/0009-0002-8023-3658", path)
+	assert.Equal(t, "provisioner", user)
+	assert.Equal(t, "provisioner-secret", password)
+	assert.Equal(t, "true", ocsHeader)
+}
+
 // id1 registers no server-side ReadTimeout/WriteTimeout, so each handler must
 // bound itself rather than relying on the caller's socket.
 func TestHandleNcToken_BoundsItselfWithItsOwnTimeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"apppassword":"LATE"}}}`)
@@ -643,7 +1009,7 @@ func TestHandleNcToken_BoundsItselfWithItsOwnTimeout(t *testing.T) {
 // false outage line in id1's log for every abandoned request, and the eager
 // background provisioning hook abandons requests routinely at shutdown.
 func TestHandleNcToken_ClientDisconnectIsNotReportedAsAnOutage(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withAccountLookup(true, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 	}))
 	defer srv.Close()
@@ -810,10 +1176,13 @@ func captureStdout(t *testing.T) func() string {
 // that branch for it (any code neither of a handler's own special-cased
 // codes recognises).
 type ncLogInjectionCase struct {
-	name       string
-	ocsCode    int
-	newHandler func(ncURL string) http.HandlerFunc
-	newRequest func() *http.Request
+	name    string
+	ocsCode int
+	// accountExists answers the single-user read with an existing account, so
+	// the fake's OCS error reaches the login rather than the existence read.
+	accountExists bool
+	newHandler    func(ncURL string) http.HandlerFunc
+	newRequest    func() *http.Request
 }
 
 var ncLogInjectionCases = []ncLogInjectionCase{
@@ -841,6 +1210,19 @@ var ncLogInjectionCases = []ncLogInjectionCase{
 			return req
 		},
 	},
+	{
+		name:          "HandleNcTokenLogin",
+		ocsCode:       999,
+		accountExists: true,
+		newHandler: func(ncURL string) http.HandlerFunc {
+			return HandleNcToken(&NextcloudClient{URL: ncURL}, []byte("test-key"), "internal-secret", 2*time.Second)
+		},
+		newRequest: func() *http.Request {
+			req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+			req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+			return req
+		},
+	},
 }
 
 // formatOCSError's message argument comes verbatim from Nextcloud's own OCS
@@ -853,7 +1235,7 @@ var ncLogInjectionCases = []ncLogInjectionCase{
 // regardless of whether Nextcloud itself, or something it echoes back, is
 // the source of the embedded newline.
 func TestHandleNcProvisionAndHandleNcToken_LogNextcloudErrorMessageOnOneLine(t *testing.T) {
-	wantCaseNames := []string{"HandleNcProvision", "HandleNcToken"}
+	wantCaseNames := []string{"HandleNcProvision", "HandleNcToken", "HandleNcTokenLogin"}
 	require.Len(t, ncLogInjectionCases, len(wantCaseNames),
 		"the case list must carry exactly these cases; a deleted case must fail this guard rather than pass quietly")
 	gotCaseNames := make([]string, 0, len(ncLogInjectionCases))
@@ -865,10 +1247,14 @@ func TestHandleNcProvisionAndHandleNcToken_LogNextcloudErrorMessageOnOneLine(t *
 
 	for _, tc := range ncLogInjectionCases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var fake http.HandlerFunc = func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprintf(w, `{"ocs":{"meta":{"statuscode":%d,"status":"failure","message":"line one\nFAKE LOG LINE: forged"},"data":null}}`, tc.ocsCode)
-			}))
+			}
+			if tc.accountExists {
+				fake = withAccountLookup(true, fake)
+			}
+			srv := httptest.NewServer(fake)
 			defer srv.Close()
 
 			handler := tc.newHandler(srv.URL)
