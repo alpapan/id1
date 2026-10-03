@@ -354,38 +354,23 @@ func TestRegisterCommitIdempotent(t *testing.T) {
 	assert.Equal(t, http.StatusOK, commitRec2.Code, "idempotent retry should return 200")
 }
 
-// TestRegisterCommitResponsesEscapeOrcidId guards the two hand-built JSON
-// response bodies in HandleRegisterCommit (the "already_committed" idempotent
-// branch and the "committed" success branch) against a caller-controlled
-// orcidId that contains a double quote. KK()/K() impose no character
-// restriction beyond rejecting ".."/"."/empty segments, so a quote reaches
-// these fmt.Fprintf calls unescaped; %s around it breaks the emitted JSON.
-func TestRegisterCommitResponsesEscapeOrcidId(t *testing.T) {
+// TestRegisterEndpointsRefuseMarkupBearingId guards the two hand-built response
+// paths that echo the caller-supplied id (HandleRegisterCommit's "committed" and
+// "already_committed" bodies) by refusing a markup-bearing id at both phases
+// before anything is stored or echoed: only an ORCID iD is a valid ?id.
+func TestRegisterEndpointsRefuseMarkupBearingId(t *testing.T) {
 	orcid := `0000-0001-"><script>-6789`
-	deviceId := "test-device-uuid"
-
-	assertValidJSONWithId := func(t *testing.T, rec *httptest.ResponseRecorder) {
-		t.Helper()
-		require.Equal(t, http.StatusOK, rec.Code, "commit: %s", rec.Body.String())
-		var parsed struct {
-			Status string `json:"status"`
-			Id     string `json:"id"`
-		}
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &parsed),
-			"response body must be valid JSON, got: %s", rec.Body.String())
-		require.Equal(t, orcid, parsed.Id)
-	}
 
 	kv := setupTestKVStore(t)
 	keyID, signingKey, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
-	privKey, pubPEM := testGenerateRSAKeyPair(t)
+	_, pubPEM := testGenerateRSAKeyPair(t)
 	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
 	require.NoError(t, err)
 
 	beginBody, _ := json.Marshal(RegisterBeginRequest{
 		PublicKeyPEM: pubPEM,
-		DeviceId:     deviceId,
+		DeviceId:     "test-device-uuid",
 		DeviceName:   "Test Browser",
 	})
 	beginReq := httptest.NewRequest(http.MethodPost,
@@ -394,41 +379,21 @@ func TestRegisterCommitResponsesEscapeOrcidId(t *testing.T) {
 	beginReq.Header.Set("Authorization", "Bearer "+tok)
 	beginRec := httptest.NewRecorder()
 	HandleRegisterBegin(kv)(beginRec, beginReq)
-	require.Equal(t, http.StatusAccepted, beginRec.Code, "begin: %s", beginRec.Body.String())
-
-	var beginResp RegisterBeginResponse
-	require.NoError(t, json.Unmarshal(beginRec.Body.Bytes(), &beginResp))
-
-	challengeBytes, _ := base64.StdEncoding.DecodeString(beginResp.Challenge)
-	nonce, _ := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, challengeBytes, nil)
-	nonceB64 := base64.StdEncoding.EncodeToString(nonce)
+	assert.Equal(t, http.StatusBadRequest, beginRec.Code, "begin: %s", beginRec.Body.String())
+	assert.NotContains(t, beginRec.Body.String(), "<script>")
 
 	commitBody, _ := json.Marshal(RegisterCommitRequest{
-		RegistrationToken: beginResp.RegistrationToken,
-		Nonce:             nonceB64,
-		DeviceId:          deviceId,
-		DeviceName:        "Test Browser",
+		RegistrationToken: "seededPendingToken0123456789",
+		Nonce:             base64.StdEncoding.EncodeToString([]byte("anything")),
+		DeviceId:          "test-device-uuid",
 	})
-
-	t.Run("committed", func(t *testing.T) {
-		commitReq := httptest.NewRequest(http.MethodPost,
-			"/auth/sovereign/register/commit?id="+url.QueryEscape(orcid), bytes.NewReader(commitBody))
-		commitReq.Header.Set("Content-Type", "application/json")
-		commitRec := httptest.NewRecorder()
-		HandleRegisterCommit(kv)(commitRec, commitReq)
-		assertValidJSONWithId(t, commitRec)
-	})
-
-	t.Run("already_committed", func(t *testing.T) {
-		// Pending state is gone after the first commit above; pub/keys/{deviceId}
-		// exists, so this replay takes the idempotent "already_committed" branch.
-		commitReq2 := httptest.NewRequest(http.MethodPost,
-			"/auth/sovereign/register/commit?id="+url.QueryEscape(orcid), bytes.NewReader(commitBody))
-		commitReq2.Header.Set("Content-Type", "application/json")
-		commitRec2 := httptest.NewRecorder()
-		HandleRegisterCommit(kv)(commitRec2, commitReq2)
-		assertValidJSONWithId(t, commitRec2)
-	})
+	commitReq := httptest.NewRequest(http.MethodPost,
+		"/auth/sovereign/register/commit?id="+url.QueryEscape(orcid), bytes.NewReader(commitBody))
+	commitReq.Header.Set("Content-Type", "application/json")
+	commitRec := httptest.NewRecorder()
+	HandleRegisterCommit(kv)(commitRec, commitReq)
+	assert.Equal(t, http.StatusBadRequest, commitRec.Code, "commit: %s", commitRec.Body.String())
+	assert.NotContains(t, commitRec.Body.String(), "<script>")
 }
 
 func TestRegisterCommitSetsTTL(t *testing.T) {
