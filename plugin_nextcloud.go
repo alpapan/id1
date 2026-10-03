@@ -133,17 +133,21 @@ const NcMintUserAgent = "curatorium-auth/1"
 // one previous key. A missing account is answered 409 by the existence read
 // alone, with no login as the user, so it never reaches a token request. The
 // budget must stay strictly smaller than ncHTTPClientTimeout (30s) so socket
-// timeouts do not hide handler timeouts.
+// timeouts do not hide handler timeouts, and strictly smaller than
+// NcProvisionTimeout so provisioning keeps the wider budget.
+//
+// The budget must exceed the time a busy Nextcloud takes to answer one read, or
+// the handler answers 504 for a lookup that would have succeeded. The caller's
+// own client timeout for this call must stay above this budget, so id1's 504
+// surfaces rather than a client-side timeout that hides which side gave up.
 //
 // Edge case: if a slow existence read or token request exhausts the shared
 // budget, the handler answers 504, and the caller's provisioning path
-// (nextcloud_credentials.py in the backend) provisions only on 409 - a 504 is
-// simply not provisioned on that request, and it self-corrects on the
-// caller's next one. This is accepted rather than sized against len(keys)
-// round trips because the rotation window, when Nextcloud is also mid
-// password-reset pass and the ~1.24s figure is least trustworthy, is
-// transient, and a wider budget would slow the steady-state timeout too.
-const NcTokenTimeout = 5 * time.Second
+// (nextcloud_credentials.py in the backend) provisions only on 409, so a 504
+// never itself triggers provisioning. This is accepted rather than sized
+// against len(keys) round trips because the rotation window, when Nextcloud is
+// also mid password-reset pass, is transient.
+const NcTokenTimeout = 20 * time.Second
 
 // NcProvisionTimeout bounds the account-provisioning handler. Account creation
 // is slow and runs off any request path, so it gets a far wider budget than

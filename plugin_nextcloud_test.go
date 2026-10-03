@@ -1004,6 +1004,27 @@ func TestHandleNcToken_BoundsItselfWithItsOwnTimeout(t *testing.T) {
 	assert.Less(t, elapsed, time.Second, "the handler must give up on its own budget, not wait for Nextcloud")
 }
 
+// A Nextcloud busy creating many accounts at once answers a read well past the
+// few seconds it takes when idle. The production budget must outlast that
+// answer, or the caller is told 504 for a lookup that was about to succeed.
+func TestHandleNcToken_ProductionBudgetOutlastsASlowNextcloudRead(t *testing.T) {
+	const slowRead = 6 * time.Second
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(slowRead)
+		withAccountLookup(false, nil)(w, r)
+	}))
+	defer srv.Close()
+
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, []byte("test-key"), "internal-secret", NcTokenTimeout)
+
+	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
+	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusConflict, rr.Code, "a read answered after %s must still be answered, not timed out", slowRead)
+}
+
 // A caller that hangs up cancels the request context, which is not the
 // handler's own deadline expiring. Reporting it as a Nextcloud outage puts a
 // false outage line in id1's log for every abandoned request, and the eager
