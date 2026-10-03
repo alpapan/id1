@@ -13,7 +13,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -21,6 +20,20 @@ import (
 
 const pendingKeyTTL = "3600" // 1 hour
 const pubKeyTTL = "604800"   // 7 days - refreshed on every login
+
+// errNotPersonSubject is returned when ?id is not an ORCID iD. This public path
+// registers a person's browser device key only. Machine and reserved identities
+// (the "service" subject, the "_system" and "_authstate" namespaces, any other
+// non-ORCID id) are provisioned through the internal-secret bootstrap at
+// {id}/pub/key, never here: a machine JWT must not be able to turn itself into a
+// lasting device key.
+const errNotPersonSubject = "id must be an ORCID iD"
+
+// registerCommitStatus is the JSON body of a successful commit response.
+type registerCommitStatus struct {
+	Status string `json:"status"`
+	ID     string `json:"id"`
+}
 
 // RegisterBeginRequest is the JSON body for POST /auth/sovereign/register/begin.
 type RegisterBeginRequest struct {
@@ -46,8 +59,9 @@ type RegisterCommitRequest struct {
 
 // HandleRegisterBegin returns an HTTP handler for Phase 1 of sovereign key registration.
 //
-// New users (no existing key): anonymous POST accepted.
-// Existing users (key already registered): RS256 JWT required in Authorization header.
+// The id must be an ORCID iD (orcidPattern); any other subject is refused with 400
+// before the JWT is consulted.
+// Every registration, first or repeat, requires an RS256 JWT whose subject matches id.
 //
 // Stores pending key at {id}/priv/pending/{token}.key with 1-hour TTL.
 // Stores nonce at {id}/priv/pending/{token}.nonce with 1-hour TTL.
@@ -67,6 +81,10 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 		orcidId := r.URL.Query().Get("id")
 		if orcidId == "" {
 			http.Error(w, "Missing id parameter", http.StatusBadRequest)
+			return
+		}
+		if !orcidPattern.MatchString(orcidId) {
+			http.Error(w, errNotPersonSubject, http.StatusBadRequest)
 			return
 		}
 
@@ -198,6 +216,10 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing id parameter", http.StatusBadRequest)
 			return
 		}
+		if !orcidPattern.MatchString(orcidId) {
+			http.Error(w, errNotPersonSubject, http.StatusBadRequest)
+			return
+		}
 
 		var req RegisterCommitRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -241,7 +263,7 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			if activeErr == nil && len(activeKey) > 0 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				fmt.Fprintf(w, `{"status":"already_committed","id":%q}`, orcidId)
+				json.NewEncoder(w).Encode(registerCommitStatus{Status: "already_committed", ID: orcidId})
 				return
 			}
 			http.Error(w, "Registration token expired or invalid. Start over.", http.StatusBadRequest)
@@ -301,6 +323,6 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"committed","id":%q}`, orcidId)
+		json.NewEncoder(w).Encode(registerCommitStatus{Status: "committed", ID: orcidId})
 	}
 }
