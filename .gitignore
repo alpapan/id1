@@ -4,6 +4,8 @@ build
 test
 id1db
 *.sh
+# The share script every task takes its processor count from - committed by design.
+!scripts/cpu_share.sh
 *.log
 
 # Audit trail written by bin/pre-commit-hook.sh - committed by design.
