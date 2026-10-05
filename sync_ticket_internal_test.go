@@ -371,8 +371,8 @@ func TestInternalSyncTicket_GridRejectsBadOrEmptyAutomergeID(t *testing.T) {
 	tooLong := strings.Repeat("A", 65)
 	badIDs := []string{
 		"", "short", "has spaces in it 1234567890",
-		"0NMNbHrKADgnbtGJVXVyubc4", // only fault: leading '0', excluded from the base58 alphabet
-		tooLong,                    // only fault: 65 chars, one over the 64-char ceiling
+		"0NMNbHrKADgnbtGJVXVyubc4",           // only fault: leading '0', excluded from the base58 alphabet
+		tooLong,                              // only fault: 65 chars, one over the 64-char ceiling
 		"automerge:4NMNbHrKADgnbtGJVXVyubc4", // carries the forbidden "automerge:" prefix
 	}
 	for _, badID := range badIDs {
