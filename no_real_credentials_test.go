@@ -312,7 +312,11 @@ func credGuardScannedFiles(t *testing.T, root string) []string {
 	return found
 }
 
-func TestNoTrackedFileCarriesARealCredentialLiteral(t *testing.T) {
+// Tests named TestWalker... read this module's own source tree. The `test` tasks skip them with
+// -skip "^TestWalker" and `pixi run test-walkers` runs them alone, on the storage node when
+// .env.test declares one.
+
+func TestWalkerNoTrackedFileCarriesARealCredentialLiteral(t *testing.T) {
 	root := credGuardRepoRoot(t)
 	var offenders []string
 	for _, path := range credGuardScannedFiles(t, root) {
@@ -338,9 +342,9 @@ func TestNoTrackedFileCarriesARealCredentialLiteral(t *testing.T) {
 	}
 }
 
-// TestCredGuardScanReachesThisSubmodulesFiles is the canary. A suffix or scope
+// TestWalkerCredGuardScanReachesThisSubmodulesFiles is the canary. A suffix or scope
 // error would empty the file list and pass vacuously.
-func TestCredGuardScanReachesThisSubmodulesFiles(t *testing.T) {
+func TestWalkerCredGuardScanReachesThisSubmodulesFiles(t *testing.T) {
 	root := credGuardRepoRoot(t)
 	scanned := credGuardScannedFiles(t, root)
 	if len(scanned) < 40 {
@@ -366,9 +370,9 @@ func TestCredGuardScanReachesThisSubmodulesFiles(t *testing.T) {
 	}
 }
 
-// TestCredGuardNeverOpensAGitignoredEnvFile: those files legitimately hold live
+// TestWalkerCredGuardNeverOpensAGitignoredEnvFile: those files legitimately hold live
 // credentials and must not be read.
-func TestCredGuardNeverOpensAGitignoredEnvFile(t *testing.T) {
+func TestWalkerCredGuardNeverOpensAGitignoredEnvFile(t *testing.T) {
 	root := credGuardRepoRoot(t)
 	for _, path := range credGuardScannedFiles(t, root) {
 		if credGuardNeverOpened[filepath.Base(path)] {
