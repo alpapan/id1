@@ -18,25 +18,25 @@ platforms = ["linux-64"]
 # compilation or tests cannot land silently through the other two. The
 # pre-commit hook runs the task named exactly `test`, so this chain, not a
 # separate task, is what actually gates a commit.
-test = "bash -c 'P=$(scripts/cpu_share.sh) || exit 69; R=0; go test -p \"$P\" ./... || R=1; go test -p \"$P\" -tags=curatoriumdemo ./... || R=1; go test -p \"$P\" -tags=testmint,curatoriumdemo ./... || R=1; G=../../scripts/curatorium_assistant/pyproject.toml; if [ -f \"$G\" ]; then pixi run -m \"$G\" test-guards guards_id1 || R=1; elif [ -z \"$(git rev-parse --show-superproject-working-tree 2>/dev/null)\" ]; then echo \"SKIPPED guards_id1: no parent monorepo around $PWD (git rev-parse --show-superproject-working-tree printed nothing), so the guards over this repository, which live in scripts/curatorium_assistant of the monorepo, cannot run here; they run when the test task of this repository is run from inside a monorepo checkout\" >&2; else echo \"guard manifest not found at $G: the artefacts of this submodule are guarded from there, so apps/id1 must be checked out inside the monorepo with its submodules initialised\" >&2; R=1; fi; exit $R' _"
+test = "bash -c 'P=$(scripts/cpu_share.sh) || exit 69; R=0; go test -p \"$P\" -skip \"^TestWalker\" ./... || R=1; go test -p \"$P\" -skip \"^TestWalker\" -tags=curatoriumdemo ./... || R=1; go test -p \"$P\" -skip \"^TestWalker\" -tags=testmint,curatoriumdemo ./... || R=1; G=../../scripts/curatorium_assistant/pyproject.toml; if [ -f \"$G\" ]; then pixi run -m \"$G\" test-guards guards_id1 || R=1; elif [ -z \"$(git rev-parse --show-superproject-working-tree 2>/dev/null)\" ]; then echo \"SKIPPED guards_id1: no parent monorepo around $PWD (git rev-parse --show-superproject-working-tree printed nothing), so the guards over this repository, which live in scripts/curatorium_assistant of the monorepo, cannot run here; they run when the test task of this repository is run from inside a monorepo checkout\" >&2; else echo \"guard manifest not found at $G: the artefacts of this submodule are guarded from there, so apps/id1 must be checked out inside the monorepo with its submodules initialised\" >&2; R=1; fi; exit $R' _"
 
 # `pixi run -m apps/id1/pixi.toml test-testmint`
 # The dev/test image shape: compiles testmint_on.go (the arbitrary-ORCID
 # /auth/test_user mint). The default `test` task compiles testmint_off.go, so
 # both shapes need running - a change that passes one can break the other.
-test-testmint = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -tags=testmint ./... \"$@\"' _"
+test-testmint = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=testmint ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-integration`
 # Live end-to-end tests gated behind the `integration` build tag (the default `test`
 # and the pre-commit hook skip them). main_integration_test.go builds the real main.go_
 # binary and runs it in both TLS modes. TestMain auto-loads .env.test, same as `test`.
-test-integration = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -tags=integration ./... \"$@\"' _"
+test-integration = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=integration ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-integration-testmint`
 # The integration suite compiled in the dev/test image shape. TestID1MintsRequireBuildTags
 # builds every real binary shape itself, so this variant exists to compile the tagged
 # unit files alongside it, not to change what that test asserts.
-test-integration-testmint = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -tags=integration,testmint ./... \"$@\"' _"
+test-integration-testmint = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=integration,testmint ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-curatoriumdemo`
 # Curatorium's own deployment shape: compiles demo_on.go (the demo-identity
@@ -44,12 +44,12 @@ test-integration-testmint = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -ta
 # `test` task compiles demo_off.go (the annot8r_id1 shape, which must never carry
 # this handler) - both shapes need running, since a change that passes one can
 # break the other.
-test-curatoriumdemo = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -tags=curatoriumdemo ./... \"$@\"' _"
+test-curatoriumdemo = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=curatoriumdemo ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-integration-curatoriumdemo`
 # The integration suite compiled with demo_on.go's unit tests alongside it, for
 # the same reason as test-integration-testmint above.
-test-integration-curatoriumdemo = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -tags=integration,curatoriumdemo ./... \"$@\"' _"
+test-integration-curatoriumdemo = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=integration,curatoriumdemo ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-race`
 # The untagged `test` task (and the pre-commit gate that runs it) carries no
@@ -58,7 +58,15 @@ test-integration-curatoriumdemo = "bash -c 'go test -p \"$(scripts/cpu_share.sh)
 # - that is a policy decision (every id1 commit would pay the race detector's
 # runtime overhead) outside this task's scope; run it explicitly, e.g. after
 # touching pub_sub.go, ws_handler.go, or any other concurrent session code.
-test-race = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -race ./... \"$@\"' _"
+test-race = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -race ./... \"$@\"' _"
+
+# `pixi run -m apps/id1/pixi.toml test-walkers`
+# The tests named `TestWalker...` read id1's own source tree (the credential-literal scan and the route
+# inventory). Every other test task skips them with -skip "^TestWalker"; this task runs them alone, on
+# the storage node over ssh when the checkout's .env.test declares CURATORIUM_STORAGE_NODE_ADDRESS and
+# locally otherwise (bin/storage_node_run.sh at the monorepo root). They compile in the untagged shape,
+# so one run covers them.
+test-walkers = "bash -c '[ -n \"${CURATORIUM_ON_STORAGE_NODE:-}\" ] || ! [ -f ../../bin/storage_node_run.sh ] || exec bash ../../bin/storage_node_run.sh pixi run test-walkers \"$@\"; P=$(scripts/cpu_share.sh) || exit 69; go test -p \"$P\" -run \"^TestWalker\" ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml lint`  (mirrors bin/lint.sh's id1 go-vet step)
 # Same three-shape rationale as the `test` task above - `go vet ./...` only
