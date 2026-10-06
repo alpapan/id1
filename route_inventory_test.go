@@ -328,7 +328,11 @@ func assertNoSubpackageEscapesTheWalk(t *testing.T, dir string) {
 	}
 }
 
-func TestRegisteredRoutesMatchTheDeclaredInventory(t *testing.T) {
+// Tests named TestWalker... read this module's own source tree. The `test` tasks skip them with
+// -skip "^TestWalker" and `pixi run test-walkers` runs them alone, on the storage node when
+// .env.test declares one.
+
+func TestWalkerRegisteredRoutesMatchTheDeclaredInventory(t *testing.T) {
 	found := packageRegistrations(t)
 
 	if undeclared := undeclaredRoutes(found); len(undeclared) > 0 {
@@ -367,7 +371,7 @@ func TestEveryInternalPrefixedRouteIsClassifiedInternal(t *testing.T) {
 	}
 }
 
-func TestTheKeyValueCatchAllIsRegistered(t *testing.T) {
+func TestWalkerTheKeyValueCatchAllIsRegistered(t *testing.T) {
 	// Every specific pattern depends on this one existing to fall back to;
 	// without it an unmatched path 404s from the mux rather than reaching the
 	// key/value protocol, which is the difference between "no such key" and "no
