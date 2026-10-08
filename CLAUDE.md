@@ -4,21 +4,23 @@
 
 ## Monorepo Context
 
-Vendored as `apps/id1` (top-level submodule). **id1 is the Curatorium auth router**, and one of several Traefik-exposed services (the others are the rclone sidecar on `/data`, apollo on `/apollo`, and the backend on `/api/v0/*` and `/api/health`). Traefik routes `/auth/sovereign/*`, `/auth/orcid`, `/auth/orcid/callback`, `/auth/refresh`, `/auth/sync_ticket`, `/pub/jwks.json`, `/sync` and `/nextcloud/remote.php/dav/*` to id1 (`Config._frontend_traefik_route_yaml`). `/internal/*` is **not** on that list and is reachable only in-cluster; everything else is ClusterIP-internal.
+Vendored as `apps/id1` (top-level submodule). **id1 is the Curatorium auth router**, and one of several Traefik-exposed services (the others are the rclone sidecar on `/data`, apollo on `/apollo`, the frontend as the host catch-all, and the backend on `/api/v0/files/tus` on the browser host and its machine-host callback routes). Traefik routes `/auth/sovereign/*`, `/auth/orcid`, `/auth/orcid/callback`, `/auth/refresh`, `/auth/sync_ticket`, `/pub/jwks.json`, `/sync` and `/nextcloud/remote.php/dav/*` to id1 (`Config._frontend_traefik_route_yaml`). `/internal/*` is **not** on that list and is reachable only in-cluster; everything else is ClusterIP-internal.
 
 Not in the skill: the JWT lands in `localStorage['CURATORIUM_JWT']`; same-origin sharing means a sign-in propagates cross-tab via `storage` events (`AuthProvider.tsx`).
 
 ### Service topology (Curatorium view)
 
 ```
-Internet -> cloudflared -> Traefik (IngressRouteTCP passthrough) -> id1-router:8080
-                                                                   v (JWKS only)
+Internet -> cloudflared -> Traefik (TLS-terminating IngressRoute) -> id1-router:8080
+                                                                   v (JWKS, /internal/nc-*)
                                                                curatorium-backend:8000 (internal)
                                                                    v
                                                                 postgres:5432 (internal)
 ```
 
-id1<->Starlette calls are **unauthenticated** (internal ClusterIP) - Starlette only validates the browser's user JWT.
+Traefik terminates TLS with the `letsencrypt-wildcard-tls` secret on the `websecure` entry point. The `frontend-sync-to-id1` and `frontend-auth-to-id1` `IngressRoute`s match `Host(<CURATORIUM_DOMAIN>)` plus the paths above and forward to `id1-router:8080`; `machine-host-to-nextcloud` does the same for `/nextcloud/remote.php/dav` on the machine domain, and is rendered only when `MACHINE_DOMAIN` is set. The upstream scheme is `http`, or `https` through the `id1-insecure` `ServersTransport` when `MTLS_ENABLED=true` (`Config._frontend_traefik_route_yaml` and `Config._machine_host_traefik_route_yaml`, rendered into `apps/backend/k8/templates/0-traefik-passthrough.yaml.template`, whose filename is historical: the objects are plain `IngressRoute`s, and no `IngressRouteTCP` is involved).
+
+The JWKS read is unauthenticated (internal ClusterIP) - Starlette validates the browser's user JWT against it. The backend's calls to `/internal/nc-token` and `/internal/nc-provision` carry the `X-ID1-Internal-Secret` header, which must equal id1's `ID1_INTERNAL_SECRET`.
 
 ## Build from the monorepo, not locally
 
@@ -31,7 +33,7 @@ ENV=test pixi run curatorium k3s logs id1 --tail 100
 ENV=test pixi run curatorium k3s restart id1
 ```
 
-Handles image tagging, secret injection, PVC mounts for id1's KV store, TLS cert mounting, Traefik passthrough wiring.
+Handles image tagging, secret injection, PVC mounts for id1's KV store, TLS cert mounting, Traefik `IngressRoute` wiring.
 
 ## This checkout IS the fork
 
@@ -61,7 +63,7 @@ the test suite - extract it into the `id1` package as an exported function and c
 
 `HandleJWKS()` is defined in `jwt_signing.go` but only serves traffic once registered as an HTTP
 handler for `/pub/jwks.json` in `id1.go` - the backend middleware validates RS256 tokens against
-`http://id1:8001/pub/jwks.json`.
+`http://id1-router:8080/pub/jwks.json` (`https` when `MTLS_ENABLED=true`).
 
 ## Commit submodule changes from here
 
