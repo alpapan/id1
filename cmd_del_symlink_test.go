@@ -111,9 +111,9 @@ func TestDelSymlinkAllowsLegitimateDelete(t *testing.T) {
 }
 
 // TestDelSymlinkSkipsTtlBookkeepingRemovalWhenSymlink pins that del() applies
-// the same no-symlink guard to the .ttl.<name> bookkeeping removal that it
+// the same no-symlink guard to the .ttl/<name> bookkeeping removal that it
 // already applies to the main key. If a stray symlink sits at
-// mallory/msg/.ttl.1, del() must not blindly unlink it - it must run
+// mallory/msg/.ttl/1, del() must not blindly unlink it - it must run
 // pathIsSymlinkFree on that path too and skip the bookkeeping removal when it
 // fails, while the main key delete still succeeds.
 func TestDelSymlinkSkipsTtlBookkeepingRemovalWhenSymlink(t *testing.T) {
@@ -126,7 +126,10 @@ func TestDelSymlinkSkipsTtlBookkeepingRemovalWhenSymlink(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(msgDir, "1"), []byte("scheduled"), 0644); err != nil {
 		t.Fatalf("seed message file: %v", err)
 	}
-	ttlSymlink := filepath.Join(msgDir, ".ttl.1")
+	if err := os.MkdirAll(filepath.Join(msgDir, ".ttl"), 0770); err != nil {
+		t.Fatalf("seed ttl dir: %v", err)
+	}
+	ttlSymlink := filepath.Join(msgDir, ".ttl", "1")
 	if err := os.Symlink(outside, ttlSymlink); err != nil {
 		t.Fatalf("seed ttl symlink: %v", err)
 	}
@@ -147,10 +150,9 @@ func TestDelSymlinkSkipsTtlBookkeepingRemovalWhenSymlink(t *testing.T) {
 	}
 }
 
-// TestDelSymlinkStillRemovesTtlBookkeeping pins that the .ttl.<name>
-// bookkeeping removal (built by raw string interpolation, not through K())
-// still works once it is routed through the root handle instead of
-// filepath.Join(dbpath, ...).
+// TestDelSymlinkStillRemovesTtlBookkeeping pins that the bookkeeping removal at
+// .ttl/<name>, built by joining the key's parent, the reserved directory and its
+// name rather than through K(), removes the pointer through the root handle.
 func TestDelSymlinkStillRemovesTtlBookkeeping(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 
@@ -161,7 +163,10 @@ func TestDelSymlinkStillRemovesTtlBookkeeping(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(msgDir, "1"), []byte("scheduled"), 0644); err != nil {
 		t.Fatalf("seed message file: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(msgDir, ".ttl.1"), []byte("del:/mallory/msg/1?x-id=mallory\n"), 0644); err != nil {
+	if err := os.MkdirAll(filepath.Join(msgDir, ".ttl"), 0770); err != nil {
+		t.Fatalf("seed ttl dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(msgDir, ".ttl", "1"), []byte("del:/mallory/msg/1?x-id=mallory\n"), 0644); err != nil {
 		t.Fatalf("seed ttl bookkeeping file: %v", err)
 	}
 
@@ -172,7 +177,7 @@ func TestDelSymlinkStillRemovesTtlBookkeeping(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(msgDir, "1")); statErr == nil {
 		t.Errorf("del() left the message file in place")
 	}
-	if _, statErr := os.Stat(filepath.Join(msgDir, ".ttl.1")); statErr == nil {
+	if _, statErr := os.Stat(filepath.Join(msgDir, ".ttl", "1")); statErr == nil {
 		t.Errorf("del() left the .ttl bookkeeping file in place")
 	}
 }

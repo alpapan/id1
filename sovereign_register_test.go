@@ -439,9 +439,10 @@ func TestRegisterCommitSetsTTL(t *testing.T) {
 	HandleRegisterCommit(kv)(commitRec, commitReq)
 	require.Equal(t, http.StatusOK, commitRec.Code)
 
-	// Verify TTL was set: the .ttl.{deviceId} file should exist in the pub/keys directory
-	ttlPath := mustKK(t, orcid, "pub", "keys", ".ttl."+deviceId)
-	ttlData, err := CmdGet(ttlPath).Exec()
+	// Verify TTL was set: the bookkeeping pointer should exist in the reserved
+	// .ttl directory inside pub/keys
+	ttlPath := mustKK(t, orcid, "pub", "keys", ".ttl", deviceId)
+	ttlData, err := readTTLBookkeeping(ttlPath)
 	assert.NoError(t, err, "TTL metadata file should exist after commit")
 	assert.NotEmpty(t, ttlData, "TTL metadata should contain the .after path")
 }

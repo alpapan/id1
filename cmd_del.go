@@ -10,7 +10,6 @@
 package id1
 
 import (
-	"fmt"
 	"path/filepath"
 )
 
@@ -56,12 +55,11 @@ func (t *Command) del() error {
 	}
 
 	pubsub.Publish(t)
-	dotTtlRel := filepath.Join(t.Key.Parent, fmt.Sprintf(".ttl.%s", t.Key.Name))
-	// The .ttl. bookkeeping path is built by string interpolation, not via the
-	// key's own guarded rel above, so it needs the same no-symlink check on its
-	// own last component. A stray symlink planted at this path must be left
-	// alone, not blindly unlinked - and the main key delete below still
-	// proceeds either way.
+	dotTtlRel := filepath.Join(t.Key.Parent, dotTTLDir, t.Key.Name)
+	// The bookkeeping path is built by joining segments, not via the key's own
+	// guarded rel above, so it needs the same no-symlink check on its own last
+	// component. A stray symlink planted at this path must be left alone, not
+	// blindly unlinked - and the main key delete below still proceeds either way.
 	if pathIsSymlinkFree(root, dotTtlRel) {
 		root.Remove(dotTtlRel)
 	}
