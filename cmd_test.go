@@ -346,7 +346,7 @@ func TestMoveRejectsCrossUserDestination(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Setup: user "alice" has a file (Set auto-creates parent dirs via MkdirAll)
-	srcKey := mustKK(t, "alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "docs", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("secret")).execUnauthorised()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -368,7 +368,7 @@ func TestMoveRejectsCrossUserViaRelativePath(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	srcKey := mustKK(t, "alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "docs", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).execUnauthorised()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -388,7 +388,7 @@ func TestMoveRejectsPathTraversal(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	srcKey := mustKK(t, "alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "docs", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).execUnauthorised()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
@@ -410,13 +410,13 @@ func TestMoveRejectsEmptyXId(t *testing.T) {
 	dbpath = tmpDir
 	t.Cleanup(func() { dbpath = originalDbpath })
 
-	srcKey := mustKK(t, "alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "docs", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": ""}, []byte("data")).execUnauthorised()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
 	}
 
-	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": ""}, []byte("alice/priv/renamed"))
+	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": ""}, []byte("alice/docs/renamed"))
 	_, err = cmd.execUnauthorised()
 	if err == nil {
 		t.Errorf("Move with empty x-id should be rejected for defense-in-depth, but succeeded")
@@ -430,21 +430,21 @@ func TestMoveAllowsSameUserDestination(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Setup: user "alice" has a file (Set auto-creates parent dirs via MkdirAll)
-	srcKey := mustKK(t, "alice", "priv", "myfile")
+	srcKey := mustKK(t, "alice", "docs", "myfile")
 	_, err := NewCommand(Set, srcKey, map[string]string{"x-id": "alice"}, []byte("data")).execUnauthorised()
 	if err != nil {
 		t.Fatalf("Setup failed: %v", err)
 	}
 
 	// Move within alice's own directory should succeed
-	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": "alice"}, []byte("alice/priv/renamed"))
+	cmd := NewCommand(Mov, srcKey, map[string]string{"x-id": "alice"}, []byte("alice/docs/renamed"))
 	_, err = cmd.execUnauthorised()
 	if err != nil {
 		t.Errorf("Move within same user's directory should succeed, got: %v", err)
 	}
 
 	// Verify the data moved
-	data, err := NewCommand(Get, mustKK(t, "alice", "priv", "renamed"), map[string]string{}, []byte{}).execUnauthorised()
+	data, err := NewCommand(Get, mustKK(t, "alice", "docs", "renamed"), map[string]string{}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Errorf("Get moved file failed: %v", err)
 	} else if string(data) != "data" {
