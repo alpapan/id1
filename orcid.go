@@ -191,7 +191,7 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error encoding auth state", http.StatusInternalServerError)
 		return
 	}
-	if _, err := CmdSet(stateStoreKey, map[string]string{"ttl": ttlSeconds, "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+	if _, err := CmdSet(stateStoreKey, map[string]string{"ttl": ttlSeconds, "x-id": stateKeyPrefix}, wire).execUnauthorised(); err != nil {
 		// err comes from the KV store's own Set failure (e.g. disk/permission
 		// error), never from request input, so it carries no secret material.
 		log.Printf("orcid state store failed: %s", truncatedLogValue(err.Error()))
@@ -266,7 +266,7 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	data, getErr := CmdGet(stateKey).Exec()
+	data, getErr := CmdGet(stateKey).execUnauthorised()
 	if getErr != nil || len(data) == 0 {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
@@ -274,7 +274,7 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Single-use: consume the state immediately. Best-effort - if the delete fails
 	// the TTL sweeper (dotAfter) still collects it, and the created check below is a
 	// defense-in-depth backstop.
-	if _, delErr := CmdDel(stateKey).Exec(); delErr != nil {
+	if _, delErr := CmdDel(stateKey).execUnauthorised(); delErr != nil {
 		// err comes from the KV store's own Del failure, never from request
 		// input, so it carries no secret material. Logged, not fatal - the
 		// TTL sweeper still reclaims the key, per the comment above.
@@ -380,8 +380,8 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			if data, err := CmdGet(deviceKey).Exec(); err == nil && len(data) > 0 {
-				CmdSet(deviceKey, map[string]string{"x-id": orcidID, "ttl": "604800"}, data).Exec()
+			if data, err := CmdGet(deviceKey).execUnauthorised(); err == nil && len(data) > 0 {
+				CmdSet(deviceKey, map[string]string{"x-id": orcidID, "ttl": "604800"}, data).execUnauthorised()
 			}
 		}
 	}

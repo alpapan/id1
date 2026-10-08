@@ -28,7 +28,7 @@ func TestAuthOwnerCanSetOwnPublicKey(t *testing.T) {
 	setupAuthTest(t)
 	// Multi-device: keys at pub/keys/{deviceId}
 	testid1DeviceKey := mustKK(t, "testid1", "pub", "keys", "device-1")
-	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
+	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).execUnauthorised()
 
 	if !auth("testid1", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{}), "") {
 		t.Errorf("testid1 should be authorized to set own device key")
@@ -38,7 +38,7 @@ func TestAuthOwnerCanSetOwnPublicKey(t *testing.T) {
 func TestAuthNonOwnerCannotSetOthersKey(t *testing.T) {
 	setupAuthTest(t)
 	testid1DeviceKey := mustKK(t, "testid1", "pub", "keys", "device-1")
-	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
+	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).execUnauthorised()
 
 	if auth("testid2", NewCommand(Set, testid1DeviceKey, map[string]string{}, []byte{}), "") {
 		t.Errorf("testid2 should not be authorized to modify testid1's device key")
@@ -48,7 +48,7 @@ func TestAuthNonOwnerCannotSetOthersKey(t *testing.T) {
 func TestAuthAnonymousCanReadPublicKeys(t *testing.T) {
 	setupAuthTest(t)
 	testid1DeviceKey := mustKK(t, "testid1", "pub", "keys", "device-1")
-	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec()
+	CmdSet(testid1DeviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).execUnauthorised()
 
 	if !auth("", NewCommand(Get, testid1DeviceKey, map[string]string{}, []byte{}), "") {
 		t.Errorf("anonymous user should be authorized to read public device keys")
@@ -81,7 +81,7 @@ func TestIdExists(t *testing.T) {
 	setupAuthTest(t)
 	// Multi-device: keys live at pub/keys/{deviceId}
 	deviceKey := mustKK(t, "testid1", "pub", "keys", "default")
-	if _, err := CmdSet(deviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).Exec(); err != nil {
+	if _, err := CmdSet(deviceKey, map[string]string{"x-id": "testid1"}, []byte("..........")).execUnauthorised(); err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
 
@@ -105,13 +105,13 @@ func TestIdExistsMultiDevice(t *testing.T) {
 	}
 
 	// Register a device key at pub/keys/device-1
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-DATA")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-DATA")).execUnauthorised()
 	if !idExists(orcid) {
 		t.Errorf("idExists should return true when a device key exists at pub/keys/device-1")
 	}
 
 	// Register a second device - still true
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-DATA-2")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-DATA-2")).execUnauthorised()
 	if !idExists(orcid) {
 		t.Errorf("idExists should return true with multiple device keys")
 	}
@@ -119,7 +119,7 @@ func TestIdExistsMultiDevice(t *testing.T) {
 	// Metadata-only (.name files) should not count
 	setupAuthTest(t)
 	orcid2 := "0000-0002-0000-0001"
-	CmdSet(mustKK(t, orcid2, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid2}, []byte("My Browser")).Exec()
+	CmdSet(mustKK(t, orcid2, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid2}, []byte("My Browser")).execUnauthorised()
 	if idExists(orcid2) {
 		t.Errorf("idExists should return false when only .name metadata files exist")
 	}
@@ -150,7 +150,7 @@ func TestIdExists_SingularPubKey(t *testing.T) {
 
 	// Write only at the singular path, not under pub/keys/.
 	singularKey := mustKK(t, "service", "pub", "key")
-	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).Exec(); err != nil {
+	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).execUnauthorised(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +171,7 @@ func TestAuth_AnonymousOverwriteBlockedAfterSingularBootstrap(t *testing.T) {
 	singularKey := mustKK(t, "service", "pub", "key")
 
 	// Seed the singular key to simulate a successful prior bootstrap.
-	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).Exec(); err != nil {
+	if _, err := CmdSet(singularKey, map[string]string{"x-id": "service"}, []byte(testPubKey1)).execUnauthorised(); err != nil {
 		t.Fatal(err)
 	}
 

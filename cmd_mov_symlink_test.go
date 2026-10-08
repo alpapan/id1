@@ -15,7 +15,7 @@ func TestMoveSymlinkRefusesSourceEntryItself(t *testing.T) {
 	store, outside := seedSymlinkStore(t)
 	src := mustK(t, "mallory/escape")
 
-	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/dest")).Exec()
+	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/dest")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() with a symlink SOURCE entry: got err=%v, want ErrForbidden", err)
 	}
@@ -44,7 +44,7 @@ func TestMoveSymlinkRefusesThroughAbsoluteSymlinkSource(t *testing.T) {
 	store, outside := seedSymlinkStore(t)
 	src := mustK(t, "mallory/escape/secret")
 
-	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/dest")).Exec()
+	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/dest")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() through an absolute symlink SOURCE: got err=%v, want ErrForbidden", err)
 	}
@@ -69,7 +69,7 @@ func TestMoveSymlinkRefusesThroughRelativeSymlinkSourceCrossNamespace(t *testing
 	store, _ := seedSymlinkStore(t)
 	src := mustK(t, "mallory/cross/priv/salt")
 
-	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/stolen")).Exec()
+	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/stolen")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() through a relative cross-namespace symlink SOURCE: got err=%v, want ErrForbidden", err)
 	}
@@ -93,7 +93,7 @@ func TestMoveSymlinkRefusesDestinationThroughSymlink(t *testing.T) {
 	store, outside := seedSymlinkStore(t)
 	src := mustK(t, "mallory/own")
 
-	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/escape/planted")).Exec()
+	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/escape/planted")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() with a DESTINATION through a symlink: got err=%v, want ErrForbidden", err)
 	}
@@ -111,7 +111,7 @@ func TestMoveSymlinkRefusesDestinationEntryItself(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	src := mustK(t, "mallory/own")
 
-	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/escape")).Exec()
+	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/escape")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() onto a symlink DESTINATION entry: got err=%v, want ErrForbidden", err)
 	}
@@ -135,7 +135,7 @@ func TestMoveSymlinkAllowsLegitimateSameNamespaceMove(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	src := mustK(t, "mallory/own")
 
-	if _, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/archive/own")).Exec(); err != nil {
+	if _, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/archive/own")).execUnauthorised(); err != nil {
 		t.Fatalf("move() refused a legitimate own-namespace move: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(store, "mallory", "own")); statErr == nil {

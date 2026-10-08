@@ -178,7 +178,7 @@ func createDotTtl(cmd *Command) {
 		if oldKey, err := K(string(oldDotAfter)); err != nil {
 			log.Printf("createDotTtl: skipping stale .after cleanup for %s: %v", cmd.Key.String(), err)
 		} else {
-			CmdDel(oldKey).Exec()
+			CmdDel(oldKey).execUnauthorised()
 		}
 	}
 
@@ -188,5 +188,5 @@ func createDotTtl(cmd *Command) {
 		log.Printf("createDotTtl: skipping TTL bookkeeping for %s: %v", cmd.Key.String(), err)
 		return
 	}
-	CmdSet(dotAfterKey, map[string]string{"x-id": cmd.Args["x-id"]}, dotAfterCommand.Bytes()).Exec()
+	CmdSet(dotAfterKey, map[string]string{"x-id": cmd.Args["x-id"]}, dotAfterCommand.Bytes()).execUnauthorised()
 }

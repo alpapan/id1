@@ -20,7 +20,7 @@ import (
 )
 
 // unauthorisedExecName is the method that runs a command with no authorisation.
-const unauthorisedExecName = "Exec"
+const unauthorisedExecName = "execUnauthorised"
 
 // inProcessConstructors names the constructors whose direct call on the result
 // is allowed without ExecAs. The guard checks call shape only: a call of the
@@ -83,8 +83,8 @@ func TestExecutionEntryPointsDerivationWorks(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`package id1
 
 func sample(cmd Command, k Id1Key) {
-	cmd.Exec()
-	CmdGet(k).Exec()
+	cmd.execUnauthorised()
+	CmdGet(k).execUnauthorised()
 }
 `), 0644); err != nil {
 		t.Fatalf("writing synthetic source: %v", err)

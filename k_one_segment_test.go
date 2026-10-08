@@ -130,7 +130,7 @@ func TestTTLStillWorksWithAMultiSegmentParent(t *testing.T) {
 	root := newTTLStore(t)
 
 	key := mustK(t, "alice/sub/deep/greeting")
-	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).execUnauthorised(); err != nil {
 		t.Fatalf("set with ttl failed: %v", err)
 	}
 

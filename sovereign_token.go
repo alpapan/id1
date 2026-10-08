@@ -106,7 +106,7 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 		usedSingularFallback := false
-		pubKeyPEM, err := CmdGet(multiDevicePath).Exec()
+		pubKeyPEM, err := CmdGet(multiDevicePath).execUnauthorised()
 		if err != nil || len(pubKeyPEM) == 0 {
 			usedSingularFallback = true
 			var singularKeyPath Id1Key
@@ -115,7 +115,7 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 				err400(w, "invalid id")
 				return
 			}
-			pubKeyPEM, err = CmdGet(singularKeyPath).Exec()
+			pubKeyPEM, err = CmdGet(singularKeyPath).execUnauthorised()
 			if err != nil || len(pubKeyPEM) == 0 {
 				err404(w, "no public key registered for this id")
 				return
@@ -148,8 +148,8 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		// anonymous-bootstrap path; expiring it would silently lock out SLURM
 		// services between active periods).
 		if !usedSingularFallback {
-			if existingKey, err := CmdGet(multiDevicePath).Exec(); err == nil && len(existingKey) > 0 {
-				CmdSet(multiDevicePath, map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).Exec()
+			if existingKey, err := CmdGet(multiDevicePath).execUnauthorised(); err == nil && len(existingKey) > 0 {
+				CmdSet(multiDevicePath, map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).execUnauthorised()
 			}
 		}
 

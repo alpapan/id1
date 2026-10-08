@@ -80,7 +80,7 @@ func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 			deviceId := entry.Name()
 			deviceName := deviceId // default to ID
 			if nameKey, err := KK(orcidId, "pub", "keys", deviceId+".name"); err == nil {
-				if nameData, err := CmdGet(nameKey).Exec(); err == nil {
+				if nameData, err := CmdGet(nameKey).execUnauthorised(); err == nil {
 					deviceName = string(nameData)
 				}
 			}
@@ -140,13 +140,13 @@ func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Invalid id or device", http.StatusBadRequest)
 			return
 		} else {
-			CmdDel(deviceKey).Exec()
+			CmdDel(deviceKey).execUnauthorised()
 		}
 		if deviceNameKey, err := KK(orcidId, "pub", "keys", deviceId+".name"); err != nil {
 			http.Error(w, "Invalid id or device", http.StatusBadRequest)
 			return
 		} else {
-			CmdDel(deviceNameKey).Exec()
+			CmdDel(deviceNameKey).execUnauthorised()
 		}
 
 		w.Header().Set("Content-Type", "application/json")

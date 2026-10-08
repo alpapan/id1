@@ -182,7 +182,7 @@ func TestInternalSyncTicket_MintsReportScopedTicket(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.NotEmpty(t, body.Ticket)
 
-	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).Exec()
+	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).execUnauthorised()
 	require.NoError(t, err)
 	var stored struct {
 		Subject  string `json:"subject"`
@@ -240,10 +240,10 @@ func TestInternalSyncTicket_GarbageCollectedByDotAfter(t *testing.T) {
 	// Seed a ticket with a 1-second TTL via the same path HandleInternalSyncTicket
 	// uses (syncTicketPrefix/syncTicketTTL), but with the report-scoped JSON value.
 	if _, err := CmdSet(mustKK(t, syncTicketPrefix, "internal-gc-ticket"),
-		map[string]string{"ttl": "1", "x-id": syncTicketPrefix}, value).Exec(); err != nil {
+		map[string]string{"ttl": "1", "x-id": syncTicketPrefix}, value).execUnauthorised(); err != nil {
 		t.Fatalf("seed with ttl: %v", err)
 	}
-	if data, err := CmdGet(mustKK(t, syncTicketPrefix, "internal-gc-ticket")).Exec(); err != nil || len(data) == 0 {
+	if data, err := CmdGet(mustKK(t, syncTicketPrefix, "internal-gc-ticket")).execUnauthorised(); err != nil || len(data) == 0 {
 		t.Fatal("ticket should be present immediately after seeding")
 	}
 
@@ -251,7 +251,7 @@ func TestInternalSyncTicket_GarbageCollectedByDotAfter(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 	dotAfter(dbpath)
 
-	if _, err := CmdGet(mustKK(t, syncTicketPrefix, "internal-gc-ticket")).Exec(); err == nil {
+	if _, err := CmdGet(mustKK(t, syncTicketPrefix, "internal-gc-ticket")).execUnauthorised(); err == nil {
 		t.Error("expired report-scoped sync ticket was not garbage-collected by dotAfter (check x-id authorization)")
 	}
 }
@@ -310,7 +310,7 @@ func TestInternalSyncTicket_MintsGridScopedTicket(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.NotEmpty(t, body.Ticket)
 
-	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).Exec()
+	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).execUnauthorised()
 	require.NoError(t, err)
 	var stored struct {
 		Subject     string `json:"subject"`
@@ -449,7 +449,7 @@ func TestInternalSyncTicket_GridTicketValueRoundTrips(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 
-	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).Exec()
+	raw, err := CmdGet(mustKK(t, "_syncticket", body.Ticket)).execUnauthorised()
 	require.NoError(t, err)
 	var decoded syncTicketReportValue
 	require.NoError(t, json.Unmarshal(raw, &decoded))

@@ -105,7 +105,7 @@ func HandleInternalRegisterKey() http.HandlerFunc {
 			http.Error(w, "Failed to store key", http.StatusInternalServerError)
 			return
 		}
-		if _, err := CmdSet(deviceKeyPath, map[string]string{"x-id": req.ID}, []byte(req.PublicKeyPEM)).Exec(); err != nil {
+		if _, err := CmdSet(deviceKeyPath, map[string]string{"x-id": req.ID}, []byte(req.PublicKeyPEM)).execUnauthorised(); err != nil {
 			http.Error(w, "Failed to store key", http.StatusInternalServerError)
 			return
 		}

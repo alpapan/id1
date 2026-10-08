@@ -90,7 +90,7 @@ func seedState(t *testing.T, key string, entry stateEntry) {
 	if err != nil {
 		t.Fatalf("failed to marshal seed state %q: %v", key, err)
 	}
-	if _, err := CmdSet(mustKK(t, stateKeyPrefix, key), map[string]string{"x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+	if _, err := CmdSet(mustKK(t, stateKeyPrefix, key), map[string]string{"x-id": stateKeyPrefix}, wire).execUnauthorised(); err != nil {
 		t.Fatalf("failed to seed state %q: %v", key, err)
 	}
 }
@@ -99,7 +99,7 @@ func seedState(t *testing.T, key string, entry stateEntry) {
 // the key is absent (consumed, expired-and-swept, or never written).
 func readState(t *testing.T, key string) (stateEntry, bool) {
 	t.Helper()
-	data, err := CmdGet(mustKK(t, stateKeyPrefix, key)).Exec()
+	data, err := CmdGet(mustKK(t, stateKeyPrefix, key)).execUnauthorised()
 	if err != nil || len(data) == 0 {
 		return stateEntry{}, false
 	}
@@ -1404,7 +1404,7 @@ func TestOrcidStateGarbageCollectedByDotAfter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if _, err := CmdSet(mustKK(t, stateKeyPrefix, "gc_state"), map[string]string{"ttl": "1", "x-id": stateKeyPrefix}, wire).Exec(); err != nil {
+	if _, err := CmdSet(mustKK(t, stateKeyPrefix, "gc_state"), map[string]string{"ttl": "1", "x-id": stateKeyPrefix}, wire).execUnauthorised(); err != nil {
 		t.Fatalf("seed with ttl: %v", err)
 	}
 	if _, ok := readState(t, "gc_state"); !ok {
@@ -1518,7 +1518,7 @@ func TestOrcidCallbackUnmarshalErrorIsLogged(t *testing.T) {
 
 	// Write non-JSON data directly under the state key, bypassing seedState's
 	// json.Marshal so the stored value is not valid stateEntryWire JSON.
-	if _, err := CmdSet(mustKK(t, stateKeyPrefix, "corrupt_state"), map[string]string{"x-id": stateKeyPrefix}, []byte("not valid json")).Exec(); err != nil {
+	if _, err := CmdSet(mustKK(t, stateKeyPrefix, "corrupt_state"), map[string]string{"x-id": stateKeyPrefix}, []byte("not valid json")).execUnauthorised(); err != nil {
 		t.Fatalf("failed to seed corrupt state: %v", err)
 	}
 
@@ -1619,7 +1619,7 @@ func TestOrcidCallbackStateRejectsPathTraversal(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// A victim KV entry outside the _authstate namespace (mirrors a device/signing key).
-	if _, err := CmdSet(mustK(t, "victimkey"), map[string]string{"x-id": "victimkey"}, []byte("secret")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victimkey"), map[string]string{"x-id": "victimkey"}, []byte("secret")).execUnauthorised(); err != nil {
 		t.Fatalf("seed victim: %v", err)
 	}
 
@@ -1636,7 +1636,7 @@ func TestOrcidCallbackStateRejectsPathTraversal(t *testing.T) {
 		t.Errorf("expected 400 for traversal state, got %d: %s", rec.Code, rec.Body.String())
 	}
 	// Load-bearing: the victim must NOT have been deleted by the callback.
-	if data, err := CmdGet(mustK(t, "victimkey")).Exec(); err != nil || string(data) != "secret" {
+	if data, err := CmdGet(mustK(t, "victimkey")).execUnauthorised(); err != nil || string(data) != "secret" {
 		t.Errorf("SECURITY: path-traversal state deleted/altered a file outside the namespace (err=%v, data=%q)", err, string(data))
 	}
 }
@@ -1651,7 +1651,7 @@ func TestKVGetDelRejectDotDotSegments(t *testing.T) {
 	t.Cleanup(func() { dbpath = originalDbpath })
 
 	// Victim INSIDE dbpath, in a different namespace (mirrors a device key).
-	if _, err := CmdSet(mustK(t, "victimns/secret"), map[string]string{"x-id": "victimns"}, []byte("secret")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victimns/secret"), map[string]string{"x-id": "victimns"}, []byte("secret")).execUnauthorised(); err != nil {
 		t.Fatalf("seed victim: %v", err)
 	}
 
@@ -1673,13 +1673,13 @@ func TestKVGetDelRejectDotDotSegments(t *testing.T) {
 		Parent:   "_authstate/../victimns",
 		Segments: []string{"_authstate", "..", "victimns", "secret"},
 	}
-	if _, err := CmdGet(escapeKey).Exec(); err == nil {
+	if _, err := CmdGet(escapeKey).execUnauthorised(); err == nil {
 		t.Error("SECURITY: CmdGet accepted a key with a .. segment (cross-namespace traversal)")
 	}
-	if _, err := CmdDel(escapeKey).Exec(); err == nil {
+	if _, err := CmdDel(escapeKey).execUnauthorised(); err == nil {
 		t.Error("SECURITY: CmdDel accepted a key with a .. segment (cross-namespace traversal)")
 	}
-	if data, err := CmdGet(mustK(t, "victimns/secret")).Exec(); err != nil || string(data) != "secret" {
+	if data, err := CmdGet(mustK(t, "victimns/secret")).execUnauthorised(); err != nil || string(data) != "secret" {
 		t.Errorf("SECURITY: cross-namespace traversal deleted the victim (err=%v data=%q)", err, string(data))
 	}
 }

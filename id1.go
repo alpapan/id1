@@ -100,7 +100,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 					err404(w, "")
 					return
 				}
-				if pubKey, err := CmdGet(deviceKey).Exec(); err == nil {
+				if pubKey, err := CmdGet(deviceKey).execUnauthorised(); err == nil {
 					if challenge, err := generateChallenge(req.Id, string(pubKey)); err == nil {
 						err401(w, challenge)
 					} else {

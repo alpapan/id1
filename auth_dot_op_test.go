@@ -30,25 +30,25 @@ func setup(t *testing.T) {
 	// - test0-level roles: max has "Admin"
 	// - test0/pub/tags level roles: max has "Tagger"
 
-	_, err := CmdSet(mustK(t, "test0/pub/key"), map[string]string{}, []byte("...")).Exec()
+	_, err := CmdSet(mustK(t, "test0/pub/key"), map[string]string{}, []byte("...")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0/pub/key")
 
-	_, err = CmdSet(mustK(t, "test0/pub/tags/Robot"), map[string]string{}, []byte("...")).Exec()
+	_, err = CmdSet(mustK(t, "test0/pub/tags/Robot"), map[string]string{}, []byte("...")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0/pub/tags/Robot")
 
-	_, err = CmdSet(mustK(t, "test0/.get"), map[string]string{}, []byte("Reader")).Exec()
+	_, err = CmdSet(mustK(t, "test0/.get"), map[string]string{}, []byte("Reader")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0/.get permission")
 
-	_, err = CmdSet(mustK(t, "test0/pub/tags/.set"), map[string]string{}, []byte("Tagger")).Exec()
+	_, err = CmdSet(mustK(t, "test0/pub/tags/.set"), map[string]string{}, []byte("Tagger")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0/pub/tags/.set permission")
 
-	_, err = CmdSet(mustK(t, ".roles/max"), map[string]string{}, []byte("Reader")).Exec()
+	_, err = CmdSet(mustK(t, ".roles/max"), map[string]string{}, []byte("Reader")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set global role for max")
 
-	_, err = CmdSet(mustK(t, "test0/.roles/max"), map[string]string{}, []byte("Admin")).Exec()
+	_, err = CmdSet(mustK(t, "test0/.roles/max"), map[string]string{}, []byte("Admin")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0-level role for max")
 
-	_, err = CmdSet(mustK(t, "test0/pub/tags/.roles/max"), map[string]string{}, []byte("Tagger")).Exec()
+	_, err = CmdSet(mustK(t, "test0/pub/tags/.roles/max"), map[string]string{}, []byte("Tagger")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0/pub/tags role for max")
 }
 

@@ -26,7 +26,7 @@ func authDotOp(id string, cmd Command) bool {
 	for len(parentKey.String()) != 0 {
 		dotOpKey, err := KK(parentKey, fmt.Sprintf(".%s", cmd.Op))
 		if err == nil {
-			if data, err := CmdGet(dotOpKey).Exec(); err == nil {
+			if data, err := CmdGet(dotOpKey).execUnauthorised(); err == nil {
 				lines := strings.Split(string(data), "\n")
 				if ContainsAny(lines, roles) {
 					return true
@@ -52,7 +52,7 @@ func getRoles(id string, key Id1Key) []string {
 	for {
 		rolesKey, err := KK(parentKey, ".roles", id)
 		if err == nil {
-			if data, err := CmdGet(rolesKey).Exec(); err == nil {
+			if data, err := CmdGet(rolesKey).execUnauthorised(); err == nil {
 				lines := strings.Split(string(data), "\n")
 				result = append(result, lines...)
 			}

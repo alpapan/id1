@@ -105,7 +105,7 @@ func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 	kv := setupTestKVStore(t)
 	// seed a ticket as the mint endpoint would
 	CmdSet(mustKK(t, "_syncticket", "good-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).execUnauthorised()
 	backend := stubBackendWS(t)
 	defer backend.Close()
 	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
@@ -119,7 +119,7 @@ func TestSyncProxy_ValidTicket_BurnedAfterUse(t *testing.T) {
 		c.Close()
 	}
 	// ticket burned: gone from KV, so a second use is rejected
-	_, getErr := CmdGet(mustKK(t, "_syncticket", "good-ticket")).Exec()
+	_, getErr := CmdGet(mustKK(t, "_syncticket", "good-ticket")).execUnauthorised()
 	assert.Error(t, getErr, "ticket must be burned (deleted) after first use")
 	c2, resp2, err2 := websocket.DefaultDialer.Dial(wsURL, nil)
 	require.Error(t, err2)
@@ -136,7 +136,7 @@ func TestSyncProxy_ConcurrentTicketUse_SingleWinner(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	kv := setupTestKVStore(t)
 	CmdSet(mustKK(t, "_syncticket", "race-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).execUnauthorised()
 	backend := stubBackendWS(t)
 	defer backend.Close()
 	handler, err := SyncProxy(strings.TrimPrefix(backend.URL, "http://"), kv)
@@ -191,7 +191,7 @@ func TestSyncProxy_UnscopedTicket_NeverDialsBackend(t *testing.T) {
 	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
 	kv := setupTestKVStore(t)
 	CmdSet(mustKK(t, "_syncticket", "plain-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		[]byte("0000-0001-2345-6789")).Exec()
+		[]byte("0000-0001-2345-6789")).execUnauthorised()
 
 	var captured string
 	var capturedMu sync.Mutex
@@ -228,7 +228,7 @@ func TestSyncProxy_AttachesSignedAssertion_ReportScopedTicket(t *testing.T) {
 	})
 	require.NoError(t, err)
 	CmdSet(mustKK(t, "_syncticket", "report-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		value).Exec()
+		value).execUnauthorised()
 
 	var captured string
 	var capturedMu sync.Mutex
@@ -267,7 +267,7 @@ func TestSyncProxy_EmptyTicketValue_AbortsUpgrade(t *testing.T) {
 	t.Setenv("ID1_JWT_ISSUER", "https://id1.example.test")
 	kv := setupTestKVStore(t)
 	CmdSet(mustKK(t, "_syncticket", "empty-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		[]byte("")).Exec()
+		[]byte("")).execUnauthorised()
 
 	backend := stubBackendWS(t)
 	defer backend.Close()
@@ -297,7 +297,7 @@ func TestSyncProxy_AttachesSignedAssertion_GridScopedTicket(t *testing.T) {
 	})
 	require.NoError(t, err)
 	CmdSet(mustKK(t, "_syncticket", "grid-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		value).Exec()
+		value).execUnauthorised()
 
 	var captured string
 	var capturedMu sync.Mutex
@@ -340,7 +340,7 @@ func TestSyncProxy_GridTicketWithEmptyAutomergeID_AbortsUpgradeAndBurnsTicket(t 
 	})
 	require.NoError(t, err)
 	CmdSet(mustKK(t, "_syncticket", "grid-empty-id-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		value).Exec()
+		value).execUnauthorised()
 
 	backend := stubBackendWS(t)
 	defer backend.Close()
@@ -356,7 +356,7 @@ func TestSyncProxy_GridTicketWithEmptyAutomergeID_AbortsUpgradeAndBurnsTicket(t 
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	}
 
-	_, getErr := CmdGet(mustKK(t, "_syncticket", "grid-empty-id-ticket")).Exec()
+	_, getErr := CmdGet(mustKK(t, "_syncticket", "grid-empty-id-ticket")).execUnauthorised()
 	assert.Error(t, getErr, "the ticket must still be burned even though the upgrade was refused")
 }
 
@@ -373,7 +373,7 @@ func TestSyncProxy_UnscopedTicket_RejectedPreUpgrade(t *testing.T) {
 	t.Setenv("MTLS_ENABLED", "false")
 	kv := setupTestKVStore(t)
 	CmdSet(mustKK(t, "_syncticket", "unscoped-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		[]byte("0000-0001-2345-6789")).Exec()
+		[]byte("0000-0001-2345-6789")).execUnauthorised()
 	handler, err := SyncProxy("127.0.0.1:1", kv)
 	require.NoError(t, err)
 	srv := httptest.NewServer(http.HandlerFunc(handler))
@@ -385,7 +385,7 @@ func TestSyncProxy_UnscopedTicket_RejectedPreUpgrade(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 
-	_, getErr := CmdGet(mustKK(t, "_syncticket", "unscoped-ticket")).Exec()
+	_, getErr := CmdGet(mustKK(t, "_syncticket", "unscoped-ticket")).execUnauthorised()
 	assert.Error(t, getErr, "the ticket must still be burned even though the upgrade was refused")
 }
 
@@ -428,7 +428,7 @@ func TestSyncProxyRelaysFrames(t *testing.T) {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
 	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).execUnauthorised()
 
 	// Proxy server
 	proxy := httptest.NewServer(handler)
@@ -485,7 +485,7 @@ func TestSyncProxyBinaryFrames(t *testing.T) {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
 	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).execUnauthorised()
 
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
@@ -523,7 +523,7 @@ func TestSyncProxyUpstreamUnavailable(t *testing.T) {
 		t.Fatalf("SyncProxy error: %v", err)
 	}
 	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).execUnauthorised()
 
 	// The proxy authenticates the ticket, upgrades the client, then dials the backend.
 	// If the backend is unreachable, the upgraded connection closes immediately.

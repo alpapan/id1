@@ -72,7 +72,7 @@ func (ID1KeyValueStore) CmdGet(key string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid key %q: %w", key, err)
 	}
-	return CmdGet(k).Exec()
+	return CmdGet(k).execUnauthorised()
 }
 
 func (ID1KeyValueStore) CmdSet(key string, value []byte) error {
@@ -80,7 +80,7 @@ func (ID1KeyValueStore) CmdSet(key string, value []byte) error {
 	if err != nil {
 		return fmt.Errorf("invalid key %q: %w", key, err)
 	}
-	_, err = CmdSet(k, map[string]string{}, value).Exec()
+	_, err = CmdSet(k, map[string]string{}, value).execUnauthorised()
 	return err
 }
 

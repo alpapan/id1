@@ -124,10 +124,15 @@ func (t Command) ExecAs(id string, internalSecretHeader string) ([]byte, error) 
 	if !auth(id, t, internalSecretHeader) {
 		return []byte{}, ErrUnauthorised
 	}
-	return t.Exec()
+	return t.execUnauthorised()
 }
 
-func (t Command) Exec() ([]byte, error) {
+// execUnauthorised runs the command with no authorisation check. It is for
+// in-process callers that built the command themselves from a key they parsed
+// (a signing key, a salt, a ticket); a command that arrives on someone's
+// behalf runs through ExecAs. It is deliberately unexported so a new caller has
+// to write the word to use it.
+func (t Command) execUnauthorised() ([]byte, error) {
 	switch t.Op {
 	case Set:
 		return []byte{}, t.set()

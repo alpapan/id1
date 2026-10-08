@@ -75,14 +75,14 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 		// the CmdDel below remains the sole gate: a CmdGet-presence-then-CmdDel sequence would
 		// be a TOCTOU where two upgrades could both pass. We read first only so the value is
 		// available AFTER we have already won the delete.
-		ticketValueBytes, _ := CmdGet(ticketKey).Exec()
+		ticketValueBytes, _ := CmdGet(ticketKey).execUnauthorised()
 
 		// Burn atomically by delete-first: the ticket is a leaf key, so Command.del
 		// takes the os.Remove branch - a single-winner atomic unlink. Allow the
 		// upgrade ONLY if this call won the delete (err == nil); the loser of a
 		// concurrent burn, an unknown ticket, an expired (TTL-swept) ticket, and a
 		// ".." traversal (rejected by keyWithinRoot) all return a non-nil error.
-		if _, err := CmdDel(ticketKey).Exec(); err != nil {
+		if _, err := CmdDel(ticketKey).execUnauthorised(); err != nil {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -16,7 +16,7 @@ import (
 func seedExecAsNote(t *testing.T) {
 	t.Helper()
 	newTTLStore(t)
-	if _, err := CmdSet(mustK(t, "victim/msg/note"), map[string]string{"x-id": "victim"}, []byte("secret")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victim/msg/note"), map[string]string{"x-id": "victim"}, []byte("secret")).execUnauthorised(); err != nil {
 		t.Fatalf("seeding the note failed: %v", err)
 	}
 }
@@ -72,7 +72,7 @@ func TestExecAsHonoursTheInternalSecretForANewIdentityBootstrap(t *testing.T) {
 	if _, err := CmdSet(key, map[string]string{"x-id": ""}, []byte("PEM")).ExecAs("", "exec-as-secret"); err != nil {
 		t.Fatalf("bootstrap with the correct header failed: %v", err)
 	}
-	stored, err := CmdGet(key).Exec()
+	stored, err := CmdGet(key).execUnauthorised()
 	if err != nil || string(stored) != "PEM" {
 		t.Errorf("the bootstrapped key was not stored: data=%q err=%v", string(stored), err)
 	}

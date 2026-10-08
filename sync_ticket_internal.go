@@ -171,7 +171,7 @@ func HandleInternalSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 
 		if _, err := CmdSet(ticketKey,
 			map[string]string{"x-id": syncTicketPrefix, "ttl": syncTicketTTL},
-			valueBytes).Exec(); err != nil {
+			valueBytes).execUnauthorised(); err != nil {
 			http.Error(w, "failed to store ticket", http.StatusInternalServerError)
 			return
 		}

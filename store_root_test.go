@@ -48,7 +48,7 @@ func seedSymlinkStore(t *testing.T) (store string, outside string) {
 func TestGetRefusesEscapingSymlink(t *testing.T) {
 	seedSymlinkStore(t)
 	k := mustK(t, "mallory/escape/secret")
-	data, err := CmdGet(k).Exec()
+	data, err := CmdGet(k).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("get through an escaping symlink: got err=%v, want ErrForbidden", err)
 	}
@@ -60,7 +60,7 @@ func TestGetRefusesEscapingSymlink(t *testing.T) {
 func TestGetRefusesInStoreRelativeSymlink(t *testing.T) {
 	seedSymlinkStore(t)
 	k := mustK(t, "mallory/cross/priv/salt")
-	data, err := CmdGet(k).Exec()
+	data, err := CmdGet(k).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("get through an in-store relative symlink: got err=%v, want ErrForbidden", err)
 	}
@@ -72,7 +72,7 @@ func TestGetRefusesInStoreRelativeSymlink(t *testing.T) {
 func TestGetStillReadsLegitimateKey(t *testing.T) {
 	seedSymlinkStore(t)
 	k := mustK(t, "mallory/own")
-	data, err := CmdGet(k).Exec()
+	data, err := CmdGet(k).execUnauthorised()
 	if err != nil {
 		t.Fatalf("legitimate get failed: %v", err)
 	}

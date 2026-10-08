@@ -15,7 +15,7 @@ import (
 )
 
 // keyWithinRoot reports whether key resolves to a path inside dbpath with no ".."
-// traversal segment. get()/del() run via Command.Exec() with NO auth() check
+// traversal segment. get()/del() run via Command.execUnauthorised() with NO auth() check
 // (auth applies only at the HTTP KV dispatcher), so any in-process caller that
 // builds a key from untrusted input could otherwise read/delete files in another
 // namespace ("a/../b" stays inside dbpath but escapes namespace a) or outside

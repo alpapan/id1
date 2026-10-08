@@ -117,7 +117,7 @@ func (t *Session) OnConnect() {
 	log.Printf("connected: %s", t.Id)
 	if onlineKey, err := KK(t.Id, ".online"); err != nil {
 		log.Printf("onconnect: skipping online marker for %s: %v", t.Id, err)
-	} else if _, err := CmdSet(onlineKey, map[string]string{}, []byte{}).Exec(); err != nil {
+	} else if _, err := CmdSet(onlineKey, map[string]string{}, []byte{}).execUnauthorised(); err != nil {
 		log.Printf("cmd set error: %s", err)
 	}
 }
@@ -126,7 +126,7 @@ func (t *Session) Disconnect() {
 	if onlineKey, err := KK(t.Id, ".online"); err != nil {
 		log.Printf("disconnect: skipping online marker cleanup for %s: %v", t.Id, err)
 	} else {
-		CmdDel(onlineKey).Exec()
+		CmdDel(onlineKey).execUnauthorised()
 	}
 	pubsub.Unsubscribe(t.Id, t.CmdOut)
 	t.Conn.Close()
@@ -225,7 +225,7 @@ func (t *Session) handleCommands() {
 					log.Println(keyErr)
 					continue
 				}
-				if pubKey, err := CmdGet(defaultKeyKey).Exec(); err == nil {
+				if pubKey, err := CmdGet(defaultKeyKey).execUnauthorised(); err == nil {
 					if challenge, err := generateChallenge(t.Id, string(pubKey)); err == nil {
 						if authKey, err := KK(t.Id, "auth"); err != nil {
 							log.Println(err)

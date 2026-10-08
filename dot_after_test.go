@@ -25,13 +25,13 @@ func TestDotAfter(t *testing.T) {
 	expectedData := "..."
 
 	// Set key with TTL
-	_, err := NewCommand(Set, ttlKey, map[string]string{"ttl": "1", "x-id": "testda"}, []byte(expectedData)).Exec()
+	_, err := NewCommand(Set, ttlKey, map[string]string{"ttl": "1", "x-id": "testda"}, []byte(expectedData)).execUnauthorised()
 	if err != nil {
 		t.Fatalf("Failed to set key with TTL: %v", err)
 	}
 
 	// Verify key was created with correct data
-	data, err := CmdGet(ttlKey).Exec()
+	data, err := CmdGet(ttlKey).execUnauthorised()
 	if err != nil {
 		t.Fatalf("Failed to retrieve key after creation: %v", err)
 	}
@@ -48,14 +48,14 @@ func TestDotAfter(t *testing.T) {
 	dotAfter(dbpath)
 
 	// After TTL expiry and dotAfter cleanup, the key should be gone
-	_, errAfterDelete := CmdGet(ttlKey).Exec()
+	_, errAfterDelete := CmdGet(ttlKey).execUnauthorised()
 	if errAfterDelete == nil {
 		t.Errorf("Expected TTL key to be deleted by dotAfter, but Get succeeded (key still exists)")
 	}
 
 	// The bookkeeping pointer in the reserved directory should also be removed
 	ttlMetaKey := mustK(t, fmt.Sprintf("%s/.ttl/%s", ttlKey.Parent, ttlKey.Name))
-	_, errMetaDelete := CmdGet(ttlMetaKey).Exec()
+	_, errMetaDelete := CmdGet(ttlMetaKey).execUnauthorised()
 	if errMetaDelete == nil {
 		t.Errorf("Expected TTL metadata file %q to be deleted by dotAfter, but Get succeeded (file still exists)", ttlMetaKey.String())
 	}

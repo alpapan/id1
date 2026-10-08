@@ -90,7 +90,7 @@ func generateSecret(id string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid key for %s: %w", id, err)
 	}
-	saltBytes, err := CmdGet(saltKey).Exec()
+	saltBytes, err := CmdGet(saltKey).execUnauthorised()
 	if err != nil || len(saltBytes) == 0 {
 		saltBytes = make([]byte, 32)
 		// CRITICAL: a rand read failure must not fall back to zero bytes.
@@ -98,7 +98,7 @@ func generateSecret(id string) (string, error) {
 		if _, err := io.ReadFull(cryptoRandReader, saltBytes); err != nil {
 			return "", fmt.Errorf("crypto/rand failed generating salt for %s: %w", id, err)
 		}
-		if _, err := CmdSet(saltKey, map[string]string{"x-id": id}, saltBytes).Exec(); err != nil {
+		if _, err := CmdSet(saltKey, map[string]string{"x-id": id}, saltBytes).execUnauthorised(); err != nil {
 			return "", fmt.Errorf("failed to persist salt for %s: %w", id, err)
 		}
 	}
