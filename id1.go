@@ -39,7 +39,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
-			ok200(w, []byte{})
+			ok200(w, r, []byte{})
 			return
 		}
 
@@ -49,12 +49,12 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		// failure: answer 400 and stop here, so no operation ever sees a key
 		// that could not be constructed.
 		if req.KeyErr != nil {
-			err400(w, "invalid key")
+			err400(w, r, "invalid key")
 			return
 		}
 
 		if req.Id == "" {
-			err404(w, "")
+			err404(w, r, "")
 			return
 		}
 
@@ -85,32 +85,32 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 
 		if !authOk {
 			if len(id) > 0 {
-				err403(w, "")
+				err403(w, r, "")
 			} else {
 				deviceId := r.URL.Query().Get("device")
 				if deviceId == "" {
 					deviceId = "default"
 				}
 				if !validDeviceID(deviceId) {
-					err404(w, "")
+					err404(w, r, "")
 					return
 				}
 				deviceKey, keyErr := KK(req.Id, "pub", "keys", deviceId)
 				if keyErr != nil {
-					err404(w, "")
+					err404(w, r, "")
 					return
 				}
 				if pubKey, err := CmdGet(deviceKey).execUnauthorised(); err == nil {
 					if challenge, err := generateChallenge(req.Id, string(pubKey)); err == nil {
-						err401(w, challenge)
+						err401(w, r, challenge)
 					} else {
-						err500(w, err.Error())
+						err500(w, r, err.Error())
 					}
 				} else {
 					if !errors.Is(err, ErrNotFound) {
 						log.Printf("device key lookup failed for id %q device %q: %v", req.Id, deviceId, err)
 					}
-					err404(w, "")
+					err404(w, r, "")
 				}
 			}
 			return
@@ -124,15 +124,15 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 			}
 			wsHandler.Handle(w, r, id)
 		} else if data, err := req.Cmd.ExecAs(id, r.Header.Get("X-ID1-Internal-Secret")); err == nil {
-			ok200(w, data)
+			ok200(w, r, data)
 		} else if errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthorised) {
-			err403(w, "")
+			err403(w, r, "")
 		} else if errors.Is(err, ErrNotFound) {
-			err404(w, "")
+			err404(w, r, "")
 		} else if errors.Is(err, ErrLimitExceeded) {
-			err413(w, "")
+			err413(w, r, "")
 		} else {
-			err400(w, err.Error())
+			err400(w, r, err.Error())
 		}
 	}
 }

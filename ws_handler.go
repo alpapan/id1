@@ -56,7 +56,7 @@ func (t webSocketHandler) Handle(w http.ResponseWriter, r *http.Request, id stri
 		// caller's claimed account and its public key are no longer available -
 		// so it refuses bare.
 		log.Printf("websocket handle: refusing an unauthenticated upgrade for %q", r.URL.Path)
-		err401(w, "")
+		err401(w, r, "")
 		return
 	}
 

@@ -86,6 +86,10 @@ func main() {
 	// bad token degrades to the public tier with no error, so log the values an operator
 	// can check.
 	fmt.Printf("id1 JWT issuer: %s, audience: %s\n", id1.JWTIssuer(), id1.JWTAudience())
+	// The one browser origin id1 answers CORS for. CURATORIUM_BROWSER_ORIGIN has no
+	// default and panics when unset, so resolving it here, before the server listens,
+	// turns a missing value into a refusal to start instead of a failure on a request.
+	fmt.Printf("id1 browser origin: %s\n", id1.BrowserOrigin())
 	// Resolved here, at boot, because CURATORIUM_NAMESPACE has no default and
 	// panics when unset. It names the namespace whose curatorium-secrets holds
 	// the RS256 signing key, and the Role authorising that write is namespaced,

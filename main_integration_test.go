@@ -320,6 +320,45 @@ func TestID1RefusesToStartWithoutNamespace(t *testing.T) {
 	}
 }
 
+// TestID1RefusesToStartWithoutBrowserOrigin pins the owner's ruling that
+// CURATORIUM_BROWSER_ORIGIN has no default: an unset value stops the process at
+// boot. The refusal lives in main(), which `go test ./...` cannot compile, so
+// this tier is the only one that can assert the process declines to serve.
+// The wait is bounded because the regression is a binary that does NOT exit.
+func TestID1RefusesToStartWithoutBrowserOrigin(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = append(os.Environ(),
+		"PORT="+port,
+		"DBPATH="+t.TempDir(),
+		"MTLS_ENABLED=false",
+		"ENV=test",
+		// Explicitly empty, overriding the test default. Later entries win in
+		// exec, so this is the unset case.
+		"CURATORIUM_BROWSER_ORIGIN=",
+	)
+	output, err := cmd.CombinedOutput()
+
+	if ctx.Err() != nil {
+		t.Fatalf("id1 kept running with no browser origin; it must refuse to boot.\n%s", output)
+	}
+	if err == nil {
+		t.Fatalf("id1 started and exited cleanly with no browser origin; it must refuse to boot.\n%s", output)
+	}
+	if !strings.Contains(string(output), "CURATORIUM_BROWSER_ORIGIN") {
+		t.Fatalf("the refusal must name the variable an operator has to set; got:\n%s", output)
+	}
+	if resp, err := (&http.Client{Timeout: 2 * time.Second}).Get("http://127.0.0.1:" + port + "/health"); err == nil {
+		resp.Body.Close()
+		t.Fatal("id1 served /health despite an unset browser origin")
+	}
+}
+
 // buildID1Binary compiles main.go_ into a runnable binary, mirroring apps/id1/Dockerfile:
 // a separate module that references the local id1 library via a replace directive.
 // goTags is passed to `go build -tags=...`; "" builds the production shape.

@@ -35,7 +35,7 @@ type DeviceListResponse struct {
 // Auth: RS256 JWT required (user can only list their own devices)
 func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cors(&w)
+		cors(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -103,7 +103,7 @@ func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 // Auth: RS256 JWT required (user can only revoke their own devices)
 func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cors(&w)
+		cors(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return

@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 }
 
 // loadTestOnlyDefaults sets environment variables that production code
-// requires with no fallback (see jwtIssuer in jwt_signing.go) but that
+// requires with no fallback (see jwtIssuer in jwt_signing.go and browserOrigin in resp.go) but that
 // .env.test does not carry, so unit tests that mint a JWT without caring
 // about the issuer value do not depend on ambient shell state. Individual
 // tests that exercise the unset/panic behavior itself (e.g.
@@ -39,6 +39,9 @@ func TestMain(m *testing.M) {
 func loadTestOnlyDefaults() {
 	if os.Getenv("ID1_JWT_ISSUER") == "" {
 		os.Setenv("ID1_JWT_ISSUER", "http://id1-router:8080")
+	}
+	if os.Getenv("CURATORIUM_BROWSER_ORIGIN") == "" {
+		os.Setenv("CURATORIUM_BROWSER_ORIGIN", "https://curatorium.example")
 	}
 }
 

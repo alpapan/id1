@@ -43,7 +43,7 @@ const (
 // smaller exposure than a reusable full JWT in a ?token= query string.
 func HandleSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cors(&w)
+		cors(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return

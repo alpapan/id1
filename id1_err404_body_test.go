@@ -19,7 +19,7 @@ import (
 )
 
 // err404Messages parses one Go source file and returns, for every call to
-// err404(w, message), the source text of the message argument, together with
+// err404(w, r, message), the source text of the message argument, together with
 // the number of such calls.
 func err404Messages(t *testing.T, path string) ([]string, int) {
 	t.Helper()
@@ -35,10 +35,10 @@ func err404Messages(t *testing.T, path string) ([]string, int) {
 			return true
 		}
 		fn, ok := call.Fun.(*ast.Ident)
-		if !ok || fn.Name != "err404" || len(call.Args) != 2 {
+		if !ok || fn.Name != "err404" || len(call.Args) != 3 {
 			return true
 		}
-		messages = append(messages, types.ExprString(call.Args[1]))
+		messages = append(messages, types.ExprString(call.Args[2]))
 		return true
 	})
 	return messages, len(messages)
@@ -53,9 +53,9 @@ func TestHandleErr404DerivationWorks(t *testing.T) {
 	path := filepath.Join(dir, "sample.go")
 	if err := os.WriteFile(path, []byte(`package id1
 
-func sample(w int, keyErr error) {
-	err404(w, "")
-	err404(w, keyErr.Error())
+func sample(w int, r int, keyErr error) {
+	err404(w, r, "")
+	err404(w, r, keyErr.Error())
 }
 `), 0644); err != nil {
 		t.Fatalf("writing synthetic source: %v", err)
