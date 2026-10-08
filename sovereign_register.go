@@ -101,7 +101,7 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing deviceId", http.StatusBadRequest)
 			return
 		}
-		if !devicePattern.MatchString(req.DeviceId) {
+		if !validDeviceID(req.DeviceId) {
 			http.Error(w, "Invalid deviceId", http.StatusBadRequest)
 			return
 		}
@@ -230,7 +230,7 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing deviceId", http.StatusBadRequest)
 			return
 		}
-		if !devicePattern.MatchString(req.DeviceId) {
+		if !validDeviceID(req.DeviceId) {
 			http.Error(w, "Invalid deviceId", http.StatusBadRequest)
 			return
 		}

@@ -8,12 +8,23 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 // devicePattern bounds the device (curatorium) id to a safe single key segment. It
 // must START with an alphanumeric, which rejects "."/".."/leading-dot segments that
 // could otherwise walk the key path (belt-and-suspenders alongside keyWithinRoot).
 var devicePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// validDeviceID reports whether device is acceptable as the device segment of a
+// key taken from a caller: it matches devicePattern AND does not end in ".name".
+// A "{device}.name" file is the companion label of a device, never a device, so
+// refusing the suffix keeps the companion from being addressed as a key. "." stays
+// in the character set because a device such as "Device.2" is legal. Every place
+// that reads a device from a caller uses this function.
+func validDeviceID(device string) bool {
+	return devicePattern.MatchString(device) && !strings.HasSuffix(device, ".name")
+}
 
 // registrationTokenPattern validates registration tokens: URL-safe base64 alphabet,
 // 16-64 characters, no path traversal, no spaces. Generated as base64url-encoded
@@ -68,7 +79,7 @@ func HandleInternalRegisterKey() http.HandlerFunc {
 			http.Error(w, "missing or malformed id", http.StatusBadRequest)
 			return
 		}
-		if req.Device == "" || !devicePattern.MatchString(req.Device) {
+		if req.Device == "" || !validDeviceID(req.Device) {
 			http.Error(w, "missing or malformed device", http.StatusBadRequest)
 			return
 		}

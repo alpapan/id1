@@ -91,7 +91,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 				if deviceId == "" {
 					deviceId = "default"
 				}
-				if !devicePattern.MatchString(deviceId) {
+				if !validDeviceID(deviceId) {
 					err404(w, "")
 					return
 				}

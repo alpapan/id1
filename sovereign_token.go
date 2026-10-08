@@ -91,7 +91,7 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		if !devicePattern.MatchString(req.DeviceId) {
+		if !validDeviceID(req.DeviceId) {
 			err400(w, "invalid deviceId")
 			return
 		}

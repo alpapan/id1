@@ -119,7 +119,7 @@ func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing id or device parameter", http.StatusBadRequest)
 			return
 		}
-		if !devicePattern.MatchString(deviceId) {
+		if !validDeviceID(deviceId) {
 			http.Error(w, "Invalid device", http.StatusBadRequest)
 			return
 		}
