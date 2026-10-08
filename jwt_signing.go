@@ -485,8 +485,11 @@ func signJWTWithAuthTime(orcidID, device string, amr []string, privateKey *rsa.P
 //  1. ID1_JWT_PRIVATE_KEY env var (Shape B primary - K8s Secret)
 //  2. In-memory cache (path-3 fallback when KV was unavailable)
 //  3. KV store pubKeyPath (legacy)
+//
+// The token must also be RS256, carry this instance's audience and issuer, and
+// verify under the current key or, during the rotation overlap, the previous key.
 func ValidateRS256JWT(tokenStr string, kvStore KeyValueStore) (jwt.RegisteredClaims, error) {
-	rsaPubKey, err := resolveSigningPublicKey(kvStore)
+	verificationKeys, err := resolveVerificationKeys(kvStore)
 	if err != nil {
 		return jwt.RegisteredClaims{}, err
 	}
@@ -496,8 +499,8 @@ func ValidateRS256JWT(tokenStr string, kvStore KeyValueStore) (jwt.RegisteredCla
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return rsaPubKey, nil
-	})
+		return verificationKeys, nil
+	}, rs256ParserOptions()...)
 	if err != nil {
 		return claims, fmt.Errorf("JWT validation failed: %w", err)
 	}
@@ -546,12 +549,65 @@ func resolveSigningPublicKey(kvStore KeyValueStore) (*rsa.PublicKey, error) {
 	return rsaPubKey, nil
 }
 
+// resolvePreviousSigningPublicKey returns the previous signing public key that
+// rotateSigningKey leaves in the KV store for the one-hour rotation overlap, or
+// nil when there is none. getJWKS publishes the same key under the same rule:
+// absent, empty or unparseable means no previous key, never an error.
+func resolvePreviousSigningPublicKey(kvStore KeyValueStore) *rsa.PublicKey {
+	prevPEM, err := kvStore.CmdGet(pubKeyPrevPath)
+	if err != nil || len(prevPEM) == 0 {
+		return nil
+	}
+	block, _ := pem.Decode(prevPEM)
+	if block == nil {
+		return nil
+	}
+	pubKeyIface, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil
+	}
+	rsaPubKey, ok := pubKeyIface.(*rsa.PublicKey)
+	if !ok {
+		return nil
+	}
+	return rsaPubKey
+}
+
+// resolveVerificationKeys returns the keys a token may verify under: id1's
+// current public key first, then the previous key while the rotation overlap
+// leaves one in the KV store. It is the set getJWKS publishes.
+func resolveVerificationKeys(kvStore KeyValueStore) (jwt.VerificationKeySet, error) {
+	current, err := resolveSigningPublicKey(kvStore)
+	if err != nil {
+		return jwt.VerificationKeySet{}, err
+	}
+	keys := []jwt.VerificationKey{current}
+	if previous := resolvePreviousSigningPublicKey(kvStore); previous != nil {
+		keys = append(keys, previous)
+	}
+	return jwt.VerificationKeySet{Keys: keys}, nil
+}
+
+// rs256ParserOptions are the checks every RS256 validation applies on top of
+// the signature: the algorithm is exactly RS256, and the token carries this
+// instance's audience and issuer. With an expected audience or issuer set,
+// the parser also refuses a token that omits the claim.
+func rs256ParserOptions() []jwt.ParserOption {
+	return []jwt.ParserOption{
+		jwt.WithValidMethods([]string{"RS256"}),
+		jwt.WithAudience(jwtAudience()),
+		jwt.WithIssuer(jwtIssuer()),
+	}
+}
+
 // ValidateRS256JWTID1Claims verifies signature + standard claims (incl. exp) and
 // returns the full id1 claim set, including auth_time. golang-jwt/jwt/v5 rejects
 // expired tokens by default. Claims unmarshalling is strict: a missing or
 // non-numeric auth_time deserialises to nil (the refresh handler rejects nil).
+// The token must also be RS256, carry this instance's audience and issuer, and
+// verify under the current key or, during the rotation overlap, the previous key.
 func ValidateRS256JWTID1Claims(tokenStr string, kvStore KeyValueStore) (id1TokenClaims, error) {
-	rsaPubKey, err := resolveSigningPublicKey(kvStore)
+	verificationKeys, err := resolveVerificationKeys(kvStore)
 	if err != nil {
 		return id1TokenClaims{}, err
 	}
@@ -561,8 +617,8 @@ func ValidateRS256JWTID1Claims(tokenStr string, kvStore KeyValueStore) (id1Token
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return rsaPubKey, nil
-	})
+		return verificationKeys, nil
+	}, rs256ParserOptions()...)
 	if err != nil {
 		return claims, fmt.Errorf("JWT validation failed: %w", err)
 	}
