@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/device_list_test.go
+// apps/id1/device_list_test.go
 //
 // group: auth
 // tags: sovereign-keys, devices, testing

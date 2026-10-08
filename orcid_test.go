@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/orcid_test.go
+// apps/id1/orcid_test.go
 //
 // group: auth
 // tags: orcid, oauth, testing

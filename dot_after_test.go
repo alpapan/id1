@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/dot_after_test.go
+// apps/id1/dot_after_test.go
 //
 // group: server
 // tags: authorization, delegation, testing

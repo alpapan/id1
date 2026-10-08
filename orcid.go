@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/orcid.go
+// apps/id1/orcid.go
 //
 // group: auth
 // tags: orcid, oauth, authentication

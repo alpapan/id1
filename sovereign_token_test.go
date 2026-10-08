@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sovereign_token_test.go
+// apps/id1/sovereign_token_test.go
 //
 // group: auth
 // tags: sovereign-keys, challenge-response, testing

@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/device_list.go
+// apps/id1/device_list.go
 //
 // group: auth
 // tags: sovereign-keys, devices, listing

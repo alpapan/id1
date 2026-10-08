@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/pub_sub.go
+// apps/id1/pub_sub.go
 //
 // group: utils
 // tags: pubsub, events, channels

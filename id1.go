@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/id1.go
+// apps/id1/id1.go
 //
 // group: server
 // tags: http, server, websocket, pubsub

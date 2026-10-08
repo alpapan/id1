@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_mov.go
+// apps/id1/cmd_mov.go
 //
 // group: server
 // tags: storage, filesystem, move-operation, rename

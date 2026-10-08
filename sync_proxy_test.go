@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_proxy_test.go
+// apps/id1/sync_proxy_test.go
 //
 // group: middleware
 // tags: websocket, proxy, testing

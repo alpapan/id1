@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/ws_handler.go
+// apps/id1/ws_handler.go
 //
 // group: server
 // tags: websocket, pubsub, events

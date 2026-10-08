@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/resp.go
+// apps/id1/resp.go
 //
 // group: models
 // tags: http, responses, serialization

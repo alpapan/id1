@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sovereign_token.go
+// apps/id1/sovereign_token.go
 //
 // group: auth
 // tags: sovereign-keys, challenge-response, jwt

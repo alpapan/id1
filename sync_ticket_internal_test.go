@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_ticket_internal_test.go
+// apps/id1/sync_ticket_internal_test.go
 //
 // group: auth
 // tags: sync, ticket, internal, testing

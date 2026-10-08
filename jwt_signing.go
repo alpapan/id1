@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/jwt_signing.go
+// apps/id1/jwt_signing.go
 //
 // group: jwt
 // tags: jwt, signing, rs256, jwks

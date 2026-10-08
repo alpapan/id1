@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_ticket.go
+// apps/id1/sync_ticket.go
 //
 // group: auth
 // tags: sync, websocket, ticket, single-use

@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_proxy.go
+// apps/id1/sync_proxy.go
 //
 // group: middleware
 // tags: websocket, proxy, automerge, sync

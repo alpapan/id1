@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/auth_dot_op_test.go
+// apps/id1/auth_dot_op_test.go
 //
 // group: auth
 // tags: authentication, delegation, testing

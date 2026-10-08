@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/req.go
+// apps/id1/req.go
 //
 // group: models
 // tags: http, requests, parsing

@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/auth_test.go
+// apps/id1/auth_test.go
 //
 // group: auth
 // tags: authentication, authorization, testing

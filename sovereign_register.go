@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sovereign_register.go
+// apps/id1/sovereign_register.go
 //
 // group: auth
 // tags: sovereign-keys, registration, device-keys

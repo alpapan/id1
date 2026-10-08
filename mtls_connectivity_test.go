@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/mtls_connectivity_test.go
+// apps/id1/mtls_connectivity_test.go
 //
 // group: middleware
 // tags: tls, mtls, integration, testing

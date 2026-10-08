@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_ticket_internal.go
+// apps/id1/sync_ticket_internal.go
 //
 // group: auth
 // tags: sync, websocket, ticket, internal, report-scoped

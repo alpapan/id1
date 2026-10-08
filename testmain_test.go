@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/testmain_test.go
+// apps/id1/testmain_test.go
 //
 // group: utils
 // tags: testing, setup, fixtures

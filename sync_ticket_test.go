@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_ticket_test.go
+// apps/id1/sync_ticket_test.go
 //
 // group: auth
 // tags: sync, ticket, single-use, testing

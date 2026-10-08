@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/dot_after.go
+// apps/id1/dot_after.go
 //
 // group: server
 // tags: authorization, delegation, permissions

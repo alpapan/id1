@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_test.go
+// apps/id1/cmd_test.go
 //
 // group: models
 // tags: commands, operations, testing

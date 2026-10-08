@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/errors.go
+// apps/id1/errors.go
 //
 // group: utils
 // tags: errors, exceptions

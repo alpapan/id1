@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_get.go
+// apps/id1/cmd_get.go
 //
 // group: server
 // tags: storage, filesystem, get-operation

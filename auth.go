@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/auth.go
+// apps/id1/auth.go
 //
 // group: auth
 // tags: authentication, authorization, ownership, permissions

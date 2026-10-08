@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/id1_test.go
+// apps/id1/id1_test.go
 //
 // group: server
 // tags: http, server, authorization, testing

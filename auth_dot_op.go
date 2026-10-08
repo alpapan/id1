@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/auth_dot_op.go
+// apps/id1/auth_dot_op.go
 //
 // group: auth
 // tags: authentication, authorization, delegation

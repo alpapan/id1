@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_list.go
+// apps/id1/cmd_list.go
 //
 // group: server
 // tags: storage, filesystem, list-operation, directory

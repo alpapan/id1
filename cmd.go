@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd.go
+// apps/id1/cmd.go
 //
 // group: models
 // tags: commands, operations, keys

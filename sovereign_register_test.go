@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sovereign_register_test.go
+// apps/id1/sovereign_register_test.go
 //
 // group: auth
 // tags: sovereign-keys, registration, testing
