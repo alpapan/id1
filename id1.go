@@ -97,7 +97,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 				}
 				deviceKey, keyErr := KK(req.Id, "pub", "keys", deviceId)
 				if keyErr != nil {
-					err404(w, keyErr.Error())
+					err404(w, "")
 					return
 				}
 				if pubKey, err := CmdGet(deviceKey).Exec(); err == nil {
@@ -123,9 +123,9 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 				upgrader: upgrader,
 			}
 			wsHandler.Handle(w, r, id)
-		} else if data, err := req.Cmd.Exec(); err == nil {
+		} else if data, err := req.Cmd.ExecAs(id, r.Header.Get("X-ID1-Internal-Secret")); err == nil {
 			ok200(w, data)
-		} else if errors.Is(err, ErrForbidden) {
+		} else if errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthorised) {
 			err403(w, "")
 		} else if errors.Is(err, ErrNotFound) {
 			err404(w, "")

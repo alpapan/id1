@@ -114,6 +114,19 @@ func ParseCommand(data []byte) (Command, error) {
 	return command, nil
 }
 
+// ExecAs runs the command only if id is authorised to perform it. It is the
+// entry point for every command that arrives on someone's behalf: it runs
+// auth, and when auth refuses it returns ErrUnauthorised without running
+// anything. internalSecretHeader is the X-ID1-Internal-Secret header value of
+// the originating HTTP request, or "" when there is no request (a WebSocket
+// frame, the scheduled sweep); it is passed to auth unchanged.
+func (t Command) ExecAs(id string, internalSecretHeader string) ([]byte, error) {
+	if !auth(id, t, internalSecretHeader) {
+		return []byte{}, ErrUnauthorised
+	}
+	return t.Exec()
+}
+
 func (t Command) Exec() ([]byte, error) {
 	switch t.Op {
 	case Set:

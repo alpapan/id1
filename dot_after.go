@@ -90,7 +90,7 @@ func dotAfter(dir string) {
 		// new-id bootstrap exemption is never available here - a scheduled command
 		// relies only on the owner/public-get/dot-op grants.
 		if contained && auth(dotAfterCommand.Args["x-id"], dotAfterCommand, "") {
-			dotAfterCommand.Exec()
+			dotAfterCommand.ExecAs(dotAfterCommand.Args["x-id"], "")
 		} else {
 			log.Printf("unauthorised .after command by '%s': %s %s", dotAfterCommand.Args["x-id"], dotAfterCommand.Op, dotAfterCommand.Key)
 		}

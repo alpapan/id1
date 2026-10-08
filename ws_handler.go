@@ -31,7 +31,7 @@ type webSocketHandler struct {
 // httptest.Server.Close treats a hijacked connection as done for its own
 // waitgroup the moment the upgrade succeeds, so nothing otherwise blocks a
 // caller until a session has actually finished touching shared package state
-// (dbpath, above all - handleCommands reads it via auth()/cmd.Exec() and can
+// (dbpath, above all - handleCommands reads it via auth()/cmd.ExecAs() and can
 // still be mid-command when Handle's own <-ctx.Done() unblocks). A test that
 // swaps dbpath via t.Cleanup right after closing its connection needs this
 // real synchronisation point rather than a timing assumption. There is no
@@ -241,7 +241,7 @@ func (t *Session) handleCommands() {
 				continue
 			}
 
-			if data, err := cmd.Exec(); err == nil {
+			if data, err := cmd.ExecAs(t.Id, ""); err == nil {
 				t.send(CmdSet(cmd.Key, map[string]string{}, data))
 			} else if errors.Is(ErrNotFound, err) {
 				t.send(CmdDel(cmd.Key))
