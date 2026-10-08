@@ -45,6 +45,13 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 
 		req := NewRequestProps(r)
 
+		// A body past the cap is refused before anything else is decided, so the
+		// answer does not depend on who is asking.
+		if req.BodyTooLarge {
+			err413(w, r, "")
+			return
+		}
+
 		// A path K() refused is a malformed request, not an authorisation
 		// failure: answer 400 and stop here, so no operation ever sees a key
 		// that could not be constructed.

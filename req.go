@@ -10,6 +10,7 @@
 package id1
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -33,6 +34,11 @@ type RequestProps struct {
 	// could not be constructed never reaches the filesystem.
 	KeyErr error
 	Cmd    Command
+
+	// BodyTooLarge is set when the request body ran past the largest cap any
+	// route sets (KVBodyLimitBytes), or past a smaller cap LimitBody applied.
+	// The over-limit bytes are not kept, and Handle answers 413.
+	BodyTooLarge bool
 }
 
 func (t RequestProps) String() string {
@@ -80,9 +86,18 @@ func NewRequestProps(r *http.Request) RequestProps {
 		req.IsWebSocket = true
 	}
 
-	if data, readErr := io.ReadAll(r.Body); readErr != nil {
+	// Read through a hard stop at the largest cap any route sets, so a caller
+	// that does not go through LimitBody cannot make this read buffer an
+	// unbounded body. A smaller cap applied by LimitBody reports itself as
+	// *http.MaxBytesError.
+	data, readErr := io.ReadAll(io.LimitReader(r.Body, KVBodyLimitBytes+1))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(readErr, &tooLarge) || int64(len(data)) > KVBodyLimitBytes:
+		req.BodyTooLarge = true
+	case readErr != nil:
 		log.Printf("error reading request body, %s", readErr)
-	} else {
+	default:
 		req.Cmd.Data = data
 	}
 
