@@ -22,6 +22,11 @@ func (t *Command) set() error {
 	if !keyWithinRoot(t.Key) {
 		return ErrForbidden
 	}
+	// TTL bookkeeping is the scheduler's alone. A caller that could write it
+	// could point an existing key's expiry at a schedule of its choosing.
+	if isReservedTTLKey(t.Key) {
+		return ErrForbidden
+	}
 	if !preflightChecks(t) {
 		return fmt.Errorf("failed preflight checks")
 	}
@@ -71,6 +76,23 @@ func preflightChecks(cmd *Command) bool {
 // helpers below reach the file directly rather than through a command: the
 // refusal then needs no exemption for anyone to misuse.
 const dotTTLDir = ".ttl"
+
+// isReservedTTLKey reports whether key names TTL bookkeeping, in either of the
+// two reserved shapes: any key with a .ttl segment, which is the scheduler's
+// directory and everything inside it, and any key whose final segment carries
+// the flat .ttl. prefix the scheduler used before that directory existed.
+//
+// No writing operation accepts either shape, and there is no exemption. The
+// scheduler is excluded as well and does not need one: it writes its pointer
+// with writeTTLBookkeeping below, which never goes through a command.
+func isReservedTTLKey(key Id1Key) bool {
+	for _, segment := range key.Segments {
+		if segment == dotTTLDir {
+			return true
+		}
+	}
+	return strings.HasPrefix(key.Name, dotTTLDir+".")
+}
 
 // writeTTLBookkeeping stores a pointer file, creating the reserved directory if
 // this is the parent's first scheduled key. It goes through the same
