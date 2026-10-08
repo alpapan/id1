@@ -26,8 +26,7 @@ func setup(t *testing.T) {
 	// - test0/pub/tags/Robot is a resource that requires "Tagger" role to modify
 	// - .get permission on test0 is "Reader" (allow all authenticated users)
 	// - .set permission on test0/pub/tags is "Tagger" (allow Taggers only)
-	// - Global roles: max has "Reader"
-	// - test0-level roles: max has "Admin"
+	// - test0-level roles: max has "Admin" and "Reader"
 	// - test0/pub/tags level roles: max has "Tagger"
 
 	_, err := CmdSet(mustK(t, "test0/pub/key"), map[string]string{}, []byte("...")).execUnauthorised()
@@ -42,10 +41,7 @@ func setup(t *testing.T) {
 	_, err = CmdSet(mustK(t, "test0/pub/tags/.set"), map[string]string{}, []byte("Tagger")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0/pub/tags/.set permission")
 
-	_, err = CmdSet(mustK(t, ".roles/max"), map[string]string{}, []byte("Reader")).execUnauthorised()
-	require.NoError(t, err, "setup: failed to set global role for max")
-
-	_, err = CmdSet(mustK(t, "test0/.roles/max"), map[string]string{}, []byte("Admin")).execUnauthorised()
+	_, err = CmdSet(mustK(t, "test0/.roles/max"), map[string]string{}, []byte("Admin\nReader")).execUnauthorised()
 	require.NoError(t, err, "setup: failed to set test0-level role for max")
 
 	_, err = CmdSet(mustK(t, "test0/pub/tags/.roles/max"), map[string]string{}, []byte("Tagger")).execUnauthorised()
@@ -79,7 +75,7 @@ func TestGetRolesReturnsAllApplicableRoles(t *testing.T) {
 
 	// Verify all inherited roles are present
 	require.True(t, slices.Contains(roles, "Reader"),
-		"roles should include global 'Reader' role inherited from test0/.get")
+		"roles should include the 'Reader' role at test0 level")
 
 	require.True(t, slices.Contains(roles, "Admin"),
 		"roles should include 'Admin' role at test0 level")

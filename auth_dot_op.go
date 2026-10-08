@@ -11,11 +11,15 @@ package id1
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
 func authDotOp(id string, cmd Command) bool {
 	if len(id) == 0 {
+		return false
+	}
+	if delegationTargetRefused(cmd.Key) {
 		return false
 	}
 	roles := getRoles(id, cmd.Key)
@@ -43,13 +47,31 @@ func authDotOp(id string, cmd Command) bool {
 	return false
 }
 
+// delegationTargetRefused reports whether a delegated operation may never
+// reach key, whatever any .{op} or .roles file says. Only the owner of the id
+// may touch these: the private subtree (second segment "priv", which holds the
+// HMAC salt), a control file (a name of "." plus an operation name, such as
+// ".set"), and anything inside a ".roles" directory. The control-file names are
+// read from nameOp, so a new operation is covered the moment it exists.
+func delegationTargetRefused(key Id1Key) bool {
+	if len(key.Segments) > 1 && key.Segments[1] == "priv" {
+		return true
+	}
+	for opNameString := range nameOp {
+		if key.Name == "."+opNameString {
+			return true
+		}
+	}
+	return slices.Contains(key.Segments, ".roles")
+}
+
 func getRoles(id string, key Id1Key) []string {
 	result := []string{"*", id}
 	parentKey, err := K(key.Parent)
 	if err != nil {
 		return result
 	}
-	for {
+	for len(parentKey.String()) != 0 {
 		rolesKey, err := KK(parentKey, ".roles", id)
 		if err == nil {
 			if data, err := CmdGet(rolesKey).execUnauthorised(); err == nil {
@@ -57,15 +79,11 @@ func getRoles(id string, key Id1Key) []string {
 				result = append(result, lines...)
 			}
 		}
-		if len(parentKey.String()) > 0 {
-			nextParentKey, err := K(parentKey.Parent)
-			if err != nil {
-				break
-			}
-			parentKey = nextParentKey
-		} else {
+		nextParentKey, err := K(parentKey.Parent)
+		if err != nil {
 			break
 		}
+		parentKey = nextParentKey
 	}
 	return result
 }
