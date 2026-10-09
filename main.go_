@@ -64,6 +64,16 @@ func nextcloudProxy(target string) (http.HandlerFunc, error) {
 }
 
 func main() {
+	// An argument-carrying invocation is operations work against the key/value
+	// volume, not a server start. The container image is distroless, so this
+	// binary is the only executable an operator can run inside the pod. The
+	// branch comes first because everything below it - the .env load, the
+	// namespace resolve - belongs to serving and panics when a serving-only
+	// value is unset.
+	if len(os.Args) > 1 {
+		os.Exit(id1.RunMaintenanceCommand(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+	}
+
 	// Load a .env file when present (host deployments); godotenv populates the process
 	// env without overwriting existing variables, so real environment variables
 	// (Kubernetes) win. ResolveConfig reads PORT/DBPATH/NEXTCLOUD_URL/BIND_ADDR via os.Getenv.

@@ -33,6 +33,11 @@ func (t *Command) add() error {
 	if strings.HasPrefix(t.Key.Name, ".after.") {
 		return ErrForbidden
 	}
+	// TTL bookkeeping is the scheduler's alone, and appending to a pointer
+	// rewrites which schedule it names just as surely as replacing it.
+	if isReservedTTLKey(t.Key) {
+		return ErrForbidden
+	}
 
 	root, err := openStoreRoot()
 	if err != nil {
