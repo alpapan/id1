@@ -243,9 +243,11 @@ func truncatedLogValue(s string) string {
 // HandleCallback validates the CSRF state (including TTL), deletes it from the
 // store, exchanges the authorization code for a token using PKCE verifier,
 // extracts the ORCID iD from the token response via token.Extra("orcid"),
-// validates it matches the ORCID format, and redirects to the configured
-// frontend URL. If no frontend URL is configured, it returns the ORCID iD
-// as a plain JSON body.
+// validates it matches the ORCID format, signs an id1 JWT and stores it under a
+// one-time login code (see HandleExchange). It redirects to the redirect target
+// with ?code=<login code>; the JWT itself never appears in the URL. If no
+// redirect target or frontend URL is configured, it returns the JWT as a JSON
+// body {"token": ...} instead.
 func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	if state == "" {
@@ -412,12 +414,26 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Append token parameter, handling cases where redirectTarget already contains a query string
+	// Hand the browser a one-time code, never the JWT: a JWT in a redirect URL is
+	// written to browser history, server logs and the Referer header. The code is
+	// redeemed once at /auth/orcid/exchange (HandleExchange).
+	loginCode, codeErr := storeOrcidLoginCode(jwtToken)
+	if codeErr != nil {
+		// codeErr comes from the OS random source or the KV store's own Set,
+		// never from request input, and it never carries the JWT. A failed
+		// store leaves no redeemable code, so a key path in the message is not
+		// a credential.
+		log.Printf("orcid login code store failed: %s", truncatedLogValue(codeErr.Error()))
+		http.Error(w, "Failed to issue login code", http.StatusInternalServerError)
+		return
+	}
+
+	// Append the code parameter, handling cases where redirectTarget already contains a query string
 	sep := "?"
 	if strings.Contains(redirectTarget, "?") {
 		sep = "&"
 	}
-	http.Redirect(w, r, redirectTarget+sep+"token="+url.QueryEscape(jwtToken), http.StatusFound)
+	http.Redirect(w, r, redirectTarget+sep+"code="+url.QueryEscape(loginCode), http.StatusFound)
 }
 
 // __END_OF_FILE_MARKER__

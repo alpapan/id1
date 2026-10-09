@@ -138,6 +138,7 @@ func main() {
 		if err == nil {
 			http.HandleFunc("/auth/orcid", orcidHandler.HandleBegin)
 			http.HandleFunc("/auth/orcid/callback", orcidHandler.HandleCallback)
+			http.HandleFunc("/auth/orcid/exchange", orcidHandler.HandleExchange)
 			fmt.Println("Registered /auth/orcid ORCID OAuth2 handlers")
 		} else {
 			log.Printf("ORCID handler init failed: %v", err)

@@ -121,6 +121,36 @@ func stateFromRedirect(t *testing.T, location string) string {
 	return u.Query().Get("state")
 }
 
+// redeemLoginCode extracts the one-time login code from a HandleCallback 302
+// Location header and redeems it through HandleExchange, returning the JWT the
+// browser would receive. It fails the test when the redirect carries no code or
+// the exchange does not answer 200.
+func redeemLoginCode(t *testing.T, h *OrcidHandler, location string) string {
+	t.Helper()
+	u, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("failed to parse redirect Location %q: %v", location, err)
+	}
+	code := u.Query().Get("code")
+	if code == "" {
+		t.Fatalf("redirect Location carries no code parameter: %s", location)
+	}
+	body, err := json.Marshal(map[string]string{"code": code})
+	if err != nil {
+		t.Fatalf("failed to marshal the exchange body: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.HandleExchange(rec, httptest.NewRequest(http.MethodPost, "/auth/orcid/exchange", strings.NewReader(string(body))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("exchange: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("exchange response is not JSON: %v", err)
+	}
+	return response["jwt"]
+}
+
 // newTestOrcidHandlerWithState creates a test OrcidHandler and seeds the given CSRF
 // state entries into a fresh temp-dir KV store (dbpath). It takes *testing.T so it
 // can point dbpath at t.TempDir() and restore it on cleanup.
@@ -190,7 +220,7 @@ func TestOrcidStatePrune(t *testing.T) {
 // restart. The original in-memory-map implementation keeps state only in the
 // per-instance map, so the second handler (fresh map) returns 400 "invalid
 // state"; persisting state in the KV store makes the second handler complete the
-// login with a 302 + token.
+// login with a 302 + login code.
 func TestOrcidStateSurvivesPodRestart(t *testing.T) {
 	// Shared id1 KV store on a temp dbpath; it outlives a simulated pod restart.
 	originalDbpath := dbpath
@@ -237,14 +267,14 @@ func TestOrcidStateSurvivesPodRestart(t *testing.T) {
 	cbRec := httptest.NewRecorder()
 	handlerB.HandleCallback(cbRec, cbReq)
 
-	// Load-bearing: the post-restart handler must COMPLETE the login (302 + token),
+	// Load-bearing: the post-restart handler must COMPLETE the login (302 + login code),
 	// not reject it with 400 "invalid state".
 	if cbRec.Code != http.StatusFound {
 		t.Fatalf("restart-survival: expected 302 from the post-restart handler, got %d: %s",
 			cbRec.Code, cbRec.Body.String())
 	}
-	if !strings.Contains(cbRec.Header().Get("Location"), "token=") {
-		t.Errorf("expected token= in redirect after restart, got: %s", cbRec.Header().Get("Location"))
+	if !strings.Contains(cbRec.Header().Get("Location"), "code=") {
+		t.Errorf("expected code= in redirect after restart, got: %s", cbRec.Header().Get("Location"))
 	}
 }
 
@@ -282,17 +312,15 @@ func TestOrcidCallback(t *testing.T) {
 	}
 
 	location := rec.Header().Get("Location")
-	// Now we expect a JWT token in the redirect, not the ORCID iD
-	if !strings.Contains(location, "?token=") {
-		t.Errorf("expected ?token= in redirect Location, got: %s", location)
+	// The redirect carries a one-time login code, never the JWT itself.
+	if !strings.Contains(location, "?code=") {
+		t.Errorf("expected ?code= in redirect Location, got: %s", location)
 	}
-	// Extract and verify JWT is non-empty
-	idx := strings.Index(location, "?token=")
-	if idx != -1 {
-		jwtString := location[idx+7:]
-		if jwtString == "" {
-			t.Error("expected JWT token to be non-empty")
-		}
+	if strings.Contains(location, "token=") {
+		t.Errorf("redirect Location must not carry the JWT, got: %s", location)
+	}
+	if jwtString := redeemLoginCode(t, h, location); jwtString == "" {
+		t.Error("expected the redeemed JWT to be non-empty")
 	}
 }
 
@@ -585,7 +613,8 @@ func newTestOrcidHandlerWithKVStore(
 }
 
 // TestOrcidCallbackIssuingJWT verifies that HandleCallback issues an RS256 JWT
-// after successful ORCID validation and redirects with ?token=JWT parameter.
+// after successful ORCID validation and redirects with a one-time ?code= parameter
+// that the exchange endpoint redeems for the JWT.
 // This test uses real ID1KeyValueStore and real signJWT flow.
 func TestOrcidCallbackIssuingJWT(t *testing.T) {
 	// Setup: Initialize real KV store for this test
@@ -635,7 +664,7 @@ func TestOrcidCallbackIssuingJWT(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.HandleCallback(rec, req)
 
-	// Verify: Should redirect (302) with ?token=JWT in URL
+	// Verify: Should redirect (302) with the one-time ?code= in the URL
 	if rec.Code != http.StatusFound {
 		t.Errorf("Expected 302 Found redirect, got %d: %s", rec.Code, rec.Body.String())
 		return
@@ -645,17 +674,13 @@ func TestOrcidCallbackIssuingJWT(t *testing.T) {
 	if location == "" {
 		t.Fatal("Location header must be present for redirect")
 	}
-	if !strings.Contains(location, "http://localhost:19001?token=") {
-		t.Errorf("Expected redirect to frontend with ?token=, got: %s", location)
+	if !strings.Contains(location, "http://localhost:19001?code=") {
+		t.Errorf("Expected redirect to frontend with ?code=, got: %s", location)
 		return
 	}
 
-	// Extract JWT from redirect URL
-	idx := strings.Index(location, "?token=")
-	if idx == -1 {
-		t.Fatal("JWT parameter not found in redirect URL")
-	}
-	jwtString := location[idx+7:] // Skip "?token="
+	// Redeem the login code for the JWT
+	jwtString := redeemLoginCode(t, h, location)
 
 	// Verify: JWT structure and claims
 	if jwtString == "" {
@@ -842,12 +867,7 @@ func TestOrcidCallbackJWTKeyIDMatches(t *testing.T) {
 		t.Errorf("Expected 302 redirect, got %d: %s", rec.Code, rec.Body.String())
 		return
 	}
-	location := rec.Header().Get("Location")
-	idx := strings.Index(location, "?token=")
-	if idx == -1 {
-		t.Fatal("JWT parameter not found in redirect URL")
-	}
-	jwtString := location[idx+7:]
+	jwtString := redeemLoginCode(t, h, rec.Header().Get("Location"))
 
 	// Parse without verification first to inspect header
 	token, _, err := jwt.NewParser().ParseUnverified(jwtString, &jwt.RegisteredClaims{})
@@ -1179,8 +1199,8 @@ func TestHandleCallback_RedirectsToStoredRedirectURI(t *testing.T) {
 	}
 
 	location := w.Header().Get("Location")
-	if !strings.HasPrefix(location, customRedirect+"?token=") {
-		t.Errorf("expected redirect to %s?token=..., got %q", customRedirect, location)
+	if !strings.HasPrefix(location, customRedirect+"?code=") {
+		t.Errorf("expected redirect to %s?code=..., got %q", customRedirect, location)
 	}
 	// Must NOT redirect to the default frontendURL
 	if strings.HasPrefix(location, defaultFrontendURL) {
@@ -1711,14 +1731,7 @@ func TestOrcidCallback_StampsOrcidAMR(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
 	}
-	loc, err := url.Parse(rec.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse Location: %v", err)
-	}
-	tok := loc.Query().Get("token")
-	if tok == "" {
-		t.Fatal("no token in redirect Location")
-	}
+	tok := redeemLoginCode(t, h, rec.Header().Get("Location"))
 	claims, err := ValidateRS256JWTID1Claims(tok, kv)
 	if err != nil {
 		t.Fatalf("validate token: %v", err)

@@ -80,13 +80,14 @@ var wantRoutes = map[string]exposure{
 	// --- Public: Traefik routes these to id1. ---
 	// The matchers are enumerated in config.py::_frontend_traefik_route_yaml:
 	// PathPrefix /sync and /auth/sovereign, the exact paths /auth/orcid,
-	// /auth/orcid/callback, /auth/refresh, /auth/sync_ticket and
+	// /auth/orcid/callback, /auth/orcid/exchange, /auth/refresh, /auth/sync_ticket and
 	// /pub/jwks.json, and PathPrefix /nextcloud/remote.php/dav. There is no
 	// /auth/* sweep, which is why the two build-tagged mints below are not
 	// public despite sitting under /auth/, and only the WebDAV subpath of the
 	// Nextcloud proxy is reachable rather than the whole prefix.
 	"/auth/orcid":                     exposurePublic,
 	"/auth/orcid/callback":            exposurePublic,
+	"/auth/orcid/exchange":            exposurePublic,
 	"/auth/refresh":                   exposurePublic,
 	"/auth/sync_ticket":               exposurePublic,
 	"/auth/sovereign/token":           exposurePublic,
