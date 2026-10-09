@@ -12,6 +12,8 @@ package id1
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,6 +42,7 @@ type stateEntry struct {
 	created     time.Time
 	verifier    string
 	redirectURI string // post-JWT frontend redirect target
+	bind        string // digest of the browser binding nonce (see bindingDigest)
 }
 
 // stateEntryWire is the JSON-serialisable form of stateEntry persisted in the id1
@@ -49,6 +52,79 @@ type stateEntryWire struct {
 	Created     time.Time `json:"created"`
 	Verifier    string    `json:"verifier"`
 	RedirectURI string    `json:"redirect_uri"`
+	Bind        string    `json:"bind"`
+}
+
+const (
+	// bindCookieName carries the browser binding nonce from /auth/orcid through
+	// /auth/orcid/callback to /auth/orcid/exchange. Without it, the state
+	// parameter alone only proves a login was started somewhere, not by the
+	// browser now finishing it (login CSRF).
+	bindCookieName = "id1_orcid_bind"
+	// bindCookiePath scopes the cookie to the three ORCID routes.
+	bindCookiePath = "/auth/orcid"
+)
+
+// generateBinding returns a fresh browser binding nonce (256 bits, unpadded
+// base64url) for the cookie.
+func generateBinding() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate browser binding: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// bindingDigest is what the KV stores in place of the nonce, so a read of the
+// store never yields a value a browser could present.
+func bindingDigest(nonce string) string {
+	sum := sha256.Sum256([]byte(nonce))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// requestBindingMatches reports whether the request carries a binding cookie
+// whose digest equals want. An absent cookie, a duplicated cookie, an empty
+// value or an empty want never matches.
+func requestBindingMatches(r *http.Request, want string) bool {
+	if want == "" {
+		return false
+	}
+	// Exactly one cookie: a host under a shared parent domain can plant a second
+	// cookie of this name, and which one a server sees first is not the
+	// server's choice. Ambiguity fails closed.
+	var c *http.Cookie
+	for _, candidate := range r.Cookies() {
+		if candidate.Name != bindCookieName {
+			continue
+		}
+		if c != nil {
+			return false
+		}
+		c = candidate
+	}
+	if c == nil || c.Value == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(bindingDigest(c.Value)), []byte(want)) == 1
+}
+
+// bindCookie builds the binding cookie. maxAge < 0 deletes it. Secure follows
+// the scheme of the registered callback URL, the one deployment fact that says
+// whether browsers reach id1 over https.
+func (h *OrcidHandler) bindCookie(value string, maxAge int) *http.Cookie {
+	secure := false
+	if u, err := url.Parse(h.oauth2Config.RedirectURL); err == nil {
+		secure = u.Scheme == "https"
+	}
+	return &http.Cookie{
+		Name:     bindCookieName,
+		Value:    value,
+		Path:     bindCookiePath,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	}
 }
 
 // orcidIDPattern validates ORCID iD format: XXXX-XXXX-XXXX-XXX[X|digit]
@@ -173,10 +249,17 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	nonce, err := generateBinding()
+	if err != nil {
+		http.Error(w, "internal error generating auth state", http.StatusInternalServerError)
+		return
+	}
+
 	wire, err := json.Marshal(stateEntryWire{
 		Created:     time.Now(),
 		Verifier:    verifier,
 		RedirectURI: redirectURI,
+		Bind:        bindingDigest(nonce),
 	})
 	if err != nil {
 		http.Error(w, "internal error encoding auth state", http.StatusInternalServerError)
@@ -199,6 +282,9 @@ func (h *OrcidHandler) HandleBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bind this login to the browser that started it: only a request carrying
+	// this cookie can finish it at the callback and redeem its login code.
+	http.SetCookie(w, h.bindCookie(nonce, int(h.stateTTL.Seconds())))
 	http.Redirect(w, r, h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 
@@ -291,10 +377,21 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
-	entry := stateEntry{created: wire.Created, verifier: wire.Verifier, redirectURI: wire.RedirectURI}
+	entry := stateEntry{created: wire.Created, verifier: wire.Verifier, redirectURI: wire.RedirectURI, bind: wire.Bind}
 
 	if time.Since(entry.created) > h.stateTTL {
 		http.Error(w, "state expired", http.StatusBadRequest)
+		return
+	}
+
+	// SECURITY: the callback must come from the browser that began this login.
+	// Otherwise an attacker who started a login and authenticated as themselves
+	// could hand the callback URL to a victim and sign the victim in as the
+	// attacker. The state is already consumed above, so a refused attempt
+	// cannot be retried by anyone.
+	if !requestBindingMatches(r, entry.bind) {
+		log.Printf("orcid callback refused: browser binding cookie missing or not matching the login that began")
+		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
 
@@ -417,7 +514,7 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Hand the browser a one-time code, never the JWT: a JWT in a redirect URL is
 	// written to browser history, server logs and the Referer header. The code is
 	// redeemed once at /auth/orcid/exchange (HandleExchange).
-	loginCode, codeErr := storeOrcidLoginCode(jwtToken)
+	loginCode, codeErr := storeOrcidLoginCode(jwtToken, entry.bind)
 	if codeErr != nil {
 		// codeErr comes from the OS random source or the KV store's own Set,
 		// never from request input, and it never carries the JWT. A failed
@@ -433,6 +530,9 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(redirectTarget, "?") {
 		sep = "&"
 	}
+	// Re-issue the same binding for the exchange step, for as long as the code lives.
+	bindingNonce, _ := r.Cookie(bindCookieName) // present: requestBindingMatches accepted exactly one
+	http.SetCookie(w, h.bindCookie(bindingNonce.Value, int(orcidCodeLifetime.Seconds())))
 	http.Redirect(w, r, redirectTarget+sep+"code="+url.QueryEscape(loginCode), http.StatusFound)
 }
 

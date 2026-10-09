@@ -53,13 +53,14 @@ var orcidCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 type orcidCodeEntry struct {
 	JWT     string `json:"jwt"`
 	Expires int64  `json:"exp"`
+	Bind    string `json:"bind"`
 }
 
 // storeOrcidLoginCode stores jwtToken in the id1 KV store under a fresh
 // one-time code and returns the code. 32 random bytes -> unpadded base64url
 // (alphabet A-Za-z0-9-_), so the code is a single, path-safe KV key segment.
 // The same shape as the sync ticket in sync_ticket.go.
-func storeOrcidLoginCode(jwtToken string) (string, error) {
+func storeOrcidLoginCode(jwtToken, bind string) (string, error) {
 	codeBytes := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, codeBytes); err != nil {
 		return "", fmt.Errorf("failed to generate login code: %w", err)
@@ -73,6 +74,7 @@ func storeOrcidLoginCode(jwtToken string) (string, error) {
 	entry, err := json.Marshal(orcidCodeEntry{
 		JWT:     jwtToken,
 		Expires: orcidCodeNow().Add(orcidCodeLifetime).Unix(),
+		Bind:    bind,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to encode login code: %w", err)
@@ -88,13 +90,16 @@ func storeOrcidLoginCode(jwtToken string) (string, error) {
 // HandleExchange redeems a one-time login code for the id1 JWT that
 // HandleCallback minted.
 //
-// Auth contract: anonymous by design. The browser holds no credential yet - the
-// code IS the credential. It is 256 bits of randomness, is burned by a
+// Auth contract: no bearer credential, but a browser binding. The code is
+// redeemable only by the browser that began the login: the request must carry
+// the binding cookie HandleBegin set, whose digest the code entry stores. The
+// code is 256 bits of randomness, is burned by a
 // delete-first CmdDel on its leaf key (a single-winner atomic unlink), and is
 // scheduled to expire 60 seconds after issue. The stored entry carries its own
 // expiry instant, which this handler checks on redemption; the TTL sweeper only
 // reclaims the key afterwards. A second redemption, an unknown code, an expired
-// code and a swept code all answer 401 "Invalid or expired code". A malformed request
+// code, a swept code and a code presented without its binding all answer 401
+// "Invalid or expired code"; a refused binding still burns the code. A malformed request
 // answers 400. The
 // response is never cached. No CORS headers are set: the browser calls this
 // same-origin through Traefik.
@@ -158,6 +163,15 @@ func (h *OrcidHandler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: only the browser the login began in may redeem the code. The
+	// code is already burned, so a leaked code presented without the binding
+	// is useless to everyone.
+	if !requestBindingMatches(r, entry.Bind) {
+		http.Error(w, "Invalid or expired code", http.StatusUnauthorized)
+		return
+	}
+
+	http.SetCookie(w, h.bindCookie("", -1))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"jwt": entry.JWT})
 }

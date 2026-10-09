@@ -77,15 +77,34 @@ func newTestOrcidHandler(tokenServerURL, frontendURL string) *OrcidHandler {
 	}
 }
 
+// testBindNonce is the browser binding nonce a seeded state expects; withBinding
+// presents it the way the browser would present the cookie HandleBegin set.
+const testBindNonce = "test-binding-nonce"
+
+var testBindDigest = bindingDigest(testBindNonce)
+
+// withBinding adds the test binding cookie to a request that carries none.
+func withBinding(r *http.Request) *http.Request {
+	if _, err := r.Cookie(bindCookieName); err != nil {
+		r.AddCookie(&http.Cookie{Name: bindCookieName, Value: testBindNonce})
+	}
+	return r
+}
+
 // seedState persists a CSRF state entry directly into the id1 KV store, mirroring
 // what HandleBegin does. The caller MUST have pointed dbpath at a writable temp dir
 // (e.g. via newTestOrcidHandlerWithState, or `dbpath = t.TempDir()`) first.
 func seedState(t *testing.T, key string, entry stateEntry) {
 	t.Helper()
+	bind := entry.bind
+	if bind == "" {
+		bind = testBindDigest
+	}
 	wire, err := json.Marshal(stateEntryWire{
 		Created:     entry.created,
 		Verifier:    entry.verifier,
 		RedirectURI: entry.redirectURI,
+		Bind:        bind,
 	})
 	if err != nil {
 		t.Fatalf("failed to marshal seed state %q: %v", key, err)
@@ -140,7 +159,7 @@ func redeemLoginCode(t *testing.T, h *OrcidHandler, location string) string {
 		t.Fatalf("failed to marshal the exchange body: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	h.HandleExchange(rec, httptest.NewRequest(http.MethodPost, "/auth/orcid/exchange", strings.NewReader(string(body))))
+	h.HandleExchange(rec, withBinding(httptest.NewRequest(http.MethodPost, "/auth/orcid/exchange", strings.NewReader(string(body)))))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("exchange: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -176,7 +195,7 @@ func TestOrcidStateExpiry(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=expired_state&code=any_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for expired state, got %d: %s", rec.Code, rec.Body.String())
@@ -265,6 +284,9 @@ func TestOrcidStateSurvivesPodRestart(t *testing.T) {
 	cbReq := httptest.NewRequest(http.MethodGet,
 		"/auth/orcid/callback?state="+url.QueryEscape(state)+"&code=test_code", nil)
 	cbRec := httptest.NewRecorder()
+	for _, c := range beginRec.Result().Cookies() {
+		cbReq.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	}
 	handlerB.HandleCallback(cbRec, cbReq)
 
 	// Load-bearing: the post-restart handler must COMPLETE the login (302 + login code),
@@ -305,7 +327,7 @@ func TestOrcidCallback(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusFound {
 		t.Errorf("expected 302 redirect, got %d: %s", rec.Code, rec.Body.String())
@@ -330,7 +352,7 @@ func TestOrcidCallbackMissingState(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?code=test_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing state, got %d: %s", rec.Code, rec.Body.String())
@@ -349,7 +371,7 @@ func TestOrcidCallbackMissingCode(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing code, got %d: %s", rec.Code, rec.Body.String())
@@ -405,7 +427,7 @@ func TestOrcidCallbackInvalidFormat(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid ORCID format, got %d: %s", rec.Code, rec.Body.String())
@@ -440,7 +462,7 @@ func TestOrcidCallbackMissingOrcidField(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("expected 502 for missing ORCID field, got %d: %s", rec.Code, rec.Body.String())
@@ -507,7 +529,7 @@ func TestOrcidCallbackLogsExchangeFailureWithoutSecrets(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code="+rawCode, nil)
 			rec := httptest.NewRecorder()
-			h.HandleCallback(rec, req)
+			h.HandleCallback(rec, withBinding(req))
 
 			if rec.Code != http.StatusInternalServerError {
 				t.Fatalf("expected 500 for a failed token exchange, got %d: %s", rec.Code, rec.Body.String())
@@ -662,7 +684,7 @@ func TestOrcidCallbackIssuingJWT(t *testing.T) {
 	// Execute: Simulate ORCID callback with valid state and authorization code
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	// Verify: Should redirect (302) with the one-time ?code= in the URL
 	if rec.Code != http.StatusFound {
@@ -784,7 +806,7 @@ func TestOrcidCallbackIssuingJWTWithoutFrontendURL(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=valid_state&code=test_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	// Verify: HTTP 200 OK (not redirect)
 	if rec.Code != http.StatusOK {
@@ -861,7 +883,7 @@ func TestOrcidCallbackJWTKeyIDMatches(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code1", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusFound {
 		t.Errorf("Expected 302 redirect, got %d: %s", rec.Code, rec.Body.String())
@@ -965,7 +987,7 @@ func TestOrcidCallbackSigningKeyFailure(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("Expected 500 Internal Server Error, got %d: %s", rec.Code, rec.Body.String())
@@ -1048,7 +1070,7 @@ func TestOrcidCallbackSignJWTFailure(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("Expected 500 Internal Server Error, got %d: %s", rec.Code, rec.Body.String())
@@ -1090,7 +1112,7 @@ func TestOrcidCallbackValidationBeforeJWT(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=state1&code=code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	// Should reject with 400, NOT issue a JWT
 	if rec.Code != http.StatusBadRequest {
@@ -1192,7 +1214,7 @@ func TestHandleCallback_RedirectsToStoredRedirectURI(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet,
 		"/auth/orcid/callback?code=test-code&state="+state, nil)
 	w := httptest.NewRecorder()
-	h.HandleCallback(w, req)
+	h.HandleCallback(w, withBinding(req))
 
 	if w.Code != http.StatusFound {
 		t.Fatalf("expected 302, got %d: %s", w.Code, w.Body.String())
@@ -1268,7 +1290,7 @@ func TestOrcidCallbackTokenExchangeFailsFastOnHungConnection(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	start := time.Now()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 	elapsed := time.Since(start)
 
 	if rec.Code != http.StatusInternalServerError {
@@ -1392,7 +1414,7 @@ func TestOrcidStateSingleUse(t *testing.T) {
 	// First callback succeeds and must consume the state.
 	req1 := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=single_use_state&code=c", nil)
 	rec1 := httptest.NewRecorder()
-	h.HandleCallback(rec1, req1)
+	h.HandleCallback(rec1, withBinding(req1))
 	if rec1.Code != http.StatusFound {
 		t.Fatalf("first callback: expected 302, got %d: %s", rec1.Code, rec1.Body.String())
 	}
@@ -1405,7 +1427,7 @@ func TestOrcidStateSingleUse(t *testing.T) {
 	// A replay with the same (now-consumed) state must be rejected.
 	req2 := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=single_use_state&code=c", nil)
 	rec2 := httptest.NewRecorder()
-	h.HandleCallback(rec2, req2)
+	h.HandleCallback(rec2, withBinding(req2))
 	if rec2.Code != http.StatusBadRequest {
 		t.Errorf("replay of consumed state: expected 400, got %d: %s", rec2.Code, rec2.Body.String())
 	}
@@ -1548,7 +1570,7 @@ func TestOrcidCallbackUnmarshalErrorIsLogged(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=corrupt_state&code=any_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for corrupt state data, got %d: %s", rec.Code, rec.Body.String())
@@ -1618,7 +1640,7 @@ func TestOrcidCallbackDeleteFailureIsLoggedNotFatal(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=del_fail_state&code=any_code", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	// Best-effort delete failure must NOT fail the request.
 	if rec.Code != http.StatusFound {
@@ -1650,7 +1672,7 @@ func TestOrcidCallbackStateRejectsPathTraversal(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet,
 		"/auth/orcid/callback?state="+url.QueryEscape(traversal)+"&code=c", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for traversal state, got %d: %s", rec.Code, rec.Body.String())
@@ -1727,7 +1749,7 @@ func TestOrcidCallback_StampsOrcidAMR(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=amr_state&code=c", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -1785,7 +1807,7 @@ func TestOrcidCallbackRefusesSymlinkedKeysDirDuringRefresh(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=symlink_state&code=c", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())
@@ -1854,7 +1876,7 @@ func TestOrcidCallbackRefusesInStoreRelativeSymlinkedKeysDirDuringRefresh(t *tes
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=instore_symlink_state&code=c", nil)
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, req)
+	h.HandleCallback(rec, withBinding(req))
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected 302, got %d: %s", rec.Code, rec.Body.String())

@@ -38,7 +38,7 @@ func postExchange(t *testing.T, body string) *httptest.ResponseRecorder {
 	h := newTestOrcidHandler("", "http://localhost:19001")
 	req := httptest.NewRequest(http.MethodPost, "/auth/orcid/exchange", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	h.HandleExchange(rec, req)
+	h.HandleExchange(rec, withBinding(req))
 	return rec
 }
 
@@ -62,7 +62,7 @@ func startOrcidTokenStub(t *testing.T) *httptest.Server {
 
 func TestOrcidExchangeReturnsTheJWTOnceThenRefuses(t *testing.T) {
 	newExchangeStore(t)
-	code, err := storeOrcidLoginCode("signed.jwt.value")
+	code, err := storeOrcidLoginCode("signed.jwt.value", testBindDigest)
 	if err != nil {
 		t.Fatalf("storeOrcidLoginCode: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestOrcidExchangeReturnsTheJWTOnceThenRefuses(t *testing.T) {
 
 func TestOrcidExchangeRefusesACodePastItsLifetimeBeforeTheSweeperRuns(t *testing.T) {
 	newExchangeStore(t)
-	code, err := storeOrcidLoginCode("late.jwt.value")
+	code, err := storeOrcidLoginCode("late.jwt.value", testBindDigest)
 	if err != nil {
 		t.Fatalf("storeOrcidLoginCode: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestOrcidExchangeRefusesCodesThatWereNeverIssued(t *testing.T) {
 
 func TestOrcidExchangeRejectsABadRequestWithoutTouchingTheStore(t *testing.T) {
 	newExchangeStore(t)
-	live, err := storeOrcidLoginCode("live.jwt.value")
+	live, err := storeOrcidLoginCode("live.jwt.value", testBindDigest)
 	if err != nil {
 		t.Fatalf("storeOrcidLoginCode: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestOrcidExchangeRejectsABadRequestWithoutTouchingTheStore(t *testing.T) {
 
 func TestOrcidExchangeAcceptsOnlyPost(t *testing.T) {
 	newExchangeStore(t)
-	code, err := storeOrcidLoginCode("post.only.jwt")
+	code, err := storeOrcidLoginCode("post.only.jwt", testBindDigest)
 	if err != nil {
 		t.Fatalf("storeOrcidLoginCode: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestOrcidExchangeAcceptsOnlyPost(t *testing.T) {
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodOptions} {
 		req := httptest.NewRequest(method, "/auth/orcid/exchange", strings.NewReader(exchangeBody(code)))
 		rec := httptest.NewRecorder()
-		h.HandleExchange(rec, req)
+		h.HandleExchange(rec, withBinding(req))
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s: expected 405, got %d", method, rec.Code)
 		}
@@ -198,7 +198,7 @@ func TestOrcidExchangeAcceptsOnlyPost(t *testing.T) {
 
 func TestOrcidExchangeHasExactlyOneWinnerWhenRacing(t *testing.T) {
 	newExchangeStore(t)
-	code, err := storeOrcidLoginCode("race.jwt.value")
+	code, err := storeOrcidLoginCode("race.jwt.value", testBindDigest)
 	if err != nil {
 		t.Fatalf("storeOrcidLoginCode: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestOrcidExchangeHasExactlyOneWinnerWhenRacing(t *testing.T) {
 			h := newTestOrcidHandler("", "http://localhost:19001")
 			req := httptest.NewRequest(http.MethodPost, "/auth/orcid/exchange", strings.NewReader(exchangeBody(code)))
 			rec := httptest.NewRecorder()
-			h.HandleExchange(rec, req)
+			h.HandleExchange(rec, withBinding(req))
 			statuses[slot] = rec.Code
 		}(i)
 	}
@@ -235,7 +235,7 @@ func TestOrcidExchangeHasExactlyOneWinnerWhenRacing(t *testing.T) {
 
 func TestOrcidLoginCodeIsScheduledForExpiry(t *testing.T) {
 	newExchangeStore(t)
-	code, err := storeOrcidLoginCode("expiring.jwt.value")
+	code, err := storeOrcidLoginCode("expiring.jwt.value", testBindDigest)
 	if err != nil {
 		t.Fatalf("storeOrcidLoginCode: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestOrcidCallbackRedirectCarriesALoginCodeNotTheJWT(t *testing.T) {
 	seedState(t, "round_trip_state", stateEntry{created: time.Now(), verifier: "v"})
 
 	callback := httptest.NewRecorder()
-	h.HandleCallback(callback, httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=round_trip_state&code=c", nil))
+	h.HandleCallback(callback, withBinding(httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=round_trip_state&code=c", nil)))
 	if callback.Code != http.StatusFound {
 		t.Fatalf("callback: expected 302, got %d: %s", callback.Code, callback.Body.String())
 	}
@@ -337,7 +337,7 @@ func TestOrcidCallbackFailsClosedWhenTheLoginCodeCannotBeStored(t *testing.T) {
 	getLog := captureLog(t)
 
 	rec := httptest.NewRecorder()
-	h.HandleCallback(rec, httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=store_failure_state&code=c", nil))
+	h.HandleCallback(rec, withBinding(httptest.NewRequest(http.MethodGet, "/auth/orcid/callback?state=store_failure_state&code=c", nil)))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 when the code cannot be stored, got %d: %s", rec.Code, rec.Body.String())
