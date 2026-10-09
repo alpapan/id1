@@ -220,9 +220,8 @@ func (t *Session) handleCommands() {
 			// was only present on the original HTTP upgrade request, already
 			// authorized by id1.go's Handle before the connection was upgraded), so
 			// the internal-secret new-id bootstrap exemption is never available here.
-			authOk := auth(t.Id, cmd, "")
-
-			if !authOk {
+			data, err := cmd.ExecAs(t.Id, "")
+			if errors.Is(err, ErrUnauthorised) {
 				// Use "default" device for WebSocket challenge-response
 				defaultKeyKey, keyErr := KK(t.Id, "pub", "keys", "default")
 				if keyErr != nil {
@@ -245,9 +244,9 @@ func (t *Session) handleCommands() {
 				continue
 			}
 
-			if data, err := cmd.ExecAs(t.Id, ""); err == nil {
+			if err == nil {
 				t.send(CmdSet(cmd.Key, map[string]string{}, data))
-			} else if errors.Is(ErrNotFound, err) {
+			} else if errors.Is(err, ErrNotFound) {
 				t.send(CmdDel(cmd.Key))
 			} else {
 				log.Printf("error executing command: %s", err)

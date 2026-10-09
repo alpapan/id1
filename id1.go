@@ -77,62 +77,34 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		}
 		req.Cmd.Args["x-id"] = id
 
-		authOk := auth(id, req.Cmd, r.Header.Get("X-ID1-Internal-Secret"))
-
 		// A WebSocket session binds an identity for the whole life of the
 		// connection and authorises every later frame as that identity, so a
 		// public-read grant is not sufficient to open one: reading {id}/pub/... is
-		// public, but acting AS {id} is not. Clearing authOk here routes an
-		// unauthenticated upgrade into the branch below, which answers it with the
-		// same 401 and encrypted challenge the ordinary HTTP path uses, so a
-		// client can complete the handshake and dial again with a token.
-		if req.IsWebSocket && id == "" {
-			authOk = false
-		}
-
-		if !authOk {
-			if len(id) > 0 {
-				err403(w, r, "")
-			} else {
-				deviceId := r.URL.Query().Get("device")
-				if deviceId == "" {
-					deviceId = "default"
-				}
-				if !validDeviceID(deviceId) {
-					err404(w, r, "")
-					return
-				}
-				deviceKey, keyErr := KK(req.Id, "pub", "keys", deviceId)
-				if keyErr != nil {
-					err404(w, r, "")
-					return
-				}
-				if pubKey, err := CmdGet(deviceKey).execUnauthorised(); err == nil {
-					if challenge, err := generateChallenge(req.Id, string(pubKey)); err == nil {
-						err401(w, r, challenge)
-					} else {
-						err500(w, r, err.Error())
-					}
-				} else {
-					if !errors.Is(err, ErrNotFound) {
-						log.Printf("device key lookup failed for id %q device %q: %v", req.Id, deviceId, err)
-					}
-					err404(w, r, "")
-				}
-			}
-			return
-		}
-
+		// public, but acting AS {id} is not. An unauthenticated upgrade is
+		// answered with the same 401 and encrypted challenge the ordinary HTTP
+		// path uses, so a client can complete the handshake and dial again with a
+		// token.
 		if req.IsWebSocket {
+			if !mayOpenSession(id, req.Cmd, r.Header.Get("X-ID1-Internal-Secret")) {
+				refuseUnauthorised(w, r, id, req.Id)
+				return
+			}
 			upgrader := websocket.Upgrader{}
 			upgrader.CheckOrigin = checkBrowserOrigin
 			wsHandler := webSocketHandler{
 				upgrader: upgrader,
 			}
 			wsHandler.Handle(w, r, id)
-		} else if data, err := req.Cmd.ExecAs(id, r.Header.Get("X-ID1-Internal-Secret")); err == nil {
+			return
+		}
+
+		// ExecAs authorises the command itself; an authorisation refusal comes
+		// back as ErrUnauthorised and is answered like an unauthenticated request.
+		if data, err := req.Cmd.ExecAs(id, r.Header.Get("X-ID1-Internal-Secret")); err == nil {
 			ok200(w, r, data)
-		} else if errors.Is(err, ErrForbidden) || errors.Is(err, ErrUnauthorised) {
+		} else if errors.Is(err, ErrUnauthorised) {
+			refuseUnauthorised(w, r, id, req.Id)
+		} else if errors.Is(err, ErrForbidden) {
 			err403(w, r, "")
 		} else if errors.Is(err, ErrNotFound) {
 			err404(w, r, "")
@@ -141,6 +113,47 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 		} else {
 			err400(w, r, err.Error())
 		}
+	}
+}
+
+// mayOpenSession reports whether the caller may open a WebSocket session: it
+// must be identified and authorised for the command the upgrade request names.
+func mayOpenSession(id string, cmd Command, internalSecretHeader string) bool {
+	return id != "" && auth(id, cmd, internalSecretHeader)
+}
+
+// refuseUnauthorised answers a request whose caller may not run its command:
+// 403 when the caller is identified, otherwise the 401 and encrypted challenge
+// for the targeted account's device key, or 404 when there is no such key.
+func refuseUnauthorised(w http.ResponseWriter, r *http.Request, callerId string, targetId string) {
+	if len(callerId) > 0 {
+		err403(w, r, "")
+		return
+	}
+	deviceId := r.URL.Query().Get("device")
+	if deviceId == "" {
+		deviceId = "default"
+	}
+	if !validDeviceID(deviceId) {
+		err404(w, r, "")
+		return
+	}
+	deviceKey, keyErr := KK(targetId, "pub", "keys", deviceId)
+	if keyErr != nil {
+		err404(w, r, "")
+		return
+	}
+	if pubKey, err := CmdGet(deviceKey).execUnauthorised(); err == nil {
+		if challenge, err := generateChallenge(targetId, string(pubKey)); err == nil {
+			err401(w, r, challenge)
+		} else {
+			err500(w, r, err.Error())
+		}
+	} else {
+		if !errors.Is(err, ErrNotFound) {
+			log.Printf("device key lookup failed for id %q device %q: %v", targetId, deviceId, err)
+		}
+		err404(w, r, "")
 	}
 }
 

@@ -10,6 +10,7 @@
 package id1
 
 import (
+	"errors"
 	"io/fs"
 	"log"
 	"os"
@@ -89,9 +90,12 @@ func dotAfter(dir string) {
 		// No HTTP request context in the scheduled sweep, so the internal-secret
 		// new-id bootstrap exemption is never available here - a scheduled command
 		// relies only on the owner/public-get/dot-op grants.
-		if contained && auth(dotAfterCommand.Args["x-id"], dotAfterCommand, "") {
-			dotAfterCommand.ExecAs(dotAfterCommand.Args["x-id"], "")
-		} else {
+		refused := !contained
+		if contained {
+			_, execErr := dotAfterCommand.ExecAs(dotAfterCommand.Args["x-id"], "")
+			refused = errors.Is(execErr, ErrUnauthorised)
+		}
+		if refused {
 			log.Printf("unauthorised .after command by '%s': %s %s", dotAfterCommand.Args["x-id"], dotAfterCommand.Op, dotAfterCommand.Key)
 		}
 		root.Remove(relPath)
