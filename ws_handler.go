@@ -163,6 +163,10 @@ func (t *Session) ping() {
 
 func (t *Session) readCommands() {
 	defer sessionWG.Done()
+	// A message larger than the key/value body cap makes the next read fail
+	// (close code 1009), which ends the session below, so one client cannot
+	// make the server buffer an arbitrarily large message.
+	t.Conn.SetReadLimit(KVBodyLimitBytes)
 	for {
 		if _, data, err := t.Conn.ReadMessage(); err != nil {
 			t.Conn.Close()

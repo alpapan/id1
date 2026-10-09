@@ -18,6 +18,7 @@ package id1
 //	# or: pixi run -m apps/id1/pixi.toml test-integration
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -416,6 +417,45 @@ func startID1(t *testing.T, bin string, env map[string]string) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+}
+
+// TestID1CapsRequestBodiesOnTheLiveBinary proves the built binary serves the
+// LimitBody-wrapped mux: a body over the default cap is refused on an ordinary
+// route, while the key/value route still takes it. `go test ./...` cannot
+// compile main.go_, so this tier is the only one that can assert it. The sizes
+// stay small (65 KiB) so the server reads the whole request and the client
+// always sees the answer.
+func TestID1CapsRequestBodiesOnTheLiveBinary(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+	startID1(t, bin, map[string]string{
+		"PORT":         port,
+		"DBPATH":       t.TempDir(),
+		"MTLS_ENABLED": "false",
+		"ENV":          "test",
+	})
+	client := &http.Client{Timeout: 10 * time.Second}
+	base := "http://127.0.0.1:" + port
+	assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+
+	post := func(path string, size int64) int {
+		resp, err := client.Post(base+path, "application/octet-stream", bytes.NewReader(make([]byte, size)))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := post("/auth/refresh", DefaultBodyLimitBytes+1); got != http.StatusRequestEntityTooLarge {
+		t.Errorf("POST /auth/refresh with a body over the default cap = %d, want 413", got)
+	}
+	if got := post("/auth/refresh", 1024); got == http.StatusRequestEntityTooLarge {
+		t.Error("POST /auth/refresh with a small body must not answer 413")
+	}
+	if got := post("/nobody/data", DefaultBodyLimitBytes+1); got == http.StatusRequestEntityTooLarge {
+		t.Error("the key/value route must accept a body over the default cap, got 413")
+	}
 }
 
 func freePort(t *testing.T) string {

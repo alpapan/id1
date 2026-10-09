@@ -51,12 +51,18 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 	}
 
 	clientUpgrader := websocket.Upgrader{
-		CheckOrigin:     func(r *http.Request) bool { return true },
+		CheckOrigin:     checkBrowserOrigin,
 		ReadBufferSize:  65536,
 		WriteBufferSize: 65536,
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Refuse a foreign Origin BEFORE the ticket is read or burned, so a
+		// cross-origin request cannot consume the single-use ticket.
+		if !checkBrowserOrigin(r) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
 		// Authenticate the upgrade with a single-use ticket (browsers cannot attach
 		// an Authorization header to a WebSocket handshake). Reject an empty ticket
 		// BEFORE the KV delete: KK(syncTicketPrefix, "") normalises to the bare

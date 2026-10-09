@@ -125,7 +125,7 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 
 		if req.IsWebSocket {
 			upgrader := websocket.Upgrader{}
-			upgrader.CheckOrigin = func(r *http.Request) bool { return true }
+			upgrader.CheckOrigin = checkBrowserOrigin
 			wsHandler := webSocketHandler{
 				upgrader: upgrader,
 			}

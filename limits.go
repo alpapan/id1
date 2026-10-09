@@ -26,10 +26,12 @@ const kvCatchAllPattern = "/{key...}"
 
 // IngressBodyLimits is the raise table main passes to LimitBody. Every route
 // not named here keeps DefaultBodyLimitBytes; the key/value catch-all is raised
-// to KVBodyLimitBytes.
+// to KVBodyLimitBytes, and the Nextcloud proxy patterns carry no cap here.
 func IngressBodyLimits() map[string]int64 {
 	return map[string]int64{
 		kvCatchAllPattern: KVBodyLimitBytes,
+		"/nextcloud/":     BodyUncapped,
+		"/nextcloud":      BodyUncapped,
 	}
 }
 

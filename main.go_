@@ -302,6 +302,11 @@ func main() {
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", mainHandler)
 
+	// Cap every request body: 64 KiB by default, with the raises id1.IngressBodyLimits
+	// names (the key/value catch-all). The wrapper sits around the whole mux, not around
+	// each handler, so a route registered later is capped without an edit here.
+	limited := id1.LimitBody(http.DefaultServeMux, id1.IngressBodyLimits())
+
 	fmt.Printf("Starting server on %s:%s\n", bindAddr, port)
 	tlsConfig, err := id1.BuildTLSConfig()
 	if err != nil {
@@ -311,6 +316,7 @@ func main() {
 		server := &http.Server{
 			Addr:      bindAddr + ":" + port,
 			TLSConfig: tlsConfig,
+			Handler:   limited,
 			ErrorLog:  log.New(id1.NewHandshakeEOFFilter(os.Stderr), "", log.LstdFlags),
 		}
 		fmt.Printf("Starting with TLS enabled, bound to %s:%s\n", bindAddr, port)
@@ -320,7 +326,7 @@ func main() {
 		}
 	} else {
 		fmt.Printf("Starting WITHOUT TLS (plaintext), bound to %s:%s\n", bindAddr, port)
-		if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
+		if err := http.ListenAndServe(bindAddr+":"+port, limited); err != nil {
 			log.Fatalf("error starting service: %s", err)
 		}
 	}
