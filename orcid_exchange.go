@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"time"
 )
 
 const (
@@ -30,14 +31,29 @@ const (
 	// within a page load of receiving it, so a short window is ample, and the code
 	// is single-use besides.
 	orcidCodeTTL = "60"
+	// orcidCodeLifetime is orcidCodeTTL as a duration. The exchange enforces it
+	// itself, so a code is refused at once on expiry rather than at the sweeper's
+	// next pass.
+	orcidCodeLifetime = 60 * time.Second
 	// orcidExchangeBodyLimit caps the request body HandleExchange reads. A code is
 	// 43 characters, so this is generous.
 	orcidExchangeBodyLimit = 1024
 )
 
+// orcidCodeNow is the clock the code lifetime is measured against. It is a
+// variable so a test can move time past the lifetime.
+var orcidCodeNow = time.Now
+
 // orcidCodePattern matches exactly what storeOrcidLoginCode issues: 32 random
 // bytes in unpadded URL-safe base64, which is 43 characters.
 var orcidCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+
+// orcidCodeEntry is the stored value of a login code: the JWT and the instant
+// the code stops being redeemable.
+type orcidCodeEntry struct {
+	JWT     string `json:"jwt"`
+	Expires int64  `json:"exp"`
+}
 
 // storeOrcidLoginCode stores jwtToken in the id1 KV store under a fresh
 // one-time code and returns the code. 32 random bytes -> unpadded base64url
@@ -54,9 +70,16 @@ func storeOrcidLoginCode(jwtToken string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to build login code key: %w", err)
 	}
+	entry, err := json.Marshal(orcidCodeEntry{
+		JWT:     jwtToken,
+		Expires: orcidCodeNow().Add(orcidCodeLifetime).Unix(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to encode login code: %w", err)
+	}
 	if _, err := CmdSet(codeKey,
 		map[string]string{"x-id": orcidCodePrefix, "ttl": orcidCodeTTL},
-		[]byte(jwtToken)).execUnauthorised(); err != nil {
+		entry).execUnauthorised(); err != nil {
 		return "", fmt.Errorf("failed to store login code: %w", err)
 	}
 	return code, nil
@@ -68,10 +91,10 @@ func storeOrcidLoginCode(jwtToken string) (string, error) {
 // Auth contract: anonymous by design. The browser holds no credential yet - the
 // code IS the credential. It is 256 bits of randomness, is burned by a
 // delete-first CmdDel on its leaf key (a single-winner atomic unlink), and is
-// scheduled to expire 60 seconds after issue. Expiry is carried out by the TTL
-// sweeper, not checked here, so a code stays redeemable until the sweeper's
-// next pass after those 60 seconds. A second redemption, an unknown code and a
-// swept code all answer 401 "Invalid or expired code". A malformed request
+// scheduled to expire 60 seconds after issue. The stored entry carries its own
+// expiry instant, which this handler checks on redemption; the TTL sweeper only
+// reclaims the key afterwards. A second redemption, an unknown code, an expired
+// code and a swept code all answer 401 "Invalid or expired code". A malformed request
 // answers 400. The
 // response is never cached. No CORS headers are set: the browser calls this
 // same-origin through Traefik.
@@ -125,13 +148,18 @@ func (h *OrcidHandler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid or expired code", http.StatusUnauthorized)
 		return
 	}
-	if len(jwtBytes) == 0 {
+	var entry orcidCodeEntry
+	if err := json.Unmarshal(jwtBytes, &entry); err != nil || entry.JWT == "" {
+		http.Error(w, "Invalid or expired code", http.StatusUnauthorized)
+		return
+	}
+	if !orcidCodeNow().Before(time.Unix(entry.Expires, 0)) {
 		http.Error(w, "Invalid or expired code", http.StatusUnauthorized)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"jwt": string(jwtBytes)})
+	_ = json.NewEncoder(w).Encode(map[string]string{"jwt": entry.JWT})
 }
 
 // __END_OF_FILE_MARKER__

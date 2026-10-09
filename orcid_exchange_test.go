@@ -94,6 +94,26 @@ func TestOrcidExchangeReturnsTheJWTOnceThenRefuses(t *testing.T) {
 	}
 }
 
+func TestOrcidExchangeRefusesACodePastItsLifetimeBeforeTheSweeperRuns(t *testing.T) {
+	newExchangeStore(t)
+	code, err := storeOrcidLoginCode("late.jwt.value")
+	if err != nil {
+		t.Fatalf("storeOrcidLoginCode: %v", err)
+	}
+	original := orcidCodeNow
+	issued := time.Now()
+	orcidCodeNow = func() time.Time { return issued.Add(61 * time.Second) }
+	t.Cleanup(func() { orcidCodeNow = original })
+
+	rec := postExchange(t, exchangeBody(code))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a code past its lifetime: expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "late.jwt.value") {
+		t.Error("an expired code must not return the JWT")
+	}
+}
+
 func TestOrcidExchangeRefusesCodesThatWereNeverIssued(t *testing.T) {
 	newExchangeStore(t)
 	cases := []struct {
