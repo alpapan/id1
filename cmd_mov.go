@@ -40,6 +40,14 @@ func (t *Command) move() error {
 	if len(t.Key.Segments) == 0 {
 		return ErrForbidden
 	}
+	// The SOURCE is refused as well as the destination. Moving bookkeeping out
+	// of the reserved directory strands the schedule it named, and a namespace
+	// that refuses entry while permitting exit is not reserved at all. Nothing
+	// legitimate moves bookkeeping - the scheduler never calls mov - so the
+	// refusal costs no behaviour.
+	if isReservedTTLKey(t.Key) {
+		return ErrForbidden
+	}
 	oldKey := t.Key.String()
 	newKey := string(t.Data)
 
@@ -68,6 +76,14 @@ func (t *Command) move() error {
 	// writer of scheduled commands in this package, so refusing here removes no
 	// behaviour.
 	if strings.HasPrefix(filepath.Base(newPath), ".after.") {
+		return ErrForbidden
+	}
+	// The whole normalised destination is tested, not just its base name: a
+	// base-name check would admit a move INTO the reserved directory, where
+	// the file's own name is perfectly ordinary and the segment above it is
+	// what makes it bookkeeping.
+	destKey, destErr := K(filepath.ToSlash(relPath))
+	if destErr != nil || isReservedTTLKey(destKey) {
 		return ErrForbidden
 	}
 

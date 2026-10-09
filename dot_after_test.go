@@ -53,8 +53,8 @@ func TestDotAfter(t *testing.T) {
 		t.Errorf("Expected TTL key to be deleted by dotAfter, but Get succeeded (key still exists)")
 	}
 
-	// The .ttl. metadata file should also be removed
-	ttlMetaKey := mustK(t, fmt.Sprintf("%s/.ttl.%s", ttlKey.Parent, ttlKey.Name))
+	// The bookkeeping pointer in the reserved directory should also be removed
+	ttlMetaKey := mustK(t, fmt.Sprintf("%s/.ttl/%s", ttlKey.Parent, ttlKey.Name))
 	_, errMetaDelete := CmdGet(ttlMetaKey).Exec()
 	if errMetaDelete == nil {
 		t.Errorf("Expected TTL metadata file %q to be deleted by dotAfter, but Get succeeded (file still exists)", ttlMetaKey.String())
