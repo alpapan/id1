@@ -62,15 +62,13 @@ const (
 	// exposureBuildTagged: compiled in only under a build tag, so a binary
 	// built without that tag carries neither the route nor its handler.
 	exposureBuildTagged
-	// exposureEdgeFallThrough: not named by any matcher, but still reachable
-	// from the edge, because two of Traefik's matchers are PathPrefix rather
-	// than exact Path. A Go 1.22 ServeMux catch-all absorbs every forwarded
-	// path no more specific pattern claims, so anything under /sync or
-	// /auth/sovereign that id1 does not register by name arrives here - as does
-	// /auth/logout, which next.config.mjs rewrites to id1 although id1
-	// registers no such handler. The consequence is that this route's OWN
-	// authentication is load-bearing rather than defence in depth: it is not
-	// behind a closed perimeter, whatever its path looks like.
+	// exposureEdgeFallThrough: reachable from the edge without being named by a
+	// matcher. Traefik matches id1 paths by exact Path, except the WebDAV subtree
+	// of the Nextcloud proxy, which id1 serves from its /nextcloud handler rather
+	// than the catch-all. No route is classified this way today; the constant
+	// stays so a future PathPrefix matcher forces a deliberate classification,
+	// and a route so classified has authentication that is load-bearing rather
+	// than defence in depth.
 	exposureEdgeFallThrough
 )
 
@@ -79,9 +77,10 @@ const (
 var wantRoutes = map[string]exposure{
 	// --- Public: Traefik routes these to id1. ---
 	// The matchers are enumerated in config.py::_frontend_traefik_route_yaml:
-	// PathPrefix /sync and /auth/sovereign, the exact paths /auth/orcid,
-	// /auth/orcid/callback, /auth/orcid/exchange, /auth/refresh, /auth/sync_ticket and
-	// /pub/jwks.json, and PathPrefix /nextcloud/remote.php/dav. There is no
+	// the exact paths /sync, /auth/sovereign/token, /auth/sovereign/register/begin,
+	// /auth/sovereign/register/commit, /auth/sovereign/devices, /auth/orcid,
+	// /auth/orcid/callback, /auth/orcid/exchange, /auth/refresh, /auth/sync_ticket
+	// and /pub/jwks.json, and PathPrefix /nextcloud/remote.php/dav. There is no
 	// /auth/* sweep, which is why the two build-tagged mints below are not
 	// public despite sitting under /auth/, and only the WebDAV subpath of the
 	// Nextcloud proxy is reachable rather than the whole prefix.
@@ -96,15 +95,13 @@ var wantRoutes = map[string]exposure{
 	"/auth/sovereign/devices":         exposurePublic,
 	"/pub/jwks.json":                  exposurePublic,
 	"/sync":                           exposurePublic,
-	"/sync/":                          exposurePublic,
 	"/nextcloud":                      exposurePublic,
 	"/nextcloud/":                     exposurePublic,
 
 	// --- Internal: in-cluster callers only. ---
-	// No matcher reaches these by an exact path OR by either PathPrefix, and no
-	// Next.js rewrite names them. /internal/ sits under neither /sync nor
-	// /auth/sovereign, so the prefix fall-through described below cannot reach
-	// it. The two Nextcloud bridges and the trusted-provisioner registration are
+	// No matcher reaches these by an exact path or by the WebDAV PathPrefix, and
+	// no Next.js rewrite names them. The two Nextcloud bridges and the
+	// trusted-provisioner registration are
 	// additionally gated by X-ID1-Internal-Secret and mTLS respectively, but the
 	// gate is the second line of defence; not being routed is the first.
 	"/internal/nc-token":           exposureInternal,
@@ -113,15 +110,16 @@ var wantRoutes = map[string]exposure{
 	"/internal/sovereign/register": exposureInternal,
 	// Kubernetes probe target. Returns a fixed status object and no identity.
 	"/health": exposureInternal,
+	// The subtree form of /sync: Traefik matches the exact path /sync only.
+	"/sync/": exposureInternal,
 
-	// --- Reachable from the edge as a prefix fall-through. ---
 	// The key/value catch-all, registered last so every pattern above wins;
-	// without it the key/value protocol has no handler at all. It is NOT behind
-	// a closed perimeter: see exposureEdgeFallThrough. Its own gate is what
+	// without it the key/value protocol has no handler at all. No Traefik matcher
+	// forwards to it, so only in-cluster callers reach it. Its own gate still
 	// stands in front of the KV store - auth() in auth.go, which answers 404 for
 	// an unknown id, 401 with a challenge for a known one, and grants a read
 	// only for an owner or a {id}/pub/ path.
-	"/{key...}": exposureEdgeFallThrough,
+	"/{key...}": exposureInternal,
 
 	// --- Build-tagged: absent from a binary built without the tag. ---
 	// testmint: mints an RS256 token for an arbitrary ORCID iD, and even with
