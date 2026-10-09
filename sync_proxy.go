@@ -147,6 +147,10 @@ func SyncProxy(target string, kvStore KeyValueStore) (http.HandlerFunc, error) {
 			return
 		}
 		defer clientConn.Close()
+		// A client message larger than the key/value body cap makes the next read
+		// fail (close code 1009), which ends the relay, so one authenticated client
+		// cannot make id1 buffer or forward an arbitrarily large message.
+		clientConn.SetReadLimit(KVBodyLimitBytes)
 
 		// Dial the backend (id1 -> automerge-sync-server), attaching the signed
 		// assertion as a header - a server-side handshake id1 controls, which a
