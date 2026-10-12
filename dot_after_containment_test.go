@@ -134,7 +134,7 @@ func TestDotAfterContainmentSkipsSingleSegmentKeyTtl(t *testing.T) {
 		t.Fatalf("reading store root: %v", readErr)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".after.") || strings.HasPrefix(entry.Name(), ".ttl.") {
+		if strings.HasPrefix(entry.Name(), ".after.") || strings.HasPrefix(entry.Name(), ".ttl.") || entry.Name() == ".ttl" {
 			t.Errorf("SECURITY: a single-segment ttl set created an unowned store-root schedule file %q", entry.Name())
 		}
 	}
