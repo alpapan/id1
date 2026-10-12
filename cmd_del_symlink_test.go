@@ -15,7 +15,7 @@ func TestDelSymlinkRefusesSymlinkEntryItself(t *testing.T) {
 	store, outside := seedSymlinkStore(t)
 	key := mustK(t, "mallory/escape")
 
-	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec()
+	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("del() on a symlink entry: got err=%v, want ErrForbidden", err)
 	}
@@ -40,7 +40,7 @@ func TestDelSymlinkRefusesThroughAbsoluteSymlink(t *testing.T) {
 	_, outside := seedSymlinkStore(t)
 	key := mustK(t, "mallory/escape/secret")
 
-	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec()
+	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("del() through an absolute symlink: got err=%v, want ErrForbidden", err)
 	}
@@ -62,7 +62,7 @@ func TestDelSymlinkRefusesThroughRelativeSymlinkCrossNamespace(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	key := mustK(t, "mallory/cross/priv/salt")
 
-	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec()
+	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("del() through a relative cross-namespace symlink: got err=%v, want ErrForbidden", err)
 	}
@@ -81,7 +81,7 @@ func TestDelSymlinkRefusesRelativeSymlinkEntryItself(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	key := mustK(t, "mallory/cross")
 
-	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec()
+	_, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("del() on a relative symlink entry: got err=%v, want ErrForbidden", err)
 	}
@@ -102,7 +102,7 @@ func TestDelSymlinkAllowsLegitimateDelete(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	key := mustK(t, "mallory/own")
 
-	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec(); err != nil {
+	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised(); err != nil {
 		t.Fatalf("del() refused a legitimate own-namespace key: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(store, "mallory", "own")); statErr == nil {
@@ -135,7 +135,7 @@ func TestDelSymlinkSkipsTtlBookkeepingRemovalWhenSymlink(t *testing.T) {
 	}
 
 	key := mustK(t, "mallory/msg/1")
-	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec(); err != nil {
+	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised(); err != nil {
 		t.Fatalf("del() errored on a legitimate delete with a symlink at the ttl bookkeeping path: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(msgDir, "1")); statErr == nil {
@@ -171,7 +171,7 @@ func TestDelSymlinkStillRemovesTtlBookkeeping(t *testing.T) {
 	}
 
 	key := mustK(t, "mallory/msg/1")
-	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec(); err != nil {
+	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised(); err != nil {
 		t.Fatalf("del() refused a legitimate delete with ttl bookkeeping present: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(msgDir, "1")); statErr == nil {

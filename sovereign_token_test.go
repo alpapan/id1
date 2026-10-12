@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sovereign_token_test.go
+// apps/id1/sovereign_token_test.go
 //
 // group: auth
 // tags: sovereign-keys, challenge-response, testing
@@ -47,7 +47,7 @@ func testSovereignSetup(t *testing.T, userID, deviceId string) *rsa.PrivateKey {
 
 	// Register the public key at per-device path
 	key := mustKK(t, userID, "pub", "keys", deviceId)
-	if _, err := CmdSet(key, map[string]string{"x-id": userID}, pubPEM).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"x-id": userID}, pubPEM).execUnauthorised(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,12 +257,12 @@ func TestHandleSovereignToken_FallbackToSingularPubKey(t *testing.T) {
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 
 	singularPath := mustKK(t, userID, "pub", "key")
-	if _, err := CmdSet(singularPath, map[string]string{"x-id": userID}, pubPEM).Exec(); err != nil {
+	if _, err := CmdSet(singularPath, map[string]string{"x-id": userID}, pubPEM).execUnauthorised(); err != nil {
 		t.Fatal(err)
 	}
 
 	// Confirm the multi-device path is absent so we know the fallback triggered.
-	if existing, _ := CmdGet(mustKK(t, userID, "pub", "keys", deviceId)).Exec(); len(existing) > 0 {
+	if existing, _ := CmdGet(mustKK(t, userID, "pub", "keys", deviceId)).execUnauthorised(); len(existing) > 0 {
 		t.Fatalf("precondition failed: multi-device path should be empty")
 	}
 
@@ -327,7 +327,7 @@ func TestHandleSovereignToken_PrefersMultiDevicePath(t *testing.T) {
 	}
 	singularPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: singularDER})
 	if _, err := CmdSet(mustKK(t, userID, "pub", "key"),
-		map[string]string{"x-id": userID}, singularPEM).Exec(); err != nil {
+		map[string]string{"x-id": userID}, singularPEM).execUnauthorised(); err != nil {
 		t.Fatal(err)
 	}
 

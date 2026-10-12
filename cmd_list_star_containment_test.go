@@ -47,7 +47,7 @@ func TestListStarSinkRefusesTraversal(t *testing.T) {
 	seedVictim(t)
 
 	key := mustK(t, "victim/pub/..*")
-	data, err := NewCommand(List, key, map[string]string{"recursive": "true", "x-id": "mallory"}, []byte{}).Exec()
+	data, err := NewCommand(List, key, map[string]string{"recursive": "true", "x-id": "mallory"}, []byte{}).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("list() with a star-hidden traversal key: got err=%v, want ErrForbidden", err)
@@ -67,7 +67,7 @@ func TestListStarRefusesZeroSegmentKey(t *testing.T) {
 	seedVictim(t)
 
 	key := mustK(t, "*")
-	data, err := NewCommand(List, key, map[string]string{"recursive": "true", "x-id": "mallory"}, []byte{}).Exec()
+	data, err := NewCommand(List, key, map[string]string{"recursive": "true", "x-id": "mallory"}, []byte{}).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("list() with a zero-segment key: got err=%v, want ErrForbidden", err)
@@ -83,11 +83,11 @@ func TestListStarRefusesZeroSegmentKey(t *testing.T) {
 func TestListStarLegitimateListStillWorks(t *testing.T) {
 	seedVictim(t)
 
-	if _, err := CmdSet(mustK(t, "alice/msg/one"), map[string]string{"x-id": "alice"}, []byte("hello")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "alice/msg/one"), map[string]string{"x-id": "alice"}, []byte("hello")).execUnauthorised(); err != nil {
 		t.Fatalf("seed alice: %v", err)
 	}
 
-	data, err := NewCommand(List, mustK(t, "alice/msg/*"), map[string]string{"x-id": "alice"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "alice/msg/*"), map[string]string{"x-id": "alice"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("legitimate list was refused: %v", err)
 	}

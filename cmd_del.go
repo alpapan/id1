@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_del.go
+// apps/id1/cmd_del.go
 //
 // group: server
 // tags: storage, filesystem, delete-operation

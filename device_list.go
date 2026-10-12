@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/device_list.go
+// apps/id1/device_list.go
 //
 // group: auth
 // tags: sovereign-keys, devices, listing
@@ -35,7 +35,7 @@ type DeviceListResponse struct {
 // Auth: RS256 JWT required (user can only list their own devices)
 func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cors(&w)
+		cors(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -80,7 +80,7 @@ func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 			deviceId := entry.Name()
 			deviceName := deviceId // default to ID
 			if nameKey, err := KK(orcidId, "pub", "keys", deviceId+".name"); err == nil {
-				if nameData, err := CmdGet(nameKey).Exec(); err == nil {
+				if nameData, err := CmdGet(nameKey).execUnauthorised(); err == nil {
 					deviceName = string(nameData)
 				}
 			}
@@ -103,7 +103,7 @@ func HandleListDevices(kvStore KeyValueStore) http.HandlerFunc {
 // Auth: RS256 JWT required (user can only revoke their own devices)
 func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cors(&w)
+		cors(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -119,7 +119,7 @@ func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Missing id or device parameter", http.StatusBadRequest)
 			return
 		}
-		if !devicePattern.MatchString(deviceId) {
+		if !validDeviceID(deviceId) {
 			http.Error(w, "Invalid device", http.StatusBadRequest)
 			return
 		}
@@ -140,13 +140,13 @@ func HandleDeleteDevice(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Invalid id or device", http.StatusBadRequest)
 			return
 		} else {
-			CmdDel(deviceKey).Exec()
+			CmdDel(deviceKey).execUnauthorised()
 		}
 		if deviceNameKey, err := KK(orcidId, "pub", "keys", deviceId+".name"); err != nil {
 			http.Error(w, "Invalid id or device", http.StatusBadRequest)
 			return
 		} else {
-			CmdDel(deviceNameKey).Exec()
+			CmdDel(deviceNameKey).execUnauthorised()
 		}
 
 		w.Header().Set("Content-Type", "application/json")
