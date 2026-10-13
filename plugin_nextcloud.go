@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/plugin_nextcloud.go
+// apps/id1/plugin_nextcloud.go
 //
 // group: config
 // tags: nextcloud, plugin, integration, webdav

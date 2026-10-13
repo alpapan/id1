@@ -69,7 +69,7 @@ func fileBecomes(path, want string) bool {
 // is a public READ, which is not enough to open a session that acts as somebody.
 func TestWebSocketRefusesUnauthenticatedUpgrade(t *testing.T) {
 	tmpDir := seedVictim(t)
-	if _, err := CmdSet(mustK(t, "victim/pub/keys/default"), map[string]string{"x-id": "victim"}, []byte(testPubKey1)).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victim/pub/keys/default"), map[string]string{"x-id": "victim"}, []byte(testPubKey1)).execUnauthorised(); err != nil {
 		t.Fatalf("seed victim device key: %v", err)
 	}
 	srv := startKVServer(t, tmpDir)
@@ -117,7 +117,7 @@ func TestWebSocketHandleReturnsWhenUpgradeFails(t *testing.T) {
 // must be Alice's, so a command naming the victim's namespace is refused.
 func TestWebSocketBindsSessionToTokenSubjectNotPath(t *testing.T) {
 	tmpDir := seedVictim(t)
-	if _, err := CmdSet(mustK(t, "victim/pub/keys/default"), map[string]string{"x-id": "victim"}, []byte("VICTIM-KEY")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victim/pub/keys/default"), map[string]string{"x-id": "victim"}, []byte("VICTIM-KEY")).execUnauthorised(); err != nil {
 		t.Fatalf("seed victim key: %v", err)
 	}
 	token := mustHMACToken(t, "alice")

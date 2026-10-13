@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/mtls_connectivity_test.go
+// apps/id1/mtls_connectivity_test.go
 //
 // group: middleware
 // tags: tls, mtls, integration, testing
@@ -64,7 +64,7 @@ func TestMTLSConnectivity_SyncProxy(t *testing.T) {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
 	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).execUnauthorised()
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()
@@ -119,7 +119,7 @@ func TestMTLSConnectivity_SyncProxy_PlainHTTP(t *testing.T) {
 		t.Fatalf("SyncProxy failed to create handler: %v", err)
 	}
 	CmdSet(mustKK(t, "_syncticket", "relay-ticket"), map[string]string{"x-id": "_syncticket", "ttl": "60"},
-		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).Exec()
+		gridTicketValue(t, "0000-0001-2345-6789", "test-automerge-id")).execUnauthorised()
 
 	proxyServer := httptest.NewServer(handler)
 	defer proxyServer.Close()

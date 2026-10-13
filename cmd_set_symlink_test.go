@@ -10,7 +10,7 @@ func TestSetRefusesWriteThroughEscapingSymlink(t *testing.T) {
 	_, outside := seedSymlinkStore(t)
 	key := mustKK(t, "mallory", "escape", "pwned")
 
-	_, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).Exec()
+	_, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).execUnauthorised()
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -23,7 +23,7 @@ func TestSetRefusesWriteThroughInStoreRelativeSymlink(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	key := mustKK(t, "mallory", "cross", "pwned")
 
-	_, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).Exec()
+	_, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).execUnauthorised()
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -45,7 +45,7 @@ func TestSetSucceedsAgainstFreshNonExistentDbpath(t *testing.T) {
 	}
 
 	key := mustKK(t, "newid", "newkey")
-	if _, err := NewCommand(Set, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).Exec(); err != nil {
+	if _, err := NewCommand(Set, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).execUnauthorised(); err != nil {
 		t.Fatalf("expected set() to succeed against a fresh non-existent dbpath, got %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(fresh, "newid", "newkey"))
@@ -61,7 +61,7 @@ func TestSetWritesOrdinaryKeyWithNewParentDirectory(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	key := mustKK(t, "newid", "newdir", "newkey")
 
-	if _, err := NewCommand(Set, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).Exec(); err != nil {
+	if _, err := NewCommand(Set, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).execUnauthorised(); err != nil {
 		t.Fatalf("expected ordinary set to succeed, got %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(store, "newid", "newdir", "newkey"))

@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/pub_sub_test.go
+// apps/id1/pub_sub_test.go
 //
 // group: utils
 // tags: pubsub, events, testing

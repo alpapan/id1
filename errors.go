@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/errors.go
+// apps/id1/errors.go
 //
 // group: utils
 // tags: errors, exceptions
@@ -17,3 +17,7 @@ var ErrExists = errors.New("item exists")
 var ErrLimitExceeded = errors.New("limit exceeded")
 
 var ErrForbidden = errors.New("forbidden")
+
+// ErrUnauthorised is returned by ExecAs when the caller is not authorised to
+// run the command; the command is not run.
+var ErrUnauthorised = errors.New("unauthorised")

@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_set.go
+// apps/id1/cmd_set.go
 //
 // group: server
 // tags: storage, filesystem, set-operation
@@ -158,12 +158,17 @@ func createDotTtl(cmd *Command) {
 		return
 	}
 	ttdMs := time.Now().UnixMilli() + (int64(ttlSec) * 1000) //time to die in Ms
-	ttlKey, err := KK(cmd.Key.Parent, dotTTLDir, cmd.Key.Name)
+	parentKey, err := K(cmd.Key.Parent)
 	if err != nil {
 		log.Printf("createDotTtl: skipping TTL bookkeeping for %s: %v", cmd.Key.String(), err)
 		return
 	}
-	dotAfterKey, err := KK(cmd.Key.Parent, fmt.Sprintf(".after.%d", ttdMs))
+	ttlKey, err := KK(parentKey, dotTTLDir, cmd.Key.Name)
+	if err != nil {
+		log.Printf("createDotTtl: skipping TTL bookkeeping for %s: %v", cmd.Key.String(), err)
+		return
+	}
+	dotAfterKey, err := KK(parentKey, fmt.Sprintf(".after.%d", ttdMs))
 	if err != nil {
 		log.Printf("createDotTtl: skipping TTL bookkeeping for %s: %v", cmd.Key.String(), err)
 		return
@@ -173,7 +178,7 @@ func createDotTtl(cmd *Command) {
 		if oldKey, err := K(string(oldDotAfter)); err != nil {
 			log.Printf("createDotTtl: skipping stale .after cleanup for %s: %v", cmd.Key.String(), err)
 		} else {
-			CmdDel(oldKey).Exec()
+			CmdDel(oldKey).execUnauthorised()
 		}
 	}
 
@@ -183,5 +188,5 @@ func createDotTtl(cmd *Command) {
 		log.Printf("createDotTtl: skipping TTL bookkeeping for %s: %v", cmd.Key.String(), err)
 		return
 	}
-	CmdSet(dotAfterKey, map[string]string{"x-id": cmd.Args["x-id"]}, dotAfterCommand.Bytes()).Exec()
+	CmdSet(dotAfterKey, map[string]string{"x-id": cmd.Args["x-id"]}, dotAfterCommand.Bytes()).execUnauthorised()
 }

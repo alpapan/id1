@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/refresh_test.go
+// apps/id1/refresh_test.go
 //
 // group: jwt
 // tags: jwt, refresh, rs256, testing

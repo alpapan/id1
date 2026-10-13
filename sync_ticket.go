@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_ticket.go
+// apps/id1/sync_ticket.go
 //
 // group: auth
 // tags: sync, websocket, ticket, single-use
@@ -43,7 +43,7 @@ const (
 // smaller exposure than a reusable full JWT in a ?token= query string.
 func HandleSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cors(&w)
+		cors(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -81,7 +81,7 @@ func HandleSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 		}
 		if _, err := CmdSet(ticketKey,
 			map[string]string{"x-id": syncTicketPrefix, "ttl": syncTicketTTL},
-			[]byte(claims.Subject)).Exec(); err != nil {
+			[]byte(claims.Subject)).execUnauthorised(); err != nil {
 			http.Error(w, "Failed to store ticket", http.StatusInternalServerError)
 			return
 		}

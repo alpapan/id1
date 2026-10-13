@@ -68,7 +68,7 @@ func TestReservedTTLNamesAreRefusedBySet(t *testing.T) {
 			newTTLStore(t)
 			key := mustK(t, c.key)
 
-			_, err := CmdSet(key, map[string]string{"x-id": "alice"}, []byte("payload")).Exec()
+			_, err := CmdSet(key, map[string]string{"x-id": "alice"}, []byte("payload")).execUnauthorised()
 
 			if c.refused && err != ErrForbidden {
 				t.Errorf("set %s: expected ErrForbidden, got %v", c.key, err)
@@ -86,7 +86,7 @@ func TestReservedTTLNamesAreRefusedByAdd(t *testing.T) {
 			newTTLStore(t)
 			key := mustK(t, c.key)
 
-			_, err := NewCommand(Add, key, map[string]string{"x-id": "alice"}, []byte("payload")).Exec()
+			_, err := NewCommand(Add, key, map[string]string{"x-id": "alice"}, []byte("payload")).execUnauthorised()
 
 			if c.refused && err != ErrForbidden {
 				t.Errorf("add %s: expected ErrForbidden, got %v", c.key, err)
@@ -103,11 +103,11 @@ func TestReservedTTLNamesAreRefusedAsAMoveDestination(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			newTTLStore(t)
 			source := mustK(t, "alice/msg/source")
-			if _, err := CmdSet(source, map[string]string{"x-id": "alice"}, []byte("payload")).Exec(); err != nil {
+			if _, err := CmdSet(source, map[string]string{"x-id": "alice"}, []byte("payload")).execUnauthorised(); err != nil {
 				t.Fatalf("seeding the move source failed: %v", err)
 			}
 
-			_, err := NewCommand(Mov, source, map[string]string{"x-id": "alice"}, []byte(c.key)).Exec()
+			_, err := NewCommand(Mov, source, map[string]string{"x-id": "alice"}, []byte(c.key)).execUnauthorised()
 
 			if c.refused && err != ErrForbidden {
 				t.Errorf("mov to %s: expected ErrForbidden, got %v", c.key, err)
@@ -123,7 +123,7 @@ func TestTheSchedulerStillWritesItsOwnBookkeeping(t *testing.T) {
 	root := newTTLStore(t)
 	key := mustK(t, "alice/msg/greeting")
 
-	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).execUnauthorised(); err != nil {
 		t.Fatalf("set with ttl failed: %v", err)
 	}
 
@@ -136,17 +136,17 @@ func TestTheSchedulerStillWritesItsOwnBookkeeping(t *testing.T) {
 func TestReservedTTLNamesAreRefusedAsAMoveSource(t *testing.T) {
 	newTTLStore(t)
 	key := mustK(t, "alice/msg/greeting")
-	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).execUnauthorised(); err != nil {
 		t.Fatalf("set with ttl failed: %v", err)
 	}
 
 	pointer := mustK(t, "alice/msg/.ttl/greeting")
-	_, err := NewCommand(Mov, pointer, map[string]string{"x-id": "alice"}, []byte("alice/evacuated")).Exec()
+	_, err := NewCommand(Mov, pointer, map[string]string{"x-id": "alice"}, []byte("alice/evacuated")).execUnauthorised()
 
 	if err != ErrForbidden {
 		t.Errorf("moving bookkeeping out of the reserved directory must be refused, got %v", err)
 	}
-	if _, getErr := CmdGet(mustK(t, "alice/evacuated")).Exec(); getErr == nil {
+	if _, getErr := CmdGet(mustK(t, "alice/evacuated")).execUnauthorised(); getErr == nil {
 		t.Errorf("the bookkeeping pointer was evacuated to an ordinary key")
 	}
 }

@@ -107,9 +107,9 @@ func TestRegisterCommit_NonPersonSubject_Refused(t *testing.T) {
 			require.NoError(t, err)
 			pendingNonce, err := KK(subject, "priv", "pending", token+".nonce")
 			require.NoError(t, err)
-			_, err = CmdSet(pendingKey, map[string]string{"x-id": subject}, []byte(pubPEM)).Exec()
+			_, err = CmdSet(pendingKey, map[string]string{"x-id": subject}, []byte(pubPEM)).execUnauthorised()
 			require.NoError(t, err)
-			_, err = CmdSet(pendingNonce, map[string]string{"x-id": subject}, nonce).Exec()
+			_, err = CmdSet(pendingNonce, map[string]string{"x-id": subject}, nonce).execUnauthorised()
 			require.NoError(t, err)
 
 			commitBody, _ := json.Marshal(RegisterCommitRequest{
@@ -125,7 +125,7 @@ func TestRegisterCommit_NonPersonSubject_Refused(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 			promoted, err := KK(subject, "pub", "keys", "attacker-device")
 			require.NoError(t, err)
-			data, getErr := CmdGet(promoted).Exec()
+			data, getErr := CmdGet(promoted).execUnauthorised()
 			assert.True(t, getErr != nil || len(data) == 0, "no device key may be promoted under a non-person subject")
 		})
 	}
