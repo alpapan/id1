@@ -34,7 +34,7 @@ func TestDotAfterDoesNotReadThroughSymlinkedAfterFile(t *testing.T) {
 
 	dotAfter(store)
 
-	if _, err := CmdGet(mustK(t, "victim/priv/backdoor")).Exec(); err == nil {
+	if _, err := CmdGet(mustK(t, "victim/priv/backdoor")).execUnauthorised(); err == nil {
 		t.Errorf("SECURITY: a symlinked .after. file was read through and its command executed, planting victim/priv/backdoor")
 	}
 	if _, lstatErr := os.Lstat(symlinkPath); lstatErr != nil {
@@ -59,7 +59,7 @@ func TestDotAfterDoesNotDescendIntoSymlinkedDirectory(t *testing.T) {
 
 	dotAfter(store)
 
-	if _, err := CmdGet(mustK(t, "victim/priv/backdoor2")).Exec(); err == nil {
+	if _, err := CmdGet(mustK(t, "victim/priv/backdoor2")).execUnauthorised(); err == nil {
 		t.Errorf("SECURITY: a .after. file reached only by descending into a symlinked directory was executed")
 	}
 	if _, statErr := os.Stat(plantedPath); statErr != nil {

@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd.go
+// apps/id1/cmd.go
 //
 // group: models
 // tags: commands, operations, keys
@@ -114,7 +114,25 @@ func ParseCommand(data []byte) (Command, error) {
 	return command, nil
 }
 
-func (t Command) Exec() ([]byte, error) {
+// ExecAs runs the command only if id is authorised to perform it. It is the
+// entry point for every command that arrives on someone's behalf: it runs
+// auth, and when auth refuses it returns ErrUnauthorised without running
+// anything. internalSecretHeader is the X-ID1-Internal-Secret header value of
+// the originating HTTP request, or "" when there is no request (a WebSocket
+// frame, the scheduled sweep); it is passed to auth unchanged.
+func (t Command) ExecAs(id string, internalSecretHeader string) ([]byte, error) {
+	if !auth(id, t, internalSecretHeader) {
+		return []byte{}, ErrUnauthorised
+	}
+	return t.execUnauthorised()
+}
+
+// execUnauthorised runs the command with no authorisation check. It is for
+// in-process callers that built the command themselves from a key they parsed
+// (a signing key, a salt, a ticket); a command that arrives on someone's
+// behalf runs through ExecAs. It is deliberately unexported so a new caller has
+// to write the word to use it.
+func (t Command) execUnauthorised() ([]byte, error) {
 	switch t.Op {
 	case Set:
 		return []byte{}, t.set()

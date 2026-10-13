@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_mov.go
+// apps/id1/cmd_mov.go
 //
 // group: server
 // tags: storage, filesystem, move-operation, rename
@@ -26,13 +26,15 @@ func (t *Command) move() error {
 	// keyWithinRoot blocks both, because both require a ".." segment to reach
 	// the victim's path from here.
 	//
-	// This is containment only, not ownership: keyWithinRoot has no concept
-	// of which id owns a key, so a source key that is comfortably inside the
-	// root but belongs to a DIFFERENT namespace with NO ".." in it (e.g.
-	// "victim/priv/salt" named directly) still passes here - only the
-	// destination is ownership-checked, below. Whether the source also needs
-	// an ownership check is an open question for the security-advisor pass
-	// over the complete change.
+	// This is containment only, not ownership, and that is deliberate: a
+	// source inside another namespace is exactly what a ".mov" delegation
+	// (authDotOp) grants, so only the destination is ownership-checked, below.
+	// Every Mov command reaches this function through ExecAs, which authorises
+	// first; TestMoveOperationIsNamedOnlyByTheExpectedFiles pins which files
+	// name the Mov operation or the CmdMov constructor, by identifier only.
+	// The credential store is the one source that is never movable: a source
+	// whose second segment is "priv" is refused below,
+	// whoever asks and whatever granted the move.
 	if !keyWithinRoot(t.Key) {
 		return ErrForbidden
 	}
@@ -46,6 +48,12 @@ func (t *Command) move() error {
 	// legitimate moves bookkeeping - the scheduler never calls mov - so the
 	// refusal costs no behaviour.
 	if isReservedTTLKey(t.Key) {
+		return ErrForbidden
+	}
+	// The private subtree ({id}/priv/..., which holds the HMAC salt) is never a
+	// move source, so the salt stays unreachable through move() even if the
+	// delegation rules that normally keep a delegate out of it are loosened.
+	if len(t.Key.Segments) > 1 && t.Key.Segments[1] == "priv" {
 		return ErrForbidden
 	}
 	oldKey := t.Key.String()

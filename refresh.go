@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/refresh.go
+// apps/id1/refresh.go
 //
 // group: jwt
 // tags: jwt, refresh, rs256

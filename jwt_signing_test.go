@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/jwt_signing_test.go
+// apps/id1/jwt_signing_test.go
 //
 // group: jwt
 // tags: jwt, signing, rs256, testing

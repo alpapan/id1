@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/pub_sub.go
+// apps/id1/pub_sub.go
 //
 // group: utils
 // tags: pubsub, events, channels
@@ -67,12 +67,12 @@ func (t *PubSub) Unsubscribe(id string, ch chan Command) {
 	t.subs[id] = slices.Delete(t.subs[id], chIndex, chIndex+1)
 }
 
+// Close forgets every subscriber. It never closes a subscriber's channel: a
+// concurrent Publish may already have copied a channel out of the list and be
+// about to send on it, and a send on a closed channel panics. A forgotten,
+// unclosed channel is garbage-collected once the session that held it drops it.
 func (t *PubSub) Close() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for _, ch := range t.subs {
-		for _, sub := range ch {
-			close(sub)
-		}
-	}
+	t.subs = make(map[string][]chan Command)
 }

@@ -21,7 +21,7 @@ func TestSinkContainmentSetRefusesTraversal(t *testing.T) {
 	tmpDir := seedVictim(t)
 	key := hostileKey(t, "mallory", "..", "victim", "priv", "planted")
 
-	_, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("PLANTED")).Exec()
+	_, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("PLANTED")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("set() with a traversal key: got err=%v, want ErrForbidden", err)
 	}
@@ -38,7 +38,7 @@ func TestSinkContainmentSetAllowsLegitimateKey(t *testing.T) {
 	tmpDir := seedVictim(t)
 	key := mustK(t, "mallory/msg/hello")
 
-	if _, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("HELLO")).Exec(); err != nil {
+	if _, err := NewCommand(Set, key, map[string]string{"x-id": "mallory"}, []byte("HELLO")).execUnauthorised(); err != nil {
 		t.Fatalf("set() refused a legitimate own-namespace key: %v", err)
 	}
 	data, readErr := os.ReadFile(filepath.Join(tmpDir, "mallory", "msg", "hello"))
@@ -55,7 +55,7 @@ func TestSinkContainmentAddRefusesTraversal(t *testing.T) {
 	tmpDir := seedVictim(t)
 	key := hostileKey(t, "mallory", "..", "victim", "priv", "salt")
 
-	_, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("APPENDED")).Exec()
+	_, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("APPENDED")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("add() with a traversal key: got err=%v, want ErrForbidden", err)
 	}
@@ -74,10 +74,10 @@ func TestSinkContainmentAddAllowsLegitimateKey(t *testing.T) {
 	tmpDir := seedVictim(t)
 	key := mustK(t, "mallory/msg/log")
 
-	if _, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("FIRST")).Exec(); err != nil {
+	if _, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("FIRST")).execUnauthorised(); err != nil {
 		t.Fatalf("add() refused a legitimate own-namespace key: %v", err)
 	}
-	if _, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("-SECOND")).Exec(); err != nil {
+	if _, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("-SECOND")).execUnauthorised(); err != nil {
 		t.Fatalf("add() refused a legitimate own-namespace key on the second append: %v", err)
 	}
 	data, readErr := os.ReadFile(filepath.Join(tmpDir, "mallory", "msg", "log"))
@@ -96,7 +96,7 @@ func TestSinkContainmentListRefusesTraversal(t *testing.T) {
 	seedVictim(t)
 	key := hostileKey(t, "mallory", "..", "victim", "priv")
 
-	data, err := NewCommand(List, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec()
+	data, err := NewCommand(List, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("list() with a traversal key: got err=%v, want ErrForbidden", err)
 	}
@@ -111,11 +111,11 @@ func TestSinkContainmentListRefusesTraversal(t *testing.T) {
 func TestSinkContainmentListAllowsLegitimateKey(t *testing.T) {
 	seedVictim(t)
 
-	if _, err := NewCommand(Set, mustK(t, "mallory/msg/hello"), map[string]string{"x-id": "mallory"}, []byte("HELLO")).Exec(); err != nil {
+	if _, err := NewCommand(Set, mustK(t, "mallory/msg/hello"), map[string]string{"x-id": "mallory"}, []byte("HELLO")).execUnauthorised(); err != nil {
 		t.Fatalf("seeding mallory/msg/hello failed: %v", err)
 	}
 
-	data, err := NewCommand(List, mustK(t, "mallory/msg"), map[string]string{"x-id": "mallory"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "mallory/msg"), map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("list() refused a legitimate own-namespace key: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestSinkContainmentMoveRefusesTraversalSource(t *testing.T) {
 	tmpDir := seedVictim(t)
 	src := hostileKey(t, "mallory", "..", "victim", "priv", "salt")
 
-	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/stolen")).Exec()
+	_, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/stolen")).execUnauthorised()
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() with a traversal SOURCE: got err=%v, want ErrForbidden", err)
 	}
@@ -155,11 +155,11 @@ func TestSinkContainmentMoveAllowsLegitimateOwnNamespaceMove(t *testing.T) {
 	tmpDir := seedVictim(t)
 	src := mustK(t, "mallory/msg/hello")
 
-	if _, err := NewCommand(Set, src, map[string]string{"x-id": "mallory"}, []byte("MOVE-ME")).Exec(); err != nil {
+	if _, err := NewCommand(Set, src, map[string]string{"x-id": "mallory"}, []byte("MOVE-ME")).execUnauthorised(); err != nil {
 		t.Fatalf("seeding mallory/msg/hello failed: %v", err)
 	}
 
-	if _, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/archive/hello")).Exec(); err != nil {
+	if _, err := NewCommand(Mov, src, map[string]string{"x-id": "mallory"}, []byte("mallory/archive/hello")).execUnauthorised(); err != nil {
 		t.Fatalf("move() refused a legitimate own-namespace move: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(tmpDir, "mallory", "msg", "hello")); statErr == nil {
@@ -180,10 +180,10 @@ func TestSinkContainmentGetDelStillGuarded(t *testing.T) {
 	seedVictim(t)
 	key := hostileKey(t, "mallory", "..", "victim", "priv", "salt")
 
-	if _, err := NewCommand(Get, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec(); !errors.Is(err, ErrForbidden) {
+	if _, err := NewCommand(Get, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised(); !errors.Is(err, ErrForbidden) {
 		t.Errorf("get() must still refuse a traversal key: got err=%v", err)
 	}
-	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).Exec(); !errors.Is(err, ErrForbidden) {
+	if _, err := NewCommand(Del, key, map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised(); !errors.Is(err, ErrForbidden) {
 		t.Errorf("del() must still refuse a traversal key: got err=%v", err)
 	}
 }

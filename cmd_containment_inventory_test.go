@@ -168,7 +168,7 @@ func TestOpContainmentInventory(t *testing.T) {
 				map[string]string{"x-id": "mallory"},
 				[]byte("mallory/stolen"))
 
-			_, err := cmd.Exec()
+			_, err := cmd.execUnauthorised()
 			if !errors.Is(err, ErrForbidden) {
 				t.Errorf("operation %q must refuse a traversal key with ErrForbidden, got %v", name, err)
 			}

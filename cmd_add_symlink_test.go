@@ -10,7 +10,7 @@ func TestAddRefusesWriteThroughEscapingSymlink(t *testing.T) {
 	_, outside := seedSymlinkStore(t)
 	key := mustKK(t, "mallory", "escape", "pwned")
 
-	_, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).Exec()
+	_, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).execUnauthorised()
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -23,7 +23,7 @@ func TestAddRefusesWriteThroughInStoreRelativeSymlink(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	key := mustKK(t, "mallory", "cross", "pwned")
 
-	_, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).Exec()
+	_, err := NewCommand(Add, key, map[string]string{"x-id": "mallory"}, []byte("PWNED")).execUnauthorised()
 	if err != ErrForbidden {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -36,10 +36,10 @@ func TestAddAppendsOrdinaryKeyWithNewParentDirectory(t *testing.T) {
 	store, _ := seedSymlinkStore(t)
 	key := mustKK(t, "newid", "newdir", "newkey")
 
-	if _, err := NewCommand(Add, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).Exec(); err != nil {
+	if _, err := NewCommand(Add, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).execUnauthorised(); err != nil {
 		t.Fatalf("expected first ordinary add to succeed, got %v", err)
 	}
-	if _, err := NewCommand(Add, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).Exec(); err != nil {
+	if _, err := NewCommand(Add, key, map[string]string{"x-id": "newid"}, []byte("HELLO")).execUnauthorised(); err != nil {
 		t.Fatalf("expected second ordinary add to succeed, got %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(store, "newid", "newdir", "newkey"))

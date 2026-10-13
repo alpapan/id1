@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_assertion.go
+// apps/id1/sync_assertion.go
 //
 // group: middleware
 // tags: sync, jwt, assertion, rs256

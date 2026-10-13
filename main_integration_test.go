@@ -18,6 +18,7 @@ package id1
 //	# or: pixi run -m apps/id1/pixi.toml test-integration
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -320,6 +321,45 @@ func TestID1RefusesToStartWithoutNamespace(t *testing.T) {
 	}
 }
 
+// TestID1RefusesToStartWithoutBrowserOrigin pins the owner's ruling that
+// CURATORIUM_BROWSER_ORIGIN has no default: an unset value stops the process at
+// boot. The refusal lives in main(), which `go test ./...` cannot compile, so
+// this tier is the only one that can assert the process declines to serve.
+// The wait is bounded because the regression is a binary that does NOT exit.
+func TestID1RefusesToStartWithoutBrowserOrigin(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = append(os.Environ(),
+		"PORT="+port,
+		"DBPATH="+t.TempDir(),
+		"MTLS_ENABLED=false",
+		"ENV=test",
+		// Explicitly empty, overriding the test default. Later entries win in
+		// exec, so this is the unset case.
+		"CURATORIUM_BROWSER_ORIGIN=",
+	)
+	output, err := cmd.CombinedOutput()
+
+	if ctx.Err() != nil {
+		t.Fatalf("id1 kept running with no browser origin; it must refuse to boot.\n%s", output)
+	}
+	if err == nil {
+		t.Fatalf("id1 started and exited cleanly with no browser origin; it must refuse to boot.\n%s", output)
+	}
+	if !strings.Contains(string(output), "CURATORIUM_BROWSER_ORIGIN") {
+		t.Fatalf("the refusal must name the variable an operator has to set; got:\n%s", output)
+	}
+	if resp, err := (&http.Client{Timeout: 2 * time.Second}).Get("http://127.0.0.1:" + port + "/health"); err == nil {
+		resp.Body.Close()
+		t.Fatal("id1 served /health despite an unset browser origin")
+	}
+}
+
 // buildID1Binary compiles main.go_ into a runnable binary, mirroring apps/id1/Dockerfile:
 // a separate module that references the local id1 library via a replace directive.
 // goTags is passed to `go build -tags=...`; "" builds the production shape.
@@ -377,6 +417,45 @@ func startID1(t *testing.T, bin string, env map[string]string) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+}
+
+// TestID1CapsRequestBodiesOnTheLiveBinary proves the built binary serves the
+// LimitBody-wrapped mux: a body over the default cap is refused on an ordinary
+// route, while the key/value route still takes it. `go test ./...` cannot
+// compile main.go_, so this tier is the only one that can assert it. The sizes
+// stay small (65 KiB) so the server reads the whole request and the client
+// always sees the answer.
+func TestID1CapsRequestBodiesOnTheLiveBinary(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+	startID1(t, bin, map[string]string{
+		"PORT":         port,
+		"DBPATH":       t.TempDir(),
+		"MTLS_ENABLED": "false",
+		"ENV":          "test",
+	})
+	client := &http.Client{Timeout: 10 * time.Second}
+	base := "http://127.0.0.1:" + port
+	assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+
+	post := func(path string, size int64) int {
+		resp, err := client.Post(base+path, "application/octet-stream", bytes.NewReader(make([]byte, size)))
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := post("/auth/refresh", DefaultBodyLimitBytes+1); got != http.StatusRequestEntityTooLarge {
+		t.Errorf("POST /auth/refresh with a body over the default cap = %d, want 413", got)
+	}
+	if got := post("/auth/refresh", 1024); got == http.StatusRequestEntityTooLarge {
+		t.Error("POST /auth/refresh with a small body must not answer 413")
+	}
+	if got := post("/nobody/data", DefaultBodyLimitBytes+1); got == http.StatusRequestEntityTooLarge {
+		t.Error("the key/value route must accept a body over the default cap, got 413")
+	}
 }
 
 func freePort(t *testing.T) string {

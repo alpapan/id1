@@ -60,7 +60,7 @@ func TestAddDoesNotLeakFileDescriptorsOnWriteFailure(t *testing.T) {
 		// /dev/full, a future dbpath change), no descriptor would ever be
 		// opened and a bare err != nil check would pass without exercising
 		// the leak at all.
-		if _, err := NewCommand(Add, key, map[string]string{"x-id": "full"}, []byte("x")).Exec(); !errors.Is(err, syscall.ENOSPC) {
+		if _, err := NewCommand(Add, key, map[string]string{"x-id": "full"}, []byte("x")).execUnauthorised(); !errors.Is(err, syscall.ENOSPC) {
 			t.Fatalf("expected add() to fail writing to /dev/full with ENOSPC, got %v", err)
 		}
 	}
