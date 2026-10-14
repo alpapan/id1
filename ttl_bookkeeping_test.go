@@ -30,7 +30,7 @@ func TestTTLBookkeepingLivesInTheReservedDirectory(t *testing.T) {
 	root := newTTLStore(t)
 
 	key := mustK(t, "alice/msg/greeting")
-	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).execUnauthorised(); err != nil {
 		t.Fatalf("set with ttl failed: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestTTLBookkeepingCancelsThePreviousSchedule(t *testing.T) {
 	root := newTTLStore(t)
 	key := mustK(t, "alice/msg/greeting")
 
-	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("first")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("first")).execUnauthorised(); err != nil {
 		t.Fatalf("first set failed: %v", err)
 	}
 	firstPointer, err := os.ReadFile(filepath.Join(root, "alice", "msg", ".ttl", "greeting"))
@@ -61,7 +61,7 @@ func TestTTLBookkeepingCancelsThePreviousSchedule(t *testing.T) {
 		t.Fatalf("reading the first pointer: %v", err)
 	}
 
-	if _, err := CmdSet(key, map[string]string{"ttl": "600", "x-id": "alice"}, []byte("second")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "600", "x-id": "alice"}, []byte("second")).execUnauthorised(); err != nil {
 		t.Fatalf("second set failed: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestDeletingAKeyRemovesItsBookkeepingPointer(t *testing.T) {
 	root := newTTLStore(t)
 	key := mustK(t, "alice/msg/greeting")
 
-	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).execUnauthorised(); err != nil {
 		t.Fatalf("set with ttl failed: %v", err)
 	}
 	pointer := filepath.Join(root, "alice", "msg", ".ttl", "greeting")
@@ -90,7 +90,7 @@ func TestDeletingAKeyRemovesItsBookkeepingPointer(t *testing.T) {
 		t.Fatalf("expected the bookkeeping pointer to exist before the delete, at %s: %v", pointer, err)
 	}
 
-	if _, err := CmdDel(key).Exec(); err != nil {
+	if _, err := CmdDel(key).execUnauthorised(); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestTTLStillExpiresTheKey(t *testing.T) {
 	root := newTTLStore(t)
 	key := mustK(t, "alice/msg/greeting")
 
-	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).Exec(); err != nil {
+	if _, err := CmdSet(key, map[string]string{"ttl": "60", "x-id": "alice"}, []byte("hello")).execUnauthorised(); err != nil {
 		t.Fatalf("set with ttl failed: %v", err)
 	}
 
@@ -129,7 +129,7 @@ func TestTTLStillExpiresTheKey(t *testing.T) {
 
 	dotAfter(root)
 
-	if _, getErr := CmdGet(key).Exec(); getErr == nil {
+	if _, getErr := CmdGet(key).execUnauthorised(); getErr == nil {
 		t.Errorf("the sweeper should have expired the key, but it is still readable")
 	}
 }

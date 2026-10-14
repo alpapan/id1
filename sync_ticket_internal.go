@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sync_ticket_internal.go
+// apps/id1/sync_ticket_internal.go
 //
 // group: auth
 // tags: sync, websocket, ticket, internal, report-scoped
@@ -171,7 +171,7 @@ func HandleInternalSyncTicket(kvStore KeyValueStore) http.HandlerFunc {
 
 		if _, err := CmdSet(ticketKey,
 			map[string]string{"x-id": syncTicketPrefix, "ttl": syncTicketTTL},
-			valueBytes).Exec(); err != nil {
+			valueBytes).execUnauthorised(); err != nil {
 			http.Error(w, "failed to store ticket", http.StatusInternalServerError)
 			return
 		}

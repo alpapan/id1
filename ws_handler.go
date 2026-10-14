@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/ws_handler.go
+// apps/id1/ws_handler.go
 //
 // group: server
 // tags: websocket, pubsub, events
@@ -31,7 +31,7 @@ type webSocketHandler struct {
 // httptest.Server.Close treats a hijacked connection as done for its own
 // waitgroup the moment the upgrade succeeds, so nothing otherwise blocks a
 // caller until a session has actually finished touching shared package state
-// (dbpath, above all - handleCommands reads it via auth()/cmd.Exec() and can
+// (dbpath, above all - handleCommands reads it via auth()/cmd.ExecAs() and can
 // still be mid-command when Handle's own <-ctx.Done() unblocks). A test that
 // swaps dbpath via t.Cleanup right after closing its connection needs this
 // real synchronisation point rather than a timing assumption. There is no
@@ -56,7 +56,7 @@ func (t webSocketHandler) Handle(w http.ResponseWriter, r *http.Request, id stri
 		// caller's claimed account and its public key are no longer available -
 		// so it refuses bare.
 		log.Printf("websocket handle: refusing an unauthenticated upgrade for %q", r.URL.Path)
-		err401(w, "")
+		err401(w, r, "")
 		return
 	}
 
@@ -117,7 +117,7 @@ func (t *Session) OnConnect() {
 	log.Printf("connected: %s", t.Id)
 	if onlineKey, err := KK(t.Id, ".online"); err != nil {
 		log.Printf("onconnect: skipping online marker for %s: %v", t.Id, err)
-	} else if _, err := CmdSet(onlineKey, map[string]string{}, []byte{}).Exec(); err != nil {
+	} else if _, err := CmdSet(onlineKey, map[string]string{}, []byte{}).execUnauthorised(); err != nil {
 		log.Printf("cmd set error: %s", err)
 	}
 }
@@ -126,7 +126,7 @@ func (t *Session) Disconnect() {
 	if onlineKey, err := KK(t.Id, ".online"); err != nil {
 		log.Printf("disconnect: skipping online marker cleanup for %s: %v", t.Id, err)
 	} else {
-		CmdDel(onlineKey).Exec()
+		CmdDel(onlineKey).execUnauthorised()
 	}
 	pubsub.Unsubscribe(t.Id, t.CmdOut)
 	t.Conn.Close()
@@ -163,6 +163,10 @@ func (t *Session) ping() {
 
 func (t *Session) readCommands() {
 	defer sessionWG.Done()
+	// A message larger than the key/value body cap makes the next read fail
+	// (close code 1009), which ends the session below, so one client cannot
+	// make the server buffer an arbitrarily large message.
+	t.Conn.SetReadLimit(KVBodyLimitBytes)
 	for {
 		if _, data, err := t.Conn.ReadMessage(); err != nil {
 			t.Conn.Close()
@@ -216,16 +220,15 @@ func (t *Session) handleCommands() {
 			// was only present on the original HTTP upgrade request, already
 			// authorized by id1.go's Handle before the connection was upgraded), so
 			// the internal-secret new-id bootstrap exemption is never available here.
-			authOk := auth(t.Id, cmd, "")
-
-			if !authOk {
+			data, err := cmd.ExecAs(t.Id, "")
+			if errors.Is(err, ErrUnauthorised) {
 				// Use "default" device for WebSocket challenge-response
 				defaultKeyKey, keyErr := KK(t.Id, "pub", "keys", "default")
 				if keyErr != nil {
 					log.Println(keyErr)
 					continue
 				}
-				if pubKey, err := CmdGet(defaultKeyKey).Exec(); err == nil {
+				if pubKey, err := CmdGet(defaultKeyKey).execUnauthorised(); err == nil {
 					if challenge, err := generateChallenge(t.Id, string(pubKey)); err == nil {
 						if authKey, err := KK(t.Id, "auth"); err != nil {
 							log.Println(err)
@@ -241,9 +244,9 @@ func (t *Session) handleCommands() {
 				continue
 			}
 
-			if data, err := cmd.Exec(); err == nil {
+			if err == nil {
 				t.send(CmdSet(cmd.Key, map[string]string{}, data))
-			} else if errors.Is(ErrNotFound, err) {
+			} else if errors.Is(err, ErrNotFound) {
 				t.send(CmdDel(cmd.Key))
 			} else {
 				log.Printf("error executing command: %s", err)

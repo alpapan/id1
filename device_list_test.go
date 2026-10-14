@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/device_list_test.go
+// apps/id1/device_list_test.go
 //
 // group: auth
 // tags: sovereign-keys, devices, testing
@@ -29,10 +29,10 @@ func TestHandleListDevices_ReturnsRegisteredDevices(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Register two devices
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).Exec()
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).Exec()
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-2")).Exec()
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2.name"), map[string]string{"x-id": orcid}, []byte("Safari on iPhone")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).execUnauthorised()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).execUnauthorised()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2"), map[string]string{"x-id": orcid}, []byte("PEM-2")).execUnauthorised()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-2.name"), map[string]string{"x-id": orcid}, []byte("Safari on iPhone")).execUnauthorised()
 
 	// Sign JWT for this user
 	jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
@@ -97,8 +97,8 @@ func TestHandleDeleteDevice_RemovesDevice(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Register a device
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).Exec()
-	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1"), map[string]string{"x-id": orcid}, []byte("PEM-1")).execUnauthorised()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "device-1.name"), map[string]string{"x-id": orcid}, []byte("Edge on Windows")).execUnauthorised()
 
 	jwt, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
 	require.NoError(t, err)
@@ -112,11 +112,11 @@ func TestHandleDeleteDevice_RemovesDevice(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 
 	// Key should be gone
-	_, err = CmdGet(mustKK(t, orcid, "pub", "keys", "device-1")).Exec()
+	_, err = CmdGet(mustKK(t, orcid, "pub", "keys", "device-1")).execUnauthorised()
 	assert.Error(t, err, "device key should be deleted")
 
 	// Name should be gone too
-	_, err = CmdGet(mustKK(t, orcid, "pub", "keys", "device-1.name")).Exec()
+	_, err = CmdGet(mustKK(t, orcid, "pub", "keys", "device-1.name")).execUnauthorised()
 	assert.Error(t, err, "device name should be deleted")
 }
 

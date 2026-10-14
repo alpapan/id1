@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/k.go
+// apps/id1/k.go
 //
 // group: models
 // tags: keys, hierarchy, segments
@@ -86,18 +86,54 @@ func K(s string) (Id1Key, error) {
 	return k, nil
 }
 
+// oneSegment applies the clean-up K applies to a whole path - remove every
+// newline, remove every space, trim leading and trailing slashes - and reports
+// the result only when it is a single non-empty segment.
+func oneSegment(s string) (string, bool) {
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.Trim(s, "/")
+	if s == "" || strings.Contains(s, "/") {
+		return "", false
+	}
+	return s, true
+}
+
+// KK builds a key from pieces. A piece of plain text (a string, an int, or any
+// other fmt.Stringer) must be exactly one non-empty segment: a slash inside it
+// would silently change the key's depth, and a piece that is only a slash would
+// collapse the key to its parent. A piece whose type is Id1Key is the output of
+// a successful K, so it may span many segments; a zero-segment Id1Key adds
+// nothing. A piece of any other type, or a call that ends with no segments at
+// all, is refused rather than skipped. Every refusal is ErrInvalidKey.
 func KK(segments ...any) (Id1Key, error) {
-	strSegments := []string{}
+	parts := []string{}
 	for _, seg := range segments {
-		if s, ok := seg.(string); ok {
-			strSegments = append(strSegments, s)
-		}
-		if i, ok := seg.(int); ok {
-			strSegments = append(strSegments, fmt.Sprintf("%d", i))
-		}
-		if stringer, ok := seg.(fmt.Stringer); ok {
-			strSegments = append(strSegments, stringer.String())
+		switch v := seg.(type) {
+		case Id1Key:
+			if len(v.Segments) > 0 {
+				parts = append(parts, v.String())
+			}
+		case string:
+			part, ok := oneSegment(v)
+			if !ok {
+				return Id1Key{}, ErrInvalidKey
+			}
+			parts = append(parts, part)
+		case int:
+			parts = append(parts, fmt.Sprintf("%d", v))
+		case fmt.Stringer:
+			part, ok := oneSegment(v.String())
+			if !ok {
+				return Id1Key{}, ErrInvalidKey
+			}
+			parts = append(parts, part)
+		default:
+			return Id1Key{}, ErrInvalidKey
 		}
 	}
-	return K(strings.Join(strSegments, "/"))
+	if len(parts) == 0 {
+		return Id1Key{}, ErrInvalidKey
+	}
+	return K(strings.Join(parts, "/"))
 }

@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/const.go
+// apps/id1/const.go
 //
 // group: utils
 // tags: constants, sizes, units

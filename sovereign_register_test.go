@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sovereign_register_test.go
+// apps/id1/sovereign_register_test.go
 //
 // group: auth
 // tags: sovereign-keys, registration, testing
@@ -131,7 +131,7 @@ func TestRegisterBeginExistingUserNoJWT(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Pre-register a device key (simulates existing registration)
-	CmdSet(mustKK(t, orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).execUnauthorised()
 
 	body, _ := json.Marshal(RegisterBeginRequest{
 		PublicKeyPEM: pubPEM,
@@ -156,7 +156,7 @@ func TestRegisterBeginExistingUserWithJWT(t *testing.T) {
 	orcid := "0000-0001-2345-6789"
 
 	// Pre-register a device key
-	CmdSet(mustKK(t, orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).Exec()
+	CmdSet(mustKK(t, orcid, "pub", "keys", "existing-device"), map[string]string{"x-id": orcid}, []byte(pubPEM)).execUnauthorised()
 
 	// Sign a valid JWT for this ORCID
 	tokenStr, err := signJWT(orcid, []string{"orcid"}, privKey, keyID)
@@ -226,17 +226,17 @@ func TestRegisterCommitSuccess(t *testing.T) {
 	assert.Equal(t, http.StatusOK, commitRec.Code, "body: %s", commitRec.Body.String())
 
 	// pub/keys/{deviceId} should exist
-	data, err := CmdGet(mustKK(t, orcid, "pub", "keys", deviceId)).Exec()
+	data, err := CmdGet(mustKK(t, orcid, "pub", "keys", deviceId)).execUnauthorised()
 	require.NoError(t, err)
 	assert.Equal(t, pubPEM, string(data))
 
 	// Device name should be stored
-	nameData, err := CmdGet(mustKK(t, orcid, "pub", "keys", deviceId+".name")).Exec()
+	nameData, err := CmdGet(mustKK(t, orcid, "pub", "keys", deviceId+".name")).execUnauthorised()
 	require.NoError(t, err)
 	assert.Equal(t, deviceName, string(nameData))
 
 	// pending should be cleaned up
-	_, err = CmdGet(mustKK(t, orcid, "priv", "pending", beginResp.RegistrationToken+".key")).Exec()
+	_, err = CmdGet(mustKK(t, orcid, "priv", "pending", beginResp.RegistrationToken+".key")).execUnauthorised()
 	assert.Error(t, err, "pending key should be deleted after commit")
 }
 
@@ -508,11 +508,11 @@ func TestRegisterTwoDevicesSameUser(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, rec2.Code, "device-2 begin with JWT: %s", rec2.Body.String())
 
 	// Verify both device keys are stored independently
-	data1, err := CmdGet(mustKK(t, orcid, "pub", "keys", "device-1")).Exec()
+	data1, err := CmdGet(mustKK(t, orcid, "pub", "keys", "device-1")).execUnauthorised()
 	require.NoError(t, err)
 	assert.Equal(t, pubPEM1, string(data1))
 
-	name1, err := CmdGet(mustKK(t, orcid, "pub", "keys", "device-1.name")).Exec()
+	name1, err := CmdGet(mustKK(t, orcid, "pub", "keys", "device-1.name")).execUnauthorised()
 	require.NoError(t, err)
 	assert.Equal(t, "Edge on Windows", string(name1))
 }

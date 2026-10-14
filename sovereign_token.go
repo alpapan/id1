@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/sovereign_token.go
+// apps/id1/sovereign_token.go
 //
 // group: auth
 // tags: sovereign-keys, challenge-response, jwt
@@ -56,7 +56,7 @@ const maxTimestampSkew = 5 * time.Minute
 func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
-			cors(&w)
+			cors(w, r)
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -67,12 +67,12 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 
 		var req sovereignTokenRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			err400(w, "invalid JSON body")
+			err400(w, r, "invalid JSON body")
 			return
 		}
 
 		if req.ID == "" || req.Timestamp == "" || req.Signature == "" {
-			err400(w, "id, timestamp, and signature are required")
+			err400(w, r, "id, timestamp, and signature are required")
 			return
 		}
 		if req.DeviceId == "" {
@@ -82,17 +82,17 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		// Parse and validate timestamp
 		ts, err := time.Parse(time.RFC3339, req.Timestamp)
 		if err != nil {
-			err400(w, "timestamp must be RFC3339 format")
+			err400(w, r, "timestamp must be RFC3339 format")
 			return
 		}
 		skew := time.Since(ts)
 		if math.Abs(skew.Seconds()) > maxTimestampSkew.Seconds() {
-			err403(w, "timestamp too far from server time")
+			err403(w, r, "timestamp too far from server time")
 			return
 		}
 
-		if !devicePattern.MatchString(req.DeviceId) {
-			err400(w, "invalid deviceId")
+		if !validDeviceID(req.DeviceId) {
+			err400(w, r, "invalid deviceId")
 			return
 		}
 
@@ -102,22 +102,22 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		// identities bootstrapped via the anonymous POST exemption in auth.go.
 		multiDevicePath, err := KK(req.ID, "pub", "keys", req.DeviceId)
 		if err != nil {
-			err400(w, "invalid id or deviceId")
+			err400(w, r, "invalid id or deviceId")
 			return
 		}
 		usedSingularFallback := false
-		pubKeyPEM, err := CmdGet(multiDevicePath).Exec()
+		pubKeyPEM, err := CmdGet(multiDevicePath).execUnauthorised()
 		if err != nil || len(pubKeyPEM) == 0 {
 			usedSingularFallback = true
 			var singularKeyPath Id1Key
 			singularKeyPath, err = KK(req.ID, "pub", "key")
 			if err != nil {
-				err400(w, "invalid id")
+				err400(w, r, "invalid id")
 				return
 			}
-			pubKeyPEM, err = CmdGet(singularKeyPath).Exec()
+			pubKeyPEM, err = CmdGet(singularKeyPath).execUnauthorised()
 			if err != nil || len(pubKeyPEM) == 0 {
-				err404(w, "no public key registered for this id")
+				err404(w, r, "no public key registered for this id")
 				return
 			}
 		}
@@ -125,7 +125,7 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		// Parse the PEM public key
 		pubKey, err := parsePEMPublicKey(pubKeyPEM)
 		if err != nil {
-			err500(w, "failed to parse stored public key")
+			err500(w, r, "failed to parse stored public key")
 			return
 		}
 
@@ -133,13 +133,13 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		payload := []byte(req.ID + ":" + req.Timestamp)
 		sigBytes, err := base64.StdEncoding.DecodeString(req.Signature)
 		if err != nil {
-			err400(w, "signature must be base64-encoded")
+			err400(w, r, "signature must be base64-encoded")
 			return
 		}
 
 		hash := sha256.Sum256(payload)
 		if err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hash[:], sigBytes); err != nil {
-			err403(w, "signature verification failed")
+			err403(w, r, "signature verification failed")
 			return
 		}
 
@@ -148,15 +148,15 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		// anonymous-bootstrap path; expiring it would silently lock out SLURM
 		// services between active periods).
 		if !usedSingularFallback {
-			if existingKey, err := CmdGet(multiDevicePath).Exec(); err == nil && len(existingKey) > 0 {
-				CmdSet(multiDevicePath, map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).Exec()
+			if existingKey, err := CmdGet(multiDevicePath).execUnauthorised(); err == nil && len(existingKey) > 0 {
+				CmdSet(multiDevicePath, map[string]string{"x-id": req.ID, "ttl": "604800"}, existingKey).execUnauthorised()
 			}
 		}
 
 		// Issue RS256 JWT
 		keyID, privKey, err := GetOrCreateSigningKey(kvStore)
 		if err != nil {
-			err500(w, "failed to get signing key")
+			err500(w, r, "failed to get signing key")
 			return
 		}
 
@@ -172,11 +172,11 @@ func HandleSovereignToken(kvStore KeyValueStore) http.HandlerFunc {
 		// sovereign token - only from a real ORCID login.
 		jwtToken, err := signJWTWithAuthTime(req.ID, req.DeviceId, []string{"sovereign"}, privKey, keyID, time.Now())
 		if err != nil {
-			err500(w, "failed to sign JWT")
+			err500(w, r, "failed to sign JWT")
 			return
 		}
 
-		cors(&w)
+		cors(w, r)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"jwt":%q}`, jwtToken)
 	}

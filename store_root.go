@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/store_root.go
+// apps/id1/store_root.go
 //
 // group: server
 // tags: storage, filesystem, containment

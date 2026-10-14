@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/plugin_nextcloud_test.go
+// apps/id1/plugin_nextcloud_test.go
 //
 // group: config
 // tags: nextcloud, integration, testing

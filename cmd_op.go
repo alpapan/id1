@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_op.go
+// apps/id1/cmd_op.go
 //
 // group: models
 // tags: operations, enum
