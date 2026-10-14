@@ -535,5 +535,3 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, h.bindCookie(bindingNonce.Value, int(orcidCodeLifetime.Seconds())))
 	http.Redirect(w, r, redirectTarget+sep+"code="+url.QueryEscape(loginCode), http.StatusFound)
 }
-
-// __END_OF_FILE_MARKER__

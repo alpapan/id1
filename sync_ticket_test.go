@@ -100,5 +100,3 @@ func TestSyncTicketGarbageCollectedByDotAfter(t *testing.T) {
 		t.Error("expired sync ticket was not garbage-collected by dotAfter (check x-id authorization)")
 	}
 }
-
-// __END_OF_FILE_MARKER__
