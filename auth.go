@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/auth.go
+// apps/id1/auth.go
 //
 // group: auth
 // tags: authentication, authorization, ownership, permissions
@@ -26,7 +26,7 @@ func auth(id string, cmd Command, internalSecretHeader string) bool {
 	isOwner := cmd.Key.Id == id
 	isPublicGet := cmd.Key.Pub && (cmd.Op == Get || cmd.Op == List)
 	authorized := isOwner || isPublicGet || authDotOp(id, cmd)
-	isNewIdClaim := !authorized && (cmd.Op == Set && cmd.Key.Pub && cmd.Key.Name == "key")
+	isNewIdClaim := !authorized && (cmd.Op == Set && cmd.Key.Pub && cmd.Key.Name == "key" && !strings.HasPrefix(cmd.Key.Id, "."))
 	exists := idExists(cmd.Key.Id)
 	authorized = authorized || (isNewIdClaim && !exists && validInternalSecret(internalSecretHeader))
 	return authorized

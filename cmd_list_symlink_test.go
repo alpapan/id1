@@ -29,7 +29,7 @@ func seedSymlinkStoreWithFileLeak(t *testing.T) (store string) {
 func TestListDoesNotEnumerateThroughSymlinkEscapingStore(t *testing.T) {
 	seedSymlinkStore(t)
 
-	data, err := NewCommand(List, mustK(t, "mallory/escape*"), map[string]string{"x-id": "mallory", "keys": "true"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "mallory/escape*"), map[string]string{"x-id": "mallory", "keys": "true"}, []byte{}).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("list() on a namespace path that is itself a symlink out of the store: got err=%v, want ErrForbidden", err)
@@ -42,7 +42,7 @@ func TestListDoesNotEnumerateThroughSymlinkEscapingStore(t *testing.T) {
 func TestListDoesNotEnumerateThroughInStoreCrossNamespaceSymlink(t *testing.T) {
 	seedSymlinkStore(t)
 
-	data, err := NewCommand(List, mustK(t, "mallory/cross*"), map[string]string{"x-id": "mallory", "keys": "true"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "mallory/cross*"), map[string]string{"x-id": "mallory", "keys": "true"}, []byte{}).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("list() on a namespace path that is itself an in-store symlink to another identity: got err=%v, want ErrForbidden", err)
@@ -55,7 +55,7 @@ func TestListDoesNotEnumerateThroughInStoreCrossNamespaceSymlink(t *testing.T) {
 func TestRecursiveListSkipsSymlinkedEntriesInsideOwnNamespace(t *testing.T) {
 	seedSymlinkStore(t)
 
-	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory", "recursive": "true", "keys": "true"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory", "recursive": "true", "keys": "true"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("recursive list of mallory's own namespace was refused: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRecursiveListSkipsSymlinkedEntriesInsideOwnNamespace(t *testing.T) {
 func TestListNonRecursiveSkipsFileSymlinkTargetInBase64Mode(t *testing.T) {
 	seedSymlinkStoreWithFileLeak(t)
 
-	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("non-recursive list of mallory's own namespace was refused: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestListNonRecursiveSkipsFileSymlinkTargetInBase64Mode(t *testing.T) {
 func TestListNonRecursiveSkipsFileSymlinkTargetInKeysMode(t *testing.T) {
 	seedSymlinkStoreWithFileLeak(t)
 
-	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory", "keys": "true"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory", "keys": "true"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("non-recursive keys-mode list of mallory's own namespace was refused: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestListNonRecursiveSkipsFileSymlinkTargetInKeysMode(t *testing.T) {
 func TestRecursiveListSkipsFileSymlinkTargetWithoutKeysMode(t *testing.T) {
 	seedSymlinkStoreWithFileLeak(t)
 
-	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory", "recursive": "true"}, []byte{}).Exec()
+	data, err := NewCommand(List, mustK(t, "mallory*"), map[string]string{"x-id": "mallory", "recursive": "true"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("recursive list of mallory's own namespace was refused: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRecursiveListSkipsFileSymlinkTargetWithoutKeysMode(t *testing.T) {
 func TestListOrdinaryAndRecursiveListingStillWorkWithoutSymlinks(t *testing.T) {
 	seedSymlinkStore(t)
 
-	nonRecursive, err := NewCommand(List, mustK(t, "victim/priv*"), map[string]string{"x-id": "victim", "keys": "true"}, []byte{}).Exec()
+	nonRecursive, err := NewCommand(List, mustK(t, "victim/priv*"), map[string]string{"x-id": "victim", "keys": "true"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("ordinary non-recursive list was refused: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestListOrdinaryAndRecursiveListingStillWorkWithoutSymlinks(t *testing.T) {
 		t.Errorf("ordinary listing lost its entry: got %q", string(nonRecursive))
 	}
 
-	recursive, err := NewCommand(List, mustK(t, "victim*"), map[string]string{"x-id": "victim", "recursive": "true", "keys": "true"}, []byte{}).Exec()
+	recursive, err := NewCommand(List, mustK(t, "victim*"), map[string]string{"x-id": "victim", "recursive": "true", "keys": "true"}, []byte{}).execUnauthorised()
 	if err != nil {
 		t.Fatalf("ordinary recursive list was refused: %v", err)
 	}

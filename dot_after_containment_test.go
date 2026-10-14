@@ -31,7 +31,7 @@ func writeScheduledCommand(t *testing.T, tmpDir, keyPath, body string) string {
 func TestDotAfterContainmentRefusesCrossNamespaceCommand(t *testing.T) {
 	tmpDir := seedVictim(t)
 
-	if _, err := CmdSet(mustK(t, "victim/pub/keys/default"), map[string]string{"x-id": "victim"}, []byte("VICTIM-KEY")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "victim/pub/keys/default"), map[string]string{"x-id": "victim"}, []byte("VICTIM-KEY")).execUnauthorised(); err != nil {
 		t.Fatalf("seed victim key: %v", err)
 	}
 	planted := writeScheduledCommand(t, tmpDir, "mallory/.after.1",
@@ -100,7 +100,7 @@ func TestDotAfterContainmentRefusesStoreRootSchedule(t *testing.T) {
 func TestDotAfterContainmentStillRunsOwnNamespaceSchedule(t *testing.T) {
 	tmpDir := seedVictim(t)
 
-	if _, err := CmdSet(mustK(t, "mallory/doomed"), map[string]string{"x-id": "mallory"}, []byte("TEMPORARY")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "mallory/doomed"), map[string]string{"x-id": "mallory"}, []byte("TEMPORARY")).execUnauthorised(); err != nil {
 		t.Fatalf("seed mallory/doomed: %v", err)
 	}
 	writeScheduledCommand(t, tmpDir, "mallory/.after.1", "del:/mallory/doomed?x-id=mallory\n")
@@ -125,7 +125,7 @@ func TestDotAfterContainmentStillRunsOwnNamespaceSchedule(t *testing.T) {
 func TestDotAfterContainmentSkipsSingleSegmentKeyTtl(t *testing.T) {
 	tmpDir := seedVictim(t)
 
-	if _, err := CmdSet(mustK(t, "mallory"), map[string]string{"ttl": "1", "x-id": "mallory"}, []byte("TEMPORARY")).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "mallory"), map[string]string{"ttl": "1", "x-id": "mallory"}, []byte("TEMPORARY")).execUnauthorised(); err != nil {
 		t.Fatalf("seed mallory with ttl: %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestDotAfterContainmentSkipsSingleSegmentKeyTtl(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 	dotAfter(tmpDir)
 
-	data, getErr := CmdGet(mustK(t, "mallory")).Exec()
+	data, getErr := CmdGet(mustK(t, "mallory")).execUnauthorised()
 	if getErr != nil {
 		t.Fatalf("a single-segment key's ttl must be a no-op, but the key is gone: %v", getErr)
 	}

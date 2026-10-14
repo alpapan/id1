@@ -15,7 +15,7 @@ func TestSinkHardeningAddRefusesScheduledCommandTarget(t *testing.T) {
 	tmpDir := seedVictim(t)
 
 	payload := []byte("set:/victim/pub/keys/default?x-id=victim\nATTACKER-KEY")
-	_, err := NewCommand(Add, mustK(t, "mallory/.after.1"), map[string]string{"x-id": "mallory"}, payload).Exec()
+	_, err := NewCommand(Add, mustK(t, "mallory/.after.1"), map[string]string{"x-id": "mallory"}, payload).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("add() to a .after. name: got err=%v, want ErrForbidden", err)
@@ -32,11 +32,11 @@ func TestSinkHardeningMoveRefusesScheduledCommandDestination(t *testing.T) {
 	tmpDir := seedVictim(t)
 
 	payload := []byte("set:/victim/pub/keys/default?x-id=victim\nATTACKER-KEY")
-	if _, err := CmdSet(mustK(t, "mallory/payload"), map[string]string{"x-id": "mallory"}, payload).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "mallory/payload"), map[string]string{"x-id": "mallory"}, payload).execUnauthorised(); err != nil {
 		t.Fatalf("seed mallory/payload: %v", err)
 	}
 
-	_, err := NewCommand(Mov, mustK(t, "mallory/payload"), map[string]string{"x-id": "mallory"}, []byte("mallory/.after.1")).Exec()
+	_, err := NewCommand(Mov, mustK(t, "mallory/payload"), map[string]string{"x-id": "mallory"}, []byte("mallory/.after.1")).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() to a .after. destination: got err=%v, want ErrForbidden", err)
@@ -55,7 +55,7 @@ func TestSinkHardeningMoveRefusesScheduledCommandDestination(t *testing.T) {
 func TestSinkHardeningDelRefusesZeroSegmentKey(t *testing.T) {
 	tmpDir := seedVictim(t)
 
-	_, err := NewCommand(Del, mustK(t, ""), map[string]string{"x-id": ""}, []byte{}).Exec()
+	_, err := NewCommand(Del, mustK(t, ""), map[string]string{"x-id": ""}, []byte{}).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("del() with a zero-segment key: got err=%v, want ErrForbidden", err)
@@ -76,7 +76,7 @@ func TestSinkHardeningDelRefusesZeroSegmentKey(t *testing.T) {
 func TestSinkHardeningAddRefusesZeroSegmentKey(t *testing.T) {
 	seedVictim(t)
 
-	_, err := NewCommand(Add, mustK(t, ""), map[string]string{"x-id": ""}, []byte("X")).Exec()
+	_, err := NewCommand(Add, mustK(t, ""), map[string]string{"x-id": ""}, []byte("X")).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("add() with a zero-segment key: got err=%v, want ErrForbidden", err)
@@ -88,7 +88,7 @@ func TestSinkHardeningAddRefusesZeroSegmentKey(t *testing.T) {
 func TestSinkHardeningMoveRefusesZeroSegmentSource(t *testing.T) {
 	seedVictim(t)
 
-	_, err := NewCommand(Mov, mustK(t, ""), map[string]string{"x-id": "mallory"}, []byte("mallory/stolen")).Exec()
+	_, err := NewCommand(Mov, mustK(t, ""), map[string]string{"x-id": "mallory"}, []byte("mallory/stolen")).execUnauthorised()
 
 	if !errors.Is(err, ErrForbidden) {
 		t.Errorf("move() with a zero-segment source: got err=%v, want ErrForbidden", err)
@@ -103,7 +103,7 @@ func TestSinkHardeningSetStillPinsScheduledCommand(t *testing.T) {
 	tmpDir := seedVictim(t)
 
 	payload := []byte("del:/victim/priv/salt?x-id=victim\n")
-	if _, err := CmdSet(mustK(t, "mallory/.after.1"), map[string]string{"x-id": "mallory"}, payload).Exec(); err != nil {
+	if _, err := CmdSet(mustK(t, "mallory/.after.1"), map[string]string{"x-id": "mallory"}, payload).execUnauthorised(); err != nil {
 		t.Fatalf("set() to a .after. name must still be allowed: %v", err)
 	}
 

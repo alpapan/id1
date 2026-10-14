@@ -86,6 +86,10 @@ func main() {
 	// bad token degrades to the public tier with no error, so log the values an operator
 	// can check.
 	fmt.Printf("id1 JWT issuer: %s, audience: %s\n", id1.JWTIssuer(), id1.JWTAudience())
+	// The one browser origin id1 answers CORS for. CURATORIUM_BROWSER_ORIGIN has no
+	// default and panics when unset, so resolving it here, before the server listens,
+	// turns a missing value into a refusal to start instead of a failure on a request.
+	fmt.Printf("id1 browser origin: %s\n", id1.BrowserOrigin())
 	// Resolved here, at boot, because CURATORIUM_NAMESPACE has no default and
 	// panics when unset. It names the namespace whose curatorium-secrets holds
 	// the RS256 signing key, and the Role authorising that write is namespaced,
@@ -134,6 +138,7 @@ func main() {
 		if err == nil {
 			http.HandleFunc("/auth/orcid", orcidHandler.HandleBegin)
 			http.HandleFunc("/auth/orcid/callback", orcidHandler.HandleCallback)
+			http.HandleFunc("/auth/orcid/exchange", orcidHandler.HandleExchange)
 			fmt.Println("Registered /auth/orcid ORCID OAuth2 handlers")
 		} else {
 			log.Printf("ORCID handler init failed: %v", err)
@@ -297,6 +302,11 @@ func main() {
 	// Set up the main id1 handler (catch-all for key-value operations)
 	http.HandleFunc("/{key...}", mainHandler)
 
+	// Cap every request body: 64 KiB by default, with the raises id1.IngressBodyLimits
+	// names (the key/value catch-all). The wrapper sits around the whole mux, not around
+	// each handler, so a route registered later is capped without an edit here.
+	limited := id1.LimitBody(http.DefaultServeMux, id1.IngressBodyLimits())
+
 	fmt.Printf("Starting server on %s:%s\n", bindAddr, port)
 	tlsConfig, err := id1.BuildTLSConfig()
 	if err != nil {
@@ -306,6 +316,7 @@ func main() {
 		server := &http.Server{
 			Addr:      bindAddr + ":" + port,
 			TLSConfig: tlsConfig,
+			Handler:   limited,
 			ErrorLog:  log.New(id1.NewHandshakeEOFFilter(os.Stderr), "", log.LstdFlags),
 		}
 		fmt.Printf("Starting with TLS enabled, bound to %s:%s\n", bindAddr, port)
@@ -315,7 +326,7 @@ func main() {
 		}
 	} else {
 		fmt.Printf("Starting WITHOUT TLS (plaintext), bound to %s:%s\n", bindAddr, port)
-		if err := http.ListenAndServe(bindAddr+":"+port, nil); err != nil {
+		if err := http.ListenAndServe(bindAddr+":"+port, limited); err != nil {
 			log.Fatalf("error starting service: %s", err)
 		}
 	}

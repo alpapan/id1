@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/cmd_list.go
+// apps/id1/cmd_list.go
 //
 // group: server
 // tags: storage, filesystem, list-operation, directory
@@ -40,22 +40,29 @@ func (t ListOptions) Map() map[string]string {
 	return args
 }
 
+// The ceilings a caller-supplied list argument can never exceed. They are the
+// defaults the arguments always had.
+const (
+	maxListLimit          = 1000
+	maxListSizeLimit      = 100 * MB
+	maxListTotalSizeLimit = 100 * MB
+)
+
+// clampListArg parses one caller-supplied list argument. A value above the
+// ceiling becomes the ceiling; a value from 0 up to the ceiling is kept; a
+// negative value, or one that does not parse as a number, becomes the ceiling.
+func clampListArg(raw string, ceiling int) int {
+	i, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || i < 0 || i > int64(ceiling) {
+		return ceiling
+	}
+	return int(i)
+}
+
 func (t *ListOptions) Parse(args map[string]string) {
-	if i, err := strconv.ParseInt(args["limit"], 10, 64); err == nil {
-		t.Limit = int(i)
-	} else {
-		t.Limit = 1000
-	}
-	if i, err := strconv.ParseInt(args["size-limit"], 10, 64); err == nil {
-		t.SizeLimit = int(i)
-	} else {
-		t.SizeLimit = 100 * MB
-	}
-	if i, err := strconv.ParseInt(args["total-size-limit"], 10, 64); err == nil {
-		t.TotalSizeLimit = int(i)
-	} else {
-		t.TotalSizeLimit = 100 * MB
-	}
+	t.Limit = clampListArg(args["limit"], maxListLimit)
+	t.SizeLimit = clampListArg(args["size-limit"], maxListSizeLimit)
+	t.TotalSizeLimit = clampListArg(args["total-size-limit"], maxListTotalSizeLimit)
 	t.Keys = args["keys"] == "true"
 	t.Recursive = args["recursive"] == "true"
 	t.Children = args["children"] == "true"
@@ -218,6 +225,11 @@ func listDir(path string, opt ListOptions) (map[string][]byte, error) {
 	return results, nil
 }
 
+// walkDirVisitHook is a test seam: nil in production, and when a test sets it
+// walkDir calls it with the path of every entry the walk visits. It lets a
+// test count how far the walk goes without timing anything.
+var walkDirVisitHook func(relItemPath string)
+
 func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 	results := map[string][]byte{}
 	totalSize := 0
@@ -245,8 +257,11 @@ func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 			log.Printf("cmd list error, %s", err)
 			return nil
 		}
+		if walkDirVisitHook != nil {
+			walkDirVisitHook(relItemPath)
+		}
 		if len(results) >= opt.Limit {
-			return nil
+			return fs.SkipAll
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil

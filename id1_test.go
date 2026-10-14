@@ -1,4 +1,4 @@
-// apps/backend/containers/id1/id1_test.go
+// apps/id1/id1_test.go
 //
 // group: server
 // tags: http, server, authorization, testing
@@ -61,7 +61,7 @@ func TestHandle_NewIdBootstrapHonoursInternalSecretHeader(t *testing.T) {
 // unauthenticated challenge path when the device's public key cannot be read
 // off disk for a reason other than plain absence (here, a permission
 // error), which surfaces a raw *os.PathError - including the on-disk dbpath
-// - through CmdGet(deviceKey).Exec(). The response body must never carry
+// - through CmdGet(deviceKey).execUnauthorised(). The response body must never carry
 // that raw error text or the filesystem path to an unauthenticated caller.
 func TestHandle_DeviceLookupFailureDoesNotLeakRawError(t *testing.T) {
 	tmpDir := t.TempDir()

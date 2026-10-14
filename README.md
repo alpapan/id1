@@ -28,16 +28,15 @@ optional .env file
     DBPATH=id1db
 
 ## Commands
-All communication between id1 nodes is done asynchronously using id1 commands.
+All communication is done using id1 commands.
 Commands have operation, key, arguments and data.
 
 Message format:
 
-    <operation[get|set|add|mov|del]>:/<key>?<arguments>
+    <operation[get|set|add|mov|del|list]>:/<key>?<arguments>
     [data....]
 
 For HTTP bridge, method is operation, path is key, params are options, body is data.  
-For radio and IoT (e.g. LoRa), first 4 bytes of the packet are command properties the rest is data.  
 
 Operation "get" with key ending with * accepts list arguments:
 
@@ -46,10 +45,12 @@ Operation "get" with key ending with * accepts list arguments:
     keys=[true|false]
     limit=[n]
     size-limit=[n]
-    total-limit=[n]
+    total-size-limit=[n]
+
+Each numeric list argument has a ceiling: limit 1000, and size-limit and total-size-limit 100 MiB each. A value above its ceiling, a negative value, or a value that is not a number is replaced by the ceiling.
 
 ## Identity and Access Management
-id1 account is an RSA public key in [dir]/pub/key. If [dir]/pub/key exists then [dir] is account id authenticated with the matching private key.
+id1 account is an RSA public key in [dir]/pub/key (a service identity) or in [dir]/pub/keys/[device] (one per device). If either exists then [dir] is an account id authenticated with the matching private key. The authentication challenge is built from [dir]/pub/keys/[device] (device from the device argument, default "default"); an account with only [dir]/pub/key gets 404.
 Key pair is user generated, private key never shared.
 
 #### Authentication
@@ -58,9 +59,9 @@ Requests without a valid JWT token return authentication challenge. Challenge is
 Whoever has the private key can decrypt the secret and use it to sign tokens. Secrets generated as hash of id, time and a random string.
 
 #### Authorisation
-Account owner has full access to account dir, i.e. can execute any operation on keys that start with [id]/.  
+Account owner has full access to account dir, i.e. can execute any operation on keys that start with [id]/, except that mov refuses a source key under [id]/priv/.  
 Everyone has read access to [id]/pub, i.e. can execute get on keys that start with [any]/pub/.  
-If request is authenticated but command is not authorised, 403 "unauthorized" is returned.
+If request is authenticated but command is not authorised, 403 is returned.
 
 #### Dot Op files: .get, .set, .add, .mov .del
 To authorise an operation on a key path (folder), create a .[op] file containing ids authorised for the operation.
@@ -72,6 +73,12 @@ To assing roles (id aliases) in effect under a key path, create .roles/[id] with
 
 For example, setting admin/.roles/monty to "max" will give "monty" same rights under admin/ as "max".
 Adding roles like "User" or "Member" to .[op] files and listing the roles in .roles/[id] is the default way of managing privileges.
+
+A role granted through a .[op] file or .roles/[id] never reaches a key under [id]/priv/, a control file (a key whose last segment is "." followed by an operation name, such as .set) or anything inside a .roles directory; delegation never grants these. Public read of [id]/pub does not depend on delegation, so control and .roles files placed under [id]/pub are readable by everyone. .roles files are read only below the store root, never at it.
+
+A delegated set, add, del or mov also never reaches the owner's key files, [id]/pub/key and [id]/pub/keys/..., or the [id]/pub and [id]/pub/keys directory paths themselves; other keys under [id]/pub stay delegable. The account owner is not restricted by this rule.
+
+mov refuses a source key in the owner's private subtree [id]/priv/..., whoever asks, the owner included.
 
 ## Messaging
 Authenticating a websocket session will subscribe the session to account change events. 
@@ -86,8 +93,6 @@ was set, all sessions authenticated as "admin" will receive command
 If the key was deleted, sessions will receive
 
     del:/admin/msg/max/1745000022345
-
-Connecting one id1 node to another results in data propogation between the nodes.
 
 ## Scheduling and TTL
 Set a .after.[timestamp] key containing a command to be executed soon after [timestamp] (milliseconds).
@@ -168,12 +173,3 @@ Adding option "ttl" to a set command will create a .after.(ttl seconds from now)
 
     -> set:/max/msg/monty/1745000044444
     Just hanging around.. and up to something..
-
-    
-## Binary command offsets (IoT)
-
-- 0-2: operation 000=get, 001=set, 010=add, 011=mov, 100=del
-- 3-24: key alias  
-- 24-31: arg alias
-- 32..: data
-
