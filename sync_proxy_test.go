@@ -545,5 +545,3 @@ func TestSyncProxyUpstreamUnavailable(t *testing.T) {
 		t.Error("expected read to fail when upstream is unavailable")
 	}
 }
-
-// __END_OF_FILE_MARKER__

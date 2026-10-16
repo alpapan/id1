@@ -191,5 +191,3 @@ func TestOAEPEncryptionRoundtrip(t *testing.T) {
 		t.Errorf("roundtrip mismatch: got %q, want %q", string(decrypted), plaintext)
 	}
 }
-
-// __END_OF_FILE_MARKER__

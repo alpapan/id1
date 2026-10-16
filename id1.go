@@ -156,5 +156,3 @@ func refuseUnauthorised(w http.ResponseWriter, r *http.Request, callerId string,
 		err404(w, r, "")
 	}
 }
-
-// __END_OF_FILE_MARKER__

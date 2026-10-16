@@ -489,5 +489,3 @@ func TestRegistrationTokenPatternBoundaryLengths(t *testing.T) {
 		})
 	}
 }
-
-// __END_OF_FILE_MARKER__

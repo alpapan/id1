@@ -1902,5 +1902,3 @@ func TestOrcidCallbackRefusesInStoreRelativeSymlinkedKeysDirDuringRefresh(t *tes
 		t.Error("device-key TTL refresh must not follow an in-store relative symlinked pub/keys directory and rewrite victim's device file")
 	}
 }
-
-// __END_OF_FILE_MARKER__
