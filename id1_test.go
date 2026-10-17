@@ -132,5 +132,3 @@ func TestHandle_DeviceLookupOrdinaryNotFoundIsNotLogged(t *testing.T) {
 		t.Fatalf("an ordinary not-found device lookup must not be logged, got: %q", logged)
 	}
 }
-
-// __END_OF_FILE_MARKER__
