@@ -843,5 +843,3 @@ func TestGetOrCreateSigningKey_KVPathRetriesOncePerProcess(t *testing.T) {
 	}
 	assert.Equal(t, 1, *calls, "the retry must be cached, not repeated per call")
 }
-
-// __END_OF_FILE_MARKER__
