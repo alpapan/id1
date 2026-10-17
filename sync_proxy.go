@@ -209,5 +209,3 @@ func pumpFrames(src, dst *websocket.Conn) error {
 		}
 	}
 }
-
-// __END_OF_FILE_MARKER__

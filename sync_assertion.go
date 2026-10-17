@@ -86,5 +86,3 @@ func mintSyncAssertion(kvStore KeyValueStore, subject, scope string, reportID in
 
 	return token.SignedString(privateKey)
 }
-
-// __END_OF_FILE_MARKER__

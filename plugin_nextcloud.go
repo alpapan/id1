@@ -919,5 +919,3 @@ func DeriveNextcloudPassword(derivationKey []byte, orcid string) (string, error)
 	digest := mac.Sum(nil)
 	return "NC_" + base64.RawURLEncoding.EncodeToString(digest), nil
 }
-
-// __END_OF_FILE_MARKER__
