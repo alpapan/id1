@@ -18,8 +18,8 @@ func RegisterDemoRoutes(mux *http.ServeMux, kvStore KeyValueStore) {
 	mux.HandleFunc("/auth/unauth_demo", HandleDemoUser(kvStore))
 }
 
-// demoUserORCID is the ORCID of the seeded demo_user (migrations/02b_user_core_seed.sql),
-// granted all roles EXCEPT admin (migrations/99_seed_tables.sql). This is deliberately
+// demoUserORCID is the ORCID of the seeded demo_user (migrations/seed/02b_user_core_seed.sql),
+// granted all roles EXCEPT admin (migrations/seed/99_seed_tables.sql). This is deliberately
 // the NON-admin demo identity: the earlier value 0009-0002-8023-3658 is the real admin
 // ORCID (all roles including admin), so minting it here from a public endpoint handed
 // anonymous callers an admin token.
