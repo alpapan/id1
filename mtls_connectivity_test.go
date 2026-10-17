@@ -220,5 +220,3 @@ func TestMTLSConnectivity_NextcloudMintAppToken(t *testing.T) {
 		t.Errorf("expected token 'test-token-xyz', got: %s", token)
 	}
 }
-
-// __END_OF_FILE_MARKER__

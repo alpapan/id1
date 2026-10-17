@@ -205,5 +205,3 @@ func parsePEMPublicKey(pemData []byte) (*rsa.PublicKey, error) {
 
 	return nil, fmt.Errorf("failed to parse public key (tried PKIX and PKCS1)")
 }
-
-// __END_OF_FILE_MARKER__

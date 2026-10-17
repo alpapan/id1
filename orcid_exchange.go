@@ -175,5 +175,3 @@ func (h *OrcidHandler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"jwt": entry.JWT})
 }
-
-// __END_OF_FILE_MARKER__

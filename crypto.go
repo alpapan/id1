@@ -104,5 +104,3 @@ func generateSecret(id string) (string, error) {
 	}
 	return generateSecretWithSalt(id, hex.EncodeToString(saltBytes)), nil
 }
-
-// __END_OF_FILE_MARKER__

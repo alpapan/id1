@@ -812,5 +812,3 @@ func computeKeyID(pubKey *rsa.PublicKey) string {
 	hash := sha256.Sum256(jwkBytes)
 	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
-
-// __END_OF_FILE_MARKER__

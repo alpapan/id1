@@ -37,5 +37,3 @@ FROM ${DISTROLESS_REGISTRY_HOST}/distroless/static-debian12:nonroot
 
 COPY --from=build /go/bin/app /
 CMD ["/app"]
-
-# __END_OF_FILE_MARKER__
