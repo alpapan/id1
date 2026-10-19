@@ -87,7 +87,7 @@ const ncThrottleRecovery = "Nextcloud brute-force protection is throttling the i
 // which is a fault in id1's own configuration, never evidence that the user is
 // missing.
 var ocsUserLookupHints = map[int]string{
-	997: "unauthorised (the provisioning account's credentials were refused - check NC_PROVISIONER_USER and NC_PROVISIONER_PASSWORD)",
+	997: "unauthorised (the provisioning account's credentials were refused - check NC_PROVISIONER_USER, NC_PROVISIONER_PASSWORD and NC_PROVISIONER_READ_APP_PASSWORD)",
 	998: "user not visible to the provisioning account (NC_PROVISIONER_USER must be in Nextcloud's admin group)",
 }
 
@@ -137,8 +137,8 @@ const NcJobMintUserAgentPrefix = "curatorium-job/1 op="
 
 // NcTokenTimeout bounds the mint-only token handler. One shared budget covers
 // every Nextcloud round trip a request makes. In the steady state that is two:
-// the provisioning account's existence read, then one token request (~1.24s
-// for a token request against a healthy Nextcloud). During a rotation it is
+// the provisioning account's existence read, then one token request (together
+// measured at 1.27 to 1.39 s against a healthy Nextcloud). During a rotation it is
 // one further token request per armed previous derivation key, so three with
 // one previous key. A missing account is answered 409 by the existence read
 // alone, with no login as the user, so it never reaches a token request. The
@@ -163,6 +163,13 @@ const NcTokenTimeout = 20 * time.Second
 // is slow and runs off any request path, so it gets a far wider budget than
 // minting.
 const NcProvisionTimeout = 25 * time.Second
+
+// NcBootstrapGroup is the Nextcloud group every account joins when id1 creates
+// it. The group must already exist: Nextcloud refuses a create that names a
+// missing group with OCS 104, and the Nextcloud start-up hook creates this
+// group on every boot. The backend holds the same string as
+// PUBLIC_BOOTSTRAP_GROUP, and a guard test keeps the two equal.
+const NcBootstrapGroup = "all_users"
 
 // NcDerivationKeyBytes is the decoded length `openssl rand -hex 32` produces,
 // which is what provisions NC_DERIVATION_KEY.
@@ -305,6 +312,15 @@ type NextcloudClient struct {
 	Username string
 	Password string
 
+	// ReadPassword is the provisioning account's READ app password, read from
+	// NC_PROVISIONER_READ_APP_PASSWORD. UserExists and
+	// CheckProvisionerReadCredential authenticate with it. Password keeps
+	// authenticating the create-user write, because Nextcloud refuses an app
+	// password for it. A client built without a ReadPassword (a struct literal
+	// in a test) reads with Password; main.go_ refuses to register the
+	// Nextcloud endpoints with an empty one.
+	ReadPassword string
+
 	// rejectionStreaks counts consecutive refused mints per ORCID, cleared for
 	// that ORCID as soon as one of their mints succeeds. It exists only to tell
 	// an expected first-login refusal apart from a user who is never going to
@@ -385,25 +401,32 @@ func (c *NextcloudClient) releaseProvisionLock(orcid string, lock *ncProvisionLo
 }
 
 // NewNextcloudClient reads configuration from environment variables
-// (NEXTCLOUD_URL, NC_PROVISIONER_USER, NC_PROVISIONER_PASSWORD). Returns a
-// client with empty fields if variables are unset; callers that require all
-// fields must check for zero values.
+// (NEXTCLOUD_URL, NC_PROVISIONER_USER, NC_PROVISIONER_PASSWORD,
+// NC_PROVISIONER_READ_APP_PASSWORD). Returns a client with empty fields if
+// variables are unset; callers that require all fields must check for zero
+// values.
 func NewNextcloudClient() *NextcloudClient {
 	return &NextcloudClient{
-		URL:      os.Getenv("NEXTCLOUD_URL"),
-		Username: os.Getenv("NC_PROVISIONER_USER"),
-		Password: os.Getenv("NC_PROVISIONER_PASSWORD"),
+		URL:          os.Getenv("NEXTCLOUD_URL"),
+		Username:     os.Getenv("NC_PROVISIONER_USER"),
+		Password:     os.Getenv("NC_PROVISIONER_PASSWORD"),
+		ReadPassword: os.Getenv("NC_PROVISIONER_READ_APP_PASSWORD"),
 	}
 }
 
 // EnsureUserExists ensures a Nextcloud user with the given ORCID and derived
 // password exists. Accepts OCS statuscodes 100 (v1 "created"), 200 (v2 "OK"),
 // and 102 ("already exists") as success. Returns error for any other status.
+//
+// A new account is created directly in NcBootstrapGroup. Nextcloud answers 102
+// for an existing account before it reads the groups, so an existing account is
+// not changed.
 func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password string) error {
 	endpoint := c.URL + "/ocs/v2.php/cloud/users?format=json"
 	formData := url.Values{
 		"userid":   {orcid},
 		"password": {password},
+		"groups[]": {NcBootstrapGroup},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(formData.Encode()))
 	if err != nil {
@@ -438,6 +461,8 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 	switch ocsResult.OCS.Meta.Statuscode {
 	case 100, 102, 200:
 		return nil
+	case 104:
+		return fmt.Errorf("%w; the group %q must exist before id1 creates an account, and the Nextcloud start-up hook creates it on every boot", formatOCSError("/cloud/users", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsProvisioningHints), NcBootstrapGroup)
 	default:
 		return formatOCSError("/cloud/users", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsProvisioningHints)
 	}
@@ -594,7 +619,7 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 		return false, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("OCS-APIREQUEST", "true")
-	req.SetBasicAuth(c.Username, c.Password)
+	req.SetBasicAuth(c.Username, c.readAuthPassword())
 
 	client := &http.Client{Timeout: ncHTTPClientTimeout}
 	if transport, _ := BuildTLSTransport(); transport != nil {
@@ -624,6 +649,145 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 		return false, nil
 	default:
 		return false, formatOCSError("/cloud/users/{userid}", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsUserLookupHints)
+	}
+}
+
+// ErrNcReadCredentialRefused reports that Nextcloud refused the provisioning
+// account's READ app password: it was revoked, never minted, or belongs to
+// another account. Restoring it is an operator action (see
+// VerifyNcReadCredentialAtBoot for the commands); nothing in id1 can repair it.
+var ErrNcReadCredentialRefused = errors.New("nextcloud refused the provisioning account's read app password")
+
+// errNcReadPasswordUnset is returned by CheckProvisionerReadCredential for a
+// client with no ReadPassword. It is not a refusal: nothing was sent.
+var errNcReadPasswordUnset = errors.New("NC_PROVISIONER_READ_APP_PASSWORD is empty")
+
+// ncReadCredentialBootTimeout bounds the one startup check of the READ app
+// password. It is a single attempt, never retried: an unreachable Nextcloud at
+// boot is logged, not fatal.
+const ncReadCredentialBootTimeout = 15 * time.Second
+
+// NcReadCredentialRecheckInterval is how often RecheckNcReadCredentialEvery asks
+// Nextcloud whether it still accepts the READ app password. Each check is a use of
+// the token, which keeps its last_activity far inside Nextcloud's retention window
+// (the daily TokenCleanupJob deletes an app password unused for
+// token_auth_token_retention, 365 days by default). id1 otherwise uses the token
+// only when a new user signs in.
+const NcReadCredentialRecheckInterval = 24 * time.Hour
+
+// ncReadCredentialRemedy is the operator action that restores a refused or empty
+// READ app password.
+const ncReadCredentialRemedy = "Blank the key with `curatorium k3s secrets sync --rotate-key NC_PROVISIONER_READ_APP_PASSWORD`, " +
+	"mint a new one with `curatorium k3s secrets reconcile-nextcloud-passwords`, then restart id1 with `curatorium k3s reboot id1`."
+
+// readAuthPassword is the password UserExists presents: the READ app password
+// when the client holds one, otherwise the login password.
+func (c *NextcloudClient) readAuthPassword() string {
+	if c.ReadPassword != "" {
+		return c.ReadPassword
+	}
+	return c.Password
+}
+
+// CheckProvisionerReadCredential asks Nextcloud once whether it accepts the
+// provisioning account's READ app password, by reading that account's own
+// record with it. HTTP 401, HTTP 403 and OCS 997 mean the token was refused
+// (ErrNcReadCredentialRefused); HTTP 429 is ErrNextcloudRateLimited; any other
+// answer or transport failure is an ordinary error. It never presents Password
+// in place of the token, and an empty ReadPassword sends nothing.
+func (c *NextcloudClient) CheckProvisionerReadCredential(ctx context.Context) error {
+	if c.ReadPassword == "" {
+		return errNcReadPasswordUnset
+	}
+	endpoint := c.URL + "/ocs/v2.php/cloud/users/" + url.PathEscape(c.Username) + "?format=json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("OCS-APIREQUEST", "true")
+	req.SetBasicAuth(c.Username, c.ReadPassword)
+
+	client := &http.Client{Timeout: ncHTTPClientTimeout}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return ErrNcReadCredentialRefused
+	case http.StatusTooManyRequests:
+		return ErrNextcloudRateLimited
+	}
+	var ocsResult OCSResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
+		return fmt.Errorf("decode OCS response: %w", err)
+	}
+	switch ocsResult.OCS.Meta.Statuscode {
+	case 100, 200:
+		return nil
+	case 997:
+		return ErrNcReadCredentialRefused
+	default:
+		return formatOCSError("/cloud/users/{userid}", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsUserLookupHints)
+	}
+}
+
+// VerifyNcReadCredentialAtBoot decides what main.go_ does about the
+// provisioning account's READ app password at startup, and says so in a message
+// that never contains either credential. fatal is true when the process must
+// stop: the token is empty, or Nextcloud refused it. Every other outcome - an
+// accepted token, Nextcloud not answering yet (the normal order on a first
+// start, because id1 comes up before Nextcloud), throttling, an unexpected
+// answer - is reported and startup continues.
+//
+// The decision lives here rather than in main.go_ because that file is never
+// compiled by `go test ./...` and cannot be asserted from there.
+func VerifyNcReadCredentialAtBoot(c *NextcloudClient) (fatal bool, message string) {
+	if c.ReadPassword == "" {
+		return true, "NC_PROVISIONER_READ_APP_PASSWORD is empty; id1 will not start the Nextcloud endpoints without the provisioning account's read app password. " + ncReadCredentialRemedy
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ncReadCredentialBootTimeout)
+	defer cancel()
+	err := c.CheckProvisionerReadCredential(ctx)
+	switch {
+	case err == nil:
+		return false, "Nextcloud accepted the provisioning account's read app password"
+	case errors.Is(err, ErrNcReadCredentialRefused):
+		return true, "Nextcloud refused the provisioning account's read app password (NC_PROVISIONER_READ_APP_PASSWORD). " + ncReadCredentialRemedy
+	default:
+		return false, fmt.Sprintf("Nextcloud read credential unverified: %v", err)
+	}
+}
+
+// RecheckNcReadCredentialEvery calls CheckProvisionerReadCredential on every tick
+// of a time.Ticker with the given interval, so the READ app password keeps being
+// used. A refusal is logged with an ERROR prefix and the loop keeps running (the
+// process is never stopped after boot); any other error is logged and the loop
+// continues. It returns when ctx ends. logf is log.Printf in main.go_.
+func RecheckNcReadCredentialEvery(ctx context.Context, c *NextcloudClient, interval time.Duration, logf func(format string, args ...any)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkCtx, cancel := context.WithTimeout(ctx, ncReadCredentialBootTimeout)
+			err := c.CheckProvisionerReadCredential(checkCtx)
+			cancel()
+			switch {
+			case err == nil:
+			case errors.Is(err, ErrNcReadCredentialRefused):
+				logf("ERROR: Nextcloud refused the provisioning account's read app password (NC_PROVISIONER_READ_APP_PASSWORD); id1 keeps running. %s", ncReadCredentialRemedy)
+			default:
+				logf("Nextcloud read credential recheck unverified: %v", err)
+			}
+		}
 	}
 }
 
