@@ -128,6 +128,7 @@ func TestNextcloudClient_EnsureUserExists_Created(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "0009-0002-8023-3658", gotPayload.Get("userid"))
 	assert.Equal(t, "NC_derivedPw", gotPayload.Get("password"))
+	assert.Equal(t, []string{"all_users"}, gotPayload["groups[]"])
 }
 
 // Nextcloud 32 OCS v2 returns statuscode 200 on successful user creation
@@ -222,6 +223,24 @@ func TestNextcloudClient_EnsureUserExists_101HintNamesTheConcurrentCreate(t *tes
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "concurrent request created the same user")
+}
+
+// Nextcloud answers 104 for a create that names a group that does not exist.
+// The error must name the group and the start-up hook that creates it, so an
+// operator knows which group is missing.
+func TestNextcloudClient_EnsureUserExists_NamesTheMissingBootstrapGroup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":104,"status":"failure","message":"Group all_users does not exist"},"data":null}}`)
+	}))
+	defer server.Close()
+
+	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"all_users"`)
+	assert.Contains(t, err.Error(), "start-up hook")
 }
 
 func TestNextcloudClient_EnsureUserExists_UnknownCodeFallsBackToGenericHint(t *testing.T) {

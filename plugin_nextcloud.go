@@ -127,8 +127,8 @@ const NcMintUserAgent = "curatorium-auth/1"
 
 // NcTokenTimeout bounds the mint-only token handler. One shared budget covers
 // every Nextcloud round trip a request makes. In the steady state that is two:
-// the provisioning account's existence read, then one token request (~1.24s
-// for a token request against a healthy Nextcloud). During a rotation it is
+// the provisioning account's existence read, then one token request (together
+// measured at 1.27 to 1.39 s against a healthy Nextcloud). During a rotation it is
 // one further token request per armed previous derivation key, so three with
 // one previous key. A missing account is answered 409 by the existence read
 // alone, with no login as the user, so it never reaches a token request. The
@@ -153,6 +153,13 @@ const NcTokenTimeout = 20 * time.Second
 // is slow and runs off any request path, so it gets a far wider budget than
 // minting.
 const NcProvisionTimeout = 25 * time.Second
+
+// NcBootstrapGroup is the Nextcloud group every account joins when id1 creates
+// it. The group must already exist: Nextcloud refuses a create that names a
+// missing group with OCS 104, and the Nextcloud start-up hook creates this
+// group on every boot. The backend holds the same string as
+// PUBLIC_BOOTSTRAP_GROUP, and a guard test keeps the two equal.
+const NcBootstrapGroup = "all_users"
 
 // NcDerivationKeyBytes is the decoded length `openssl rand -hex 32` produces,
 // which is what provisions NC_DERIVATION_KEY.
@@ -389,11 +396,16 @@ func NewNextcloudClient() *NextcloudClient {
 // EnsureUserExists ensures a Nextcloud user with the given ORCID and derived
 // password exists. Accepts OCS statuscodes 100 (v1 "created"), 200 (v2 "OK"),
 // and 102 ("already exists") as success. Returns error for any other status.
+//
+// A new account is created directly in NcBootstrapGroup. Nextcloud answers 102
+// for an existing account before it reads the groups, so an existing account is
+// not changed.
 func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password string) error {
 	endpoint := c.URL + "/ocs/v2.php/cloud/users?format=json"
 	formData := url.Values{
 		"userid":   {orcid},
 		"password": {password},
+		"groups[]": {NcBootstrapGroup},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(formData.Encode()))
 	if err != nil {
@@ -428,6 +440,8 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 	switch ocsResult.OCS.Meta.Statuscode {
 	case 100, 102, 200:
 		return nil
+	case 104:
+		return fmt.Errorf("%w; the group %q must exist before id1 creates an account, and the Nextcloud start-up hook creates it on every boot", formatOCSError("/cloud/users", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsProvisioningHints), NcBootstrapGroup)
 	default:
 		return formatOCSError("/cloud/users", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsProvisioningHints)
 	}
