@@ -35,7 +35,7 @@ func TestMintAppToken_RateLimitLogNamesTheResetCommand(t *testing.T) {
 	logged := captureLog(t)
 
 	c := &NextcloudClient{URL: srv.URL}
-	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw", NcMintUserAgent)
 
 	require.ErrorIs(t, err, ErrNextcloudRateLimited)
 	assert.Contains(t, logged(), ncThrottleResetCommand,

@@ -255,7 +255,7 @@ func TestNextcloudClient_MintAppToken_Success(t *testing.T) {
 	defer server.Close()
 
 	c := &NextcloudClient{URL: server.URL}
-	token, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+	token, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw", NcMintUserAgent)
 
 	require.NoError(t, err)
 	assert.Equal(t, "PLAINTEXT-TOKEN-abc123", token)
@@ -269,7 +269,7 @@ func TestNextcloudClient_MintAppToken_BadPassword(t *testing.T) {
 	defer server.Close()
 
 	c := &NextcloudClient{URL: server.URL}
-	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "wrong")
+	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "wrong", NcMintUserAgent)
 
 	require.Error(t, err)
 }
@@ -281,7 +281,7 @@ func TestNextcloudClient_MintAppToken_OCSNon200(t *testing.T) {
 	defer server.Close()
 
 	c := &NextcloudClient{URL: server.URL}
-	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OCS error 403")
@@ -1328,7 +1328,7 @@ func TestMintAppToken_LogsWhichRejectionShapeNextcloudReturned(t *testing.T) {
 			defer srv.Close()
 			logged := captureLog(t)
 
-			_, err := (&NextcloudClient{URL: srv.URL}).MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+			_, err := (&NextcloudClient{URL: srv.URL}).MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 
 			require.Error(t, err)
 			require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
@@ -1365,7 +1365,7 @@ func TestMintAppToken_DoesNotLogTheExpectedFirstLoginRejection(t *testing.T) {
 	defer cleanup()
 	logged := captureLog(t)
 
-	_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+	_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 
 	require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 	assert.Equal(t, "", logged(), "one rejection is a first login, not a misconfiguration")
@@ -1381,19 +1381,19 @@ func TestMintAppToken_ReportsAStreakOfRejectionsAsALikelyMisconfiguration(t *tes
 	logged := captureLog(t)
 
 	for attempt := 1; attempt < ncRejectionStreakAlertThreshold; attempt++ {
-		_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+		_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 		require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 		assert.Equal(t, "", logged(), "still under the threshold at attempt %d", attempt)
 	}
 
-	_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+	_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 	require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 	assert.Contains(t, logged(), "NEXTCLOUD_URL", "the alert must name what to go and check")
 	assert.Contains(t, logged(), fmt.Sprintf("%d", ncRejectionStreakAlertThreshold))
 
 	// Reported once per streak, not once per request from here on.
 	before := logged()
-	_, err = nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+	_, err = nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 	require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 	assert.Equal(t, before, logged(), "the alert must not repeat for every later rejection")
 }
@@ -1408,12 +1408,12 @@ func TestMintAppToken_ASuccessfulMintResetsTheRejectionStreak(t *testing.T) {
 
 	// A burst of brand-new users, all one short of the threshold.
 	for attempt := 1; attempt < ncRejectionStreakAlertThreshold; attempt++ {
-		_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+		_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 		require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 	}
 
 	setSucceeding(true)
-	token, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+	token, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 	require.NoError(t, err)
 	require.Equal(t, "TOKEN", token)
 
@@ -1421,7 +1421,7 @@ func TestMintAppToken_ASuccessfulMintResetsTheRejectionStreak(t *testing.T) {
 	// silent. Without the reset this second run would cross the threshold.
 	setSucceeding(false)
 	for attempt := 1; attempt < ncRejectionStreakAlertThreshold; attempt++ {
-		_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+		_, err := nc.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 		require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 	}
 
@@ -1468,15 +1468,15 @@ func TestMintAppToken_TracksRejectionStreaksPerUser(t *testing.T) {
 	logged := captureLog(t)
 
 	for attempt := 1; attempt < ncRejectionStreakAlertThreshold; attempt++ {
-		_, err := nc.MintAppToken(context.Background(), stuck, "NC_pw")
+		_, err := nc.MintAppToken(context.Background(), stuck, "NC_pw", NcMintUserAgent)
 		require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 		// A healthy user mints between every one of the stuck user's attempts.
-		_, err = nc.MintAppToken(context.Background(), healthy, "NC_pw")
+		_, err = nc.MintAppToken(context.Background(), healthy, "NC_pw", NcMintUserAgent)
 		require.NoError(t, err)
 	}
 	require.Equal(t, "", logged(), "still under the threshold for the stuck user")
 
-	_, err := nc.MintAppToken(context.Background(), stuck, "NC_pw")
+	_, err := nc.MintAppToken(context.Background(), stuck, "NC_pw", NcMintUserAgent)
 	require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 
 	assert.Contains(t, logged(), stuck, "the alert must name the user that is stuck")
@@ -1495,7 +1495,7 @@ func TestMintAppToken_DoesNotAlertWhenSeveralNewUsersEachFailOnce(t *testing.T) 
 
 	for n := 0; n < ncRejectionStreakAlertThreshold*2; n++ {
 		orcid := fmt.Sprintf("0000-0000-0000-%04d", n)
-		_, err := nc.MintAppToken(context.Background(), orcid, "NC_pw")
+		_, err := nc.MintAppToken(context.Background(), orcid, "NC_pw", NcMintUserAgent)
 		require.ErrorIs(t, err, ErrNextcloudCredentialsRejected)
 	}
 
@@ -1514,7 +1514,7 @@ func TestMintAppToken_AnUnrelatedOCSCodeIsNotACredentialsRejection(t *testing.T)
 			}))
 			defer srv.Close()
 
-			_, err := (&NextcloudClient{URL: srv.URL}).MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+			_, err := (&NextcloudClient{URL: srv.URL}).MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 
 			require.Error(t, err)
 			require.NotErrorIs(t, err, ErrNextcloudCredentialsRejected,
@@ -1533,7 +1533,7 @@ func TestMintAppToken_LogsNothingOnSuccess(t *testing.T) {
 	defer srv.Close()
 	logged := captureLog(t)
 
-	token, err := (&NextcloudClient{URL: srv.URL}).MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw")
+	token, err := (&NextcloudClient{URL: srv.URL}).MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_pw", NcMintUserAgent)
 
 	require.NoError(t, err)
 	assert.Equal(t, "TOKEN", token)
@@ -1863,7 +1863,7 @@ func TestNextcloudClient_MintAppToken_SendsExplicitUserAgent(t *testing.T) {
 	defer server.Close()
 
 	c := &NextcloudClient{URL: server.URL}
-	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw", NcMintUserAgent)
 
 	require.NoError(t, err)
 	assert.Equal(t, NcMintUserAgent, gotUserAgent,
