@@ -188,6 +188,19 @@ func main() {
 			fmt.Println(logLine)
 		}
 		ncClient := id1.NewNextcloudClient()
+		// The provisioning account's READ app password is checked once, here, because a revoked
+		// or missing token would otherwise turn every existence read into "user not found" and
+		// every first sign-in into a failed account creation. VerifyNcReadCredentialAtBoot owns
+		// the decision (and is unit tested); only its result is acted on in this file.
+		readCredentialFatal, readCredentialMessage := id1.VerifyNcReadCredentialAtBoot(ncClient)
+		if readCredentialFatal {
+			log.Fatalf("%s", readCredentialMessage)
+		}
+		fmt.Println(readCredentialMessage)
+		// Keep the token in use: Nextcloud deletes an app password left unused past its retention
+		// window, and id1 otherwise uses this one only when a new user signs in. A refusal after
+		// boot is logged, never fatal.
+		go id1.RecheckNcReadCredentialEvery(ctx, ncClient, id1.NcReadCredentialRecheckInterval, log.Printf)
 		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret, id1.NcTokenTimeout, previousKeys...))
 		http.HandleFunc("/internal/nc-provision", id1.HandleNcProvision(ncClient, derivationKey, internalSecret, id1.NcProvisionTimeout))
 		fmt.Println("Registered /internal/nc-token and /internal/nc-provision endpoints")
