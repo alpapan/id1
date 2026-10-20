@@ -11,6 +11,7 @@ package id1
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -99,7 +100,7 @@ func (t *Command) list() ([]byte, error) {
 
 	root, err := openStoreRoot()
 	if err != nil {
-		return []byte{}, ErrNotFound
+		return []byte{}, err
 	}
 	defer root.Close()
 
@@ -113,7 +114,11 @@ func (t *Command) list() ([]byte, error) {
 		return []byte{}, ErrForbidden
 	}
 
-	if stat, statErr := root.Stat(relDir); statErr != nil || !stat.IsDir() {
+	dirInfo, dirErr := root.Stat(relDir)
+	if dirErr != nil && !errors.Is(dirErr, fs.ErrNotExist) {
+		return []byte{}, dirErr
+	}
+	if dirErr != nil || !dirInfo.IsDir() {
 		return []byte{}, ErrNotFound
 	}
 
@@ -152,7 +157,7 @@ func listDir(path string, opt ListOptions) (map[string][]byte, error) {
 	root, err := openStoreRoot()
 	if err != nil {
 		log.Printf("error listing dir %s: %s", path, err)
-		return results, nil
+		return results, err
 	}
 	defer root.Close()
 
@@ -238,7 +243,7 @@ func walkDir(path string, opt ListOptions) (map[string][]byte, error) {
 	root, err := openStoreRoot()
 	if err != nil {
 		log.Printf("error listing dir %s: %s", path, err)
-		return results, nil
+		return results, err
 	}
 	defer root.Close()
 
