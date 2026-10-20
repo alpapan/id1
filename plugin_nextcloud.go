@@ -678,7 +678,8 @@ const NcReadCredentialRecheckInterval = 24 * time.Hour
 // ncReadCredentialRemedy is the operator action that restores a refused or empty
 // READ app password.
 const ncReadCredentialRemedy = "Blank the key with `curatorium k3s secrets sync --rotate-key NC_PROVISIONER_READ_APP_PASSWORD`, " +
-	"mint a new one with `curatorium k3s secrets reconcile-nextcloud-passwords`, then restart id1 with `curatorium k3s restart id1 --force-rollout`."
+	"then mint a new one with `curatorium k3s secrets reconcile-nextcloud-passwords`, which also restarts id1. " +
+	"When that reports id1 was not restarted, restart it with `curatorium k3s restart id1 --force-rollout`."
 
 // readAuthPassword is the password UserExists presents: the READ app password
 // when the client holds one, otherwise the login password.
