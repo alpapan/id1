@@ -237,8 +237,12 @@ func main() {
 	if os.Getenv("INTERNAL_REGISTER_ENABLED") == "true" {
 		http.HandleFunc("/internal/sovereign/register", id1.HandleInternalRegisterKey())
 		fmt.Println("Registered /internal/sovereign/register trusted key-registration endpoint (mTLS)")
+		// The removal counterpart, behind the same gate: an account purge in a
+		// curatorium backend removes that curatorium's device key for the user.
+		http.HandleFunc("/internal/sovereign/deregister", id1.HandleInternalDeregisterKey())
+		fmt.Println("Registered /internal/sovereign/deregister trusted key-removal endpoint (mTLS)")
 	} else {
-		fmt.Println("INTERNAL_REGISTER_ENABLED not set; /internal/sovereign/register endpoint disabled")
+		fmt.Println("INTERNAL_REGISTER_ENABLED not set; /internal/sovereign/register and /internal/sovereign/deregister endpoints disabled")
 	}
 
 	// Token-for-token refresh: re-mints a fresh 1h JWT from a still-valid one,
