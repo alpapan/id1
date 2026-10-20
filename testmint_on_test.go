@@ -139,7 +139,7 @@ func TestHandleTestUser(t *testing.T) {
 		if !ok {
 			t.Fatal("claims should be RegisteredClaims")
 		}
-		const defaultORCID = "0000-0002-1825-0097"
+		const defaultORCID = "0000-0000-0000-0028"
 		if claims.Subject != defaultORCID {
 			t.Errorf("expected default ORCID %q as subject, got %q", defaultORCID, claims.Subject)
 		}

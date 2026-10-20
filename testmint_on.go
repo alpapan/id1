@@ -30,7 +30,7 @@ func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 
 		orcidID := r.URL.Query().Get("orcid")
 		if orcidID == "" {
-			orcidID = "0000-0002-1825-0097"
+			orcidID = "0000-0000-0000-0028"
 		}
 
 		// Validate ORCID format
