@@ -51,7 +51,7 @@ func TestRegisterTestMintRoutes_RefusesOutsideDevAndTest(t *testing.T) {
 func TestHandleTestUser_StampsAuthTime(t *testing.T) {
 	t.Setenv("ENV", "test")
 	kv := setupTestKVStore(t)
-	req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0001-2345-6789", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0019", nil)
 	rec := httptest.NewRecorder()
 	HandleTestUser(kv)(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
@@ -73,7 +73,7 @@ func TestHandleTestUser(t *testing.T) {
 	handler := HandleTestUser(kvStore)
 
 	t.Run("GET returns JWT for provided ORCID", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0001-0000-0001", nil)
+		req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0027", nil)
 		w := httptest.NewRecorder()
 		handler(w, req)
 		if w.Code != http.StatusOK {
@@ -100,8 +100,8 @@ func TestHandleTestUser(t *testing.T) {
 		if !ok {
 			t.Fatal("claims should be RegisteredClaims")
 		}
-		if claims.Subject != "0000-0001-0000-0001" {
-			t.Errorf("expected subject %q, got %q", "0000-0001-0000-0001", claims.Subject)
+		if claims.Subject != "0000-0000-0009-0027" {
+			t.Errorf("expected subject %q, got %q", "0000-0000-0009-0027", claims.Subject)
 		}
 	})
 
@@ -163,7 +163,7 @@ func TestHandleTestUser_AMRParam(t *testing.T) {
 	kv := setupTestKVStore(t)
 	// chosen amr honoured
 	rec := httptest.NewRecorder()
-	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-1111-1111&amr=orcid", nil))
+	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0035&amr=orcid", nil))
 	require.Equal(t, http.StatusOK, rec.Code)
 	var body struct {
 		JWT string `json:"jwt"`
@@ -174,7 +174,7 @@ func TestHandleTestUser_AMRParam(t *testing.T) {
 	assert.Equal(t, []string{"orcid"}, claims.AMR)
 	// unknown amr rejected
 	rec2 := httptest.NewRecorder()
-	HandleTestUser(kv)(rec2, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-1111-1111&amr=bogus", nil))
+	HandleTestUser(kv)(rec2, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0035&amr=bogus", nil))
 	assert.Equal(t, http.StatusBadRequest, rec2.Code)
 }
 
@@ -184,7 +184,7 @@ func TestHandleTestUser_AMRParam(t *testing.T) {
 func TestHandleTestUser_StampsTestAMR(t *testing.T) {
 	kv := setupTestKVStore(t)
 	rec := httptest.NewRecorder()
-	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-1111-1111", nil))
+	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0035", nil))
 	require.Equal(t, http.StatusOK, rec.Code)
 	var body struct {
 		JWT string `json:"jwt"`
@@ -193,4 +193,87 @@ func TestHandleTestUser_StampsTestAMR(t *testing.T) {
 	claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
 	require.NoError(t, err)
 	assert.Contains(t, claims.AMR, "test")
+}
+
+func TestIsReservedTestOrcid(t *testing.T) {
+	accepted := []string{
+		"0000-0000-0000-001X",
+		"0000-0000-0000-0028",
+		"0000-0000-0000-0036",
+		"0000-0000-0000-0044",
+		"0000-0000-0000-0052",
+		"0000-0000-1000-0005",
+		"0000-0000-5338-7318",
+		"0000-0000-9999-9993",
+	}
+	for _, orcid := range accepted {
+		assert.True(t, isReservedTestOrcid(orcid), orcid)
+	}
+	refused := []string{
+		"0000-0000-0000-0001", // body 0
+		"0000-0000-0000-0029", // wrong check character
+		"0000-0002-1825-0097", // ORCID's published example, in its issuing block
+		"0000-0001-0000-0009", // checksum-valid, outside 0000-0000-
+		"0009-8218-8338-7312",
+		"0000-0000-0000-002",
+		"0000-0000-0000-00280",
+		"0000-0000-0000-002x",
+		"not-an-orcid",
+		"",
+	}
+	for _, orcid := range refused {
+		assert.False(t, isReservedTestOrcid(orcid), orcid)
+	}
+}
+
+func TestIsTestMintOrcid(t *testing.T) {
+	for _, orcid := range []string{
+		"0000-0000-0000-0001",
+		"0000-0000-0000-0004",
+		"0000-0000-0000-0007",
+		"0009-0009-9355-3782",
+		"0000-0000-0000-0028",
+	} {
+		assert.True(t, isTestMintOrcid(orcid), orcid)
+	}
+	for _, orcid := range []string{
+		"0000-0000-0000-0008",
+		"0009-0002-8023-3658",
+		"0000-0002-1825-0097",
+	} {
+		assert.False(t, isTestMintOrcid(orcid), orcid)
+	}
+}
+
+func TestHandleTestUser_RefusesAnIDOutsideTheReservedRange(t *testing.T) {
+	kv := setupTestKVStore(t)
+	handler := HandleTestUser(kv)
+	for _, orcid := range []string{"0000-0002-1825-0097", "0000-0000-0000-0029", "0009-0002-8023-3658"} {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid="+orcid, nil))
+		assert.Equal(t, http.StatusForbidden, rec.Code, orcid)
+		assert.Contains(t, rec.Body.String(), "ORCID iD outside the reserved test range", orcid)
+		assert.NotContains(t, rec.Body.String(), "jwt", orcid)
+	}
+}
+
+func TestHandleTestUser_SignsTheFixedIdentitiesOutsideTheRange(t *testing.T) {
+	kv := setupTestKVStore(t)
+	handler := HandleTestUser(kv)
+	_, privKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+	for _, orcid := range []string{"0000-0000-0000-0001", "0000-0000-0000-0007", "0009-0009-9355-3782"} {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid="+orcid, nil))
+		require.Equal(t, http.StatusOK, rec.Code, orcid)
+		var resp map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), orcid)
+		token, parseErr := jwt.ParseWithClaims(resp["jwt"], &jwt.RegisteredClaims{}, func(tok *jwt.Token) (interface{}, error) {
+			return &privKey.PublicKey, nil
+		})
+		require.NoError(t, parseErr, orcid)
+		claims, ok := token.Claims.(*jwt.RegisteredClaims)
+		require.True(t, ok, orcid)
+		assert.Equal(t, orcid, claims.Subject)
+	}
 }

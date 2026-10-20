@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 )
 
 // RegisterTestMintRoutes registers the arbitrary-ORCID mint at /auth/test_user.
@@ -36,6 +38,12 @@ func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 		// Validate ORCID format
 		if !orcidIDPattern.MatchString(orcidID) {
 			http.Error(w, "Invalid ORCID iD format", http.StatusBadRequest)
+			return
+		}
+
+		// Sign only a test identity: a researcher's iD is never minted here.
+		if !isTestMintOrcid(orcidID) {
+			http.Error(w, "ORCID iD outside the reserved test range", http.StatusForbidden)
 			return
 		}
 
@@ -78,4 +86,55 @@ func isKnownAMR(v string) bool {
 	default:
 		return false
 	}
+}
+
+// reservedTestOrcidPrefix opens every iD of the reserved test range. ORCID issues no
+// iD in the 0000-0000- block.
+const reservedTestOrcidPrefix = "0000-0000-"
+
+// testMintFixedIdentities are the identities outside the reserved test range that the
+// deployment seeds itself and that tests sign in as: the system accounts and the demo
+// user.
+var testMintFixedIdentities = map[string]bool{
+	"0000-0000-0000-0001": true,
+	"0000-0000-0000-0002": true,
+	"0000-0000-0000-0003": true,
+	"0000-0000-0000-0004": true,
+	"0000-0000-0000-0005": true,
+	"0000-0000-0000-0006": true,
+	"0000-0000-0000-0007": true,
+	"0009-0009-9355-3782": true,
+}
+
+// orcidCheckCharacter is the ISO 7064 MOD 11-2 check character of a fifteen-digit
+// ORCID body.
+func orcidCheckCharacter(body string) string {
+	total := 0
+	for _, ch := range body {
+		total = (total + int(ch-'0')) * 2
+	}
+	result := (12 - total%11) % 11
+	if result == 10 {
+		return "X"
+	}
+	return strconv.Itoa(result)
+}
+
+// isReservedTestOrcid reports whether orcid is a checksum-valid iD whose first two
+// groups are 0000-0000- and whose fifteen-digit body is 1 or more.
+func isReservedTestOrcid(orcid string) bool {
+	if !orcidIDPattern.MatchString(orcid) || !strings.HasPrefix(orcid, reservedTestOrcidPrefix) {
+		return false
+	}
+	digits := strings.ReplaceAll(orcid, "-", "")
+	body := digits[:15]
+	if strings.Trim(body, "0") == "" {
+		return false
+	}
+	return orcidCheckCharacter(body) == digits[15:]
+}
+
+// isTestMintOrcid reports whether the test mint may sign a token for orcid.
+func isTestMintOrcid(orcid string) bool {
+	return isReservedTestOrcid(orcid) || testMintFixedIdentities[orcid]
 }
