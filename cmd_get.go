@@ -10,6 +10,8 @@
 package id1
 
 import (
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"strings"
 )
@@ -44,7 +46,7 @@ func (t *Command) get() ([]byte, error) {
 
 	root, err := openStoreRoot()
 	if err != nil {
-		return []byte{}, ErrNotFound
+		return []byte{}, err
 	}
 	defer root.Close()
 
@@ -54,7 +56,10 @@ func (t *Command) get() ([]byte, error) {
 	}
 
 	if info, err := root.Stat(rel); err != nil {
-		return []byte{}, ErrNotFound
+		if errors.Is(err, fs.ErrNotExist) {
+			return []byte{}, ErrNotFound
+		}
+		return []byte{}, err
 	} else if info.IsDir() {
 		return []byte{}, ErrNotFound
 	}
