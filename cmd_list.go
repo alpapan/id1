@@ -95,7 +95,7 @@ func (t *Command) list() ([]byte, error) {
 	opt := ListOptions{}
 	opt.Parse(t.Args)
 	if opt.Children && opt.Recursive {
-		return []byte{}, fmt.Errorf("recursive can't be true if children is true")
+		return []byte{}, ErrRecursiveAndChildren
 	}
 
 	root, err := openStoreRoot()

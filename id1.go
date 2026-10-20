@@ -110,8 +110,11 @@ func Handle(path string, ctx context.Context) func(w http.ResponseWriter, r *htt
 			err404(w, r, "")
 		} else if errors.Is(err, ErrLimitExceeded) {
 			err413(w, r, "")
-		} else {
+		} else if isClientError(err) {
 			err400(w, r, err.Error())
+		} else {
+			log.Printf("command failed for id %q: %v", id, err)
+			err500(w, r, "internal error")
 		}
 	}
 }
@@ -147,7 +150,8 @@ func refuseUnauthorised(w http.ResponseWriter, r *http.Request, callerId string,
 		if challenge, err := generateChallenge(targetId, string(pubKey)); err == nil {
 			err401(w, r, challenge)
 		} else {
-			err500(w, r, err.Error())
+			log.Printf("challenge generation failed for id %q: %v", targetId, err)
+			err500(w, r, "internal error")
 		}
 	} else {
 		if !errors.Is(err, ErrNotFound) {
