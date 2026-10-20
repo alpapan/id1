@@ -428,6 +428,29 @@ func TestRecheckNcReadCredentialEvery_AnyOtherFailureIsLoggedAndTheLoopKeepsRunn
 	}
 }
 
+func TestRecheckNcReadCredentialEvery_ShutdownDuringACheckLogsNothing(t *testing.T) {
+	arrived := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case arrived <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	logger := &recheckLog{}
+	stop := runRecheck(t, readCredClient(server.URL), logger)
+
+	select {
+	case <-arrived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no check reached Nextcloud")
+	}
+	stop()
+
+	assert.Empty(t, logger.snapshot(), "cancelling the loop's context while a check is in flight is a shutdown, not a finding about the token")
+}
+
 func TestRecheckNcReadCredentialEvery_StopsWhenItsContextIsCancelled(t *testing.T) {
 	fake := newReadCredFake(t, http.StatusOK, readCredOKBody)
 	stop := runRecheck(t, readCredClient(fake.server.URL), &recheckLog{})

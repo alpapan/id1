@@ -788,6 +788,11 @@ func RecheckNcReadCredentialEvery(ctx context.Context, c *NextcloudClient, inter
 			checkCtx, cancel := context.WithTimeout(ctx, ncReadCredentialBootTimeout)
 			err := c.CheckProvisionerReadCredential(checkCtx)
 			cancel()
+			if ctx.Err() != nil {
+				// The loop's own context ended while the check was in flight: a
+				// shutdown, not an answer about the token, so nothing is logged.
+				return
+			}
 			switch {
 			case err == nil:
 			case errors.Is(err, ErrNcReadCredentialRefused):
