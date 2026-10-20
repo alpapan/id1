@@ -248,7 +248,8 @@ func TestHandleNcToken_ARefusedReadTokenIsNeverRetriedWithThePasswordAndMintsNot
 
 			handler.ServeHTTP(rr, req)
 
-			assert.Equal(t, http.StatusBadGateway, rr.Code)
+			assert.Equal(t, http.StatusInternalServerError, rr.Code, "a lasting refusal is not a gateway status the caller retries")
+			assert.JSONEq(t, `{"error":"nextcloud_read_credential_refused"}`, rr.Body.String())
 			assert.NotContains(t, rr.Body.String(), readCredTestToken)
 			assert.NotContains(t, rr.Body.String(), readCredTestPassword)
 			methods, paths, auths := fake.seen()
