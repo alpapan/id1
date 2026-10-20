@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -79,6 +80,12 @@ func main() {
 	// (Kubernetes) win. ResolveConfig reads PORT/DBPATH/NEXTCLOUD_URL/BIND_ADDR via os.Getenv.
 	_ = godotenv.Load(".env")
 	port, dbpath, nextcloudURL, bindAddr := id1.ResolveConfig(os.Getenv)
+	// BIND_ADDR has no default: an unset or empty value, or an unresolved "$(...)"
+	// reference, stops the process here, before anything is opened.
+	listenAddrs, err := id1.ListenAddresses(bindAddr, port)
+	if err != nil {
+		log.Fatalf("Invalid bind address: %v", err)
+	}
 
 	fmt.Printf("id1 API build %s, port: %s, dbpath: %s, bind: %s\n", version, port, dbpath, bindAddr)
 	// The resolved JWT claims: a dedicated instance (annot8r_id1) must stamp its own
@@ -307,27 +314,40 @@ func main() {
 	// each handler, so a route registered later is capped without an edit here.
 	limited := id1.LimitBody(http.DefaultServeMux, id1.IngressBodyLimits())
 
-	fmt.Printf("Starting server on %s:%s\n", bindAddr, port)
+	fmt.Printf("Starting server on %s\n", strings.Join(listenAddrs, ", "))
 	tlsConfig, err := id1.BuildTLSConfig()
 	if err != nil {
 		log.Fatalf("Failed to build TLS config: %v", err)
 	}
-	if tlsConfig != nil {
-		server := &http.Server{
-			Addr:      bindAddr + ":" + port,
-			TLSConfig: tlsConfig,
-			Handler:   limited,
-			ErrorLog:  log.New(id1.NewHandshakeEOFFilter(os.Stderr), "", log.LstdFlags),
+	var listeners []net.Listener
+	for _, addr := range listenAddrs {
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Fatalf("error listening on %s: %s", addr, err)
 		}
-		fmt.Printf("Starting with TLS enabled, bound to %s:%s\n", bindAddr, port)
-		// Empty strings: GetCertificate in TLSConfig handles all cert selection via SNI.
-		if err := server.ListenAndServeTLS("", ""); err != nil {
-			log.Fatalf("error starting TLS service: %s", err)
-		}
-	} else {
-		fmt.Printf("Starting WITHOUT TLS (plaintext), bound to %s:%s\n", bindAddr, port)
-		if err := http.ListenAndServe(bindAddr+":"+port, limited); err != nil {
-			log.Fatalf("error starting service: %s", err)
-		}
+		listeners = append(listeners, listener)
 	}
+	// Handler is the body-capped wrapper around http.DefaultServeMux, the mux every route above
+	// registered on.
+	server := &http.Server{Handler: limited}
+	if tlsConfig != nil {
+		server.TLSConfig = tlsConfig
+		server.ErrorLog = log.New(id1.NewHandshakeEOFFilter(os.Stderr), "", log.LstdFlags)
+		fmt.Printf("Starting with TLS enabled, bound to %s\n", strings.Join(listenAddrs, ", "))
+	} else {
+		fmt.Printf("Starting WITHOUT TLS (plaintext), bound to %s\n", strings.Join(listenAddrs, ", "))
+	}
+	serve := func(listener net.Listener) error {
+		if tlsConfig != nil {
+			// Empty strings: GetCertificate in TLSConfig handles all cert selection via SNI.
+			return server.ServeTLS(listener, "", "")
+		}
+		return server.Serve(listener)
+	}
+	for _, listener := range listeners[1:] {
+		go func(l net.Listener) {
+			log.Fatalf("error serving on %s: %s", l.Addr(), serve(l))
+		}(listener)
+	}
+	log.Fatalf("error serving on %s: %s", listeners[0].Addr(), serve(listeners[0]))
 }

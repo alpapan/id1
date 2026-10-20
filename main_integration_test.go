@@ -297,6 +297,7 @@ func TestID1RefusesToStartWithoutNamespace(t *testing.T) {
 		"PORT="+port,
 		"DBPATH="+t.TempDir(),
 		"MTLS_ENABLED=false",
+		"BIND_ADDR=127.0.0.1",
 		"ENV=test",
 		// Explicitly empty, overriding whatever .env.test put in the
 		// environment. Later entries win in exec, so this is the unset case.
@@ -338,6 +339,7 @@ func TestID1RefusesToStartWithoutBrowserOrigin(t *testing.T) {
 		"PORT="+port,
 		"DBPATH="+t.TempDir(),
 		"MTLS_ENABLED=false",
+		"BIND_ADDR=127.0.0.1",
 		"ENV=test",
 		// Explicitly empty, overriding the test default. Later entries win in
 		// exec, so this is the unset case.
@@ -358,6 +360,62 @@ func TestID1RefusesToStartWithoutBrowserOrigin(t *testing.T) {
 		resp.Body.Close()
 		t.Fatal("id1 served /health despite an unset browser origin")
 	}
+}
+
+// TestID1RefusesToStartWithoutBindAddr: id1 has no default bind address. With
+// BIND_ADDR explicitly empty it must exit at boot, name the variable, and never open
+// the port.
+func TestID1RefusesToStartWithoutBindAddr(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+
+	// Bounded, because the regression this guards against is a binary that keeps
+	// serving on every interface: an unbounded wait would hang the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = append(os.Environ(),
+		"PORT="+port,
+		"DBPATH="+t.TempDir(),
+		"MTLS_ENABLED=false",
+		"ENV=test",
+		// Explicitly empty, overriding whatever the surrounding environment holds.
+		"BIND_ADDR=",
+	)
+	output, err := cmd.CombinedOutput()
+
+	if ctx.Err() != nil {
+		t.Fatalf("id1 kept running with no BIND_ADDR; it must refuse to boot.\n%s", output)
+	}
+	if err == nil {
+		t.Fatalf("id1 started and exited cleanly with no BIND_ADDR; it must refuse to boot.\n%s", output)
+	}
+	if !strings.Contains(string(output), "BIND_ADDR") {
+		t.Fatalf("the refusal must name the variable an operator has to set; got:\n%s", output)
+	}
+	if resp, err := (&http.Client{Timeout: 2 * time.Second}).Get("http://127.0.0.1:" + port + "/health"); err == nil {
+		resp.Body.Close()
+		t.Fatal("id1 served /health despite an unset BIND_ADDR")
+	}
+}
+
+// TestID1ServesOnEveryAddressInBindAddr: a comma list opens one listener per entry on
+// the shared port. 127.0.0.2 is a second loopback address on Linux, standing in for the
+// pod address next to 127.0.0.1.
+func TestID1ServesOnEveryAddressInBindAddr(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+	startID1(t, bin, map[string]string{
+		"PORT":         port,
+		"DBPATH":       t.TempDir(),
+		"MTLS_ENABLED": "false",
+		"ENV":          "test",
+		"BIND_ADDR":    "127.0.0.1,127.0.0.2",
+	})
+	client := &http.Client{Timeout: 3 * time.Second}
+	assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
+	assertJWKSHasRSAKey(t, client, "http://127.0.0.2:"+port+"/pub/jwks.json")
 }
 
 // buildID1Binary compiles main.go_ into a runnable binary, mirroring apps/id1/Dockerfile:
@@ -404,7 +462,9 @@ func buildID1Binary(t *testing.T, goTags string) string {
 func startID1(t *testing.T, bin string, env map[string]string) {
 	t.Helper()
 	cmd := exec.Command(bin)
-	cmd.Env = os.Environ()
+	// BIND_ADDR has no default, so every launch names the loopback address the test
+	// client dials. A caller that passes its own BIND_ADDR wins: later entries win in exec.
+	cmd.Env = append(os.Environ(), "BIND_ADDR=127.0.0.1")
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
