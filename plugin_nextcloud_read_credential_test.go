@@ -234,6 +234,33 @@ func TestNextcloudClient_CheckProvisionerReadCredential_NoTokenSendsNothing(t *t
 }
 
 // ---------------------------------------------------------------------------
+// HandleNcToken with a refused READ token.
+// ---------------------------------------------------------------------------
+
+func TestHandleNcToken_ARefusedReadTokenIsNeverRetriedWithThePasswordAndMintsNothing(t *testing.T) {
+	for _, tc := range readCredRefusals {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newReadCredFake(t, tc.status, tc.body)
+			handler := HandleNcToken(readCredClient(fake.server.URL), []byte("0123456789abcdef0123456789abcdef"), "internal-secret", 2*time.Second)
+			req := httptest.NewRequest(http.MethodGet, "/internal/nc-token?orcid="+readCredTestOrcid, nil)
+			req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+			rr := httptest.NewRecorder()
+
+			handler.ServeHTTP(rr, req)
+
+			assert.Equal(t, http.StatusInternalServerError, rr.Code, "a lasting refusal is not a gateway status the caller retries")
+			assert.JSONEq(t, `{"error":"nextcloud_read_credential_refused"}`, rr.Body.String())
+			assert.NotContains(t, rr.Body.String(), readCredTestToken)
+			assert.NotContains(t, rr.Body.String(), readCredTestPassword)
+			methods, paths, auths := fake.seen()
+			assert.Equal(t, []string{http.MethodGet}, methods, "no mint may follow a refused existence read")
+			assert.Equal(t, []string{"/ocs/v2.php/cloud/users/" + readCredTestOrcid}, paths)
+			assert.Equal(t, []string{readCredBasic(readCredTestAdmin, readCredTestToken)}, auths, "a refusal is never retried with the login password")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // VerifyNcReadCredentialAtBoot - the decision main.go_ acts on.
 // ---------------------------------------------------------------------------
 
@@ -258,7 +285,8 @@ func TestVerifyNcReadCredentialAtBoot_RefusedTokenIsFatalAndNeverEchoesTheSecret
 	assert.True(t, fatal)
 	assert.Contains(t, message, "refused")
 	assert.Contains(t, message, "NC_PROVISIONER_READ_APP_PASSWORD")
-	assert.Contains(t, message, "curatorium k3s reboot id1")
+	assert.Contains(t, message, "curatorium k3s restart id1 --force-rollout")
+	assert.NotContains(t, message, "k3s reboot")
 	assert.NotContains(t, message, readCredTestToken)
 	assert.NotContains(t, message, readCredTestPassword)
 }

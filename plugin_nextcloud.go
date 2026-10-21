@@ -81,13 +81,13 @@ const ncThrottleRecovery = "Nextcloud brute-force protection is throttling the i
 	"with ID1_POD_IP replaced by the id1 pod's IP address"
 
 // ocsUserLookupHints maps the OCS statuscodes Nextcloud's single-user read
-// (GET /cloud/users/{userid}) can answer, other than success and 404, to hints.
-// 998 is what UsersController answers when the calling account has no rights
-// over the target user: the provisioning account has lost its admin group,
-// which is a fault in id1's own configuration, never evidence that the user is
-// missing.
+// (GET /cloud/users/{userid}) can answer, other than success, 404 and the
+// refusal codes the read functions turn into ErrNcReadCredentialRefused, to
+// hints. 998 is what UsersController answers when the calling account has no
+// rights over the target user: the provisioning account has lost its admin
+// group, which is a fault in id1's own configuration, never evidence that the
+// user is missing.
 var ocsUserLookupHints = map[int]string{
-	997: "unauthorised (the provisioning account's credentials were refused - check NC_PROVISIONER_USER, NC_PROVISIONER_PASSWORD and NC_PROVISIONER_READ_APP_PASSWORD)",
 	998: "user not visible to the provisioning account (NC_PROVISIONER_USER must be in Nextcloud's admin group)",
 }
 
@@ -607,8 +607,10 @@ func (c *NextcloudClient) clearRejectionStreak(orcid string) {
 // on the OCS statuscode in the body, never the HTTP status alone, because
 // Nextcloud serves both a missing user (OCS 404) and a provisioning account
 // without rights over the user (OCS 998) as HTTP 404. Only OCS 404 means the
-// account is missing; OCS 998 and every other code is an error. HTTP 429 is
-// reported as ErrNextcloudRateLimited.
+// account is missing; OCS 998 and every other code is an error. HTTP 401, HTTP
+// 403 and OCS 997 mean Nextcloud refused the credential this read presents
+// (ErrNcReadCredentialRefused), a lasting fault that no retry repairs. HTTP 429
+// is reported as ErrNextcloudRateLimited.
 //
 // The provisioning account's login succeeds, so the read adds nothing to
 // Nextcloud's failed-login count, unlike a login as a user who does not exist.
@@ -637,6 +639,9 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 		log.Printf("nc-exists: nextcloud rate-limited for %s (HTTP 429) - %s", orcid, ncThrottleRecovery)
 		return false, ErrNextcloudRateLimited
 	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return false, ErrNcReadCredentialRefused
+	}
 
 	var ocsResult OCSResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
@@ -647,6 +652,8 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 		return true, nil
 	case 404:
 		return false, nil
+	case 997:
+		return false, ErrNcReadCredentialRefused
 	default:
 		return false, formatOCSError("/cloud/users/{userid}", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsUserLookupHints)
 	}
@@ -678,7 +685,8 @@ const NcReadCredentialRecheckInterval = 24 * time.Hour
 // ncReadCredentialRemedy is the operator action that restores a refused or empty
 // READ app password.
 const ncReadCredentialRemedy = "Blank the key with `curatorium k3s secrets sync --rotate-key NC_PROVISIONER_READ_APP_PASSWORD`, " +
-	"mint a new one with `curatorium k3s secrets reconcile-nextcloud-passwords`, then restart id1 with `curatorium k3s reboot id1`."
+	"then mint a new one with `curatorium k3s secrets reconcile-nextcloud-passwords`, which also restarts id1. " +
+	"When that reports id1 was not restarted, restart it with `curatorium k3s restart id1 --force-rollout`."
 
 // readAuthPassword is the password UserExists presents: the READ app password
 // when the client holds one, otherwise the login password.
@@ -933,8 +941,19 @@ func writeNcBadRequest(w http.ResponseWriter, code string) {
 
 // answerNcTokenFailure answers /internal/nc-token for a failure of step
 // (UserExists or MintAppToken) that is not a credentials rejection.
+//
+// A refused provisioning READ app password (ErrNcReadCredentialRefused) is a
+// lasting fault of id1's own configuration, not a gateway fault, so it is
+// answered 500 with {"error":"nextcloud_read_credential_refused"}: not one of
+// the 502, 503 and 504 statuses a caller retries, because every retry repeats a
+// refused login to Nextcloud and only an operator can repair the credential.
 func answerNcTokenFailure(w http.ResponseWriter, step, orcid string, err error) {
 	switch {
+	case errors.Is(err, ErrNcReadCredentialRefused):
+		log.Printf("nc-token: %s: %v. %s", step, err, ncReadCredentialRemedy)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":"nextcloud_read_credential_refused"}`)
 	case errors.Is(err, ErrNextcloudRateLimited):
 		http.Error(w, "nextcloud rate limited", http.StatusServiceUnavailable)
 	case errors.Is(err, context.DeadlineExceeded):
@@ -971,6 +990,11 @@ func answerNcTokenFailure(w http.ResponseWriter, step, orcid string, err error) 
 //     every derivation key. Provisioning cannot repair that, so the caller
 //     must not provision. id1 then attempts no login for that ORCID until
 //     ncPasswordBlockCooldown has passed, answering the same code meanwhile.
+//
+// A refused provisioning READ app password is answered 500
+// {"error":"nextcloud_read_credential_refused"} (see answerNcTokenFailure). It
+// is a lasting fault, so it is not one of the 502, 503 and 504 statuses a
+// caller retries.
 //
 // id1 registers no server-side ReadTimeout or WriteTimeout, so the handler
 // bounds itself with timeout rather than relying on the caller's socket.
