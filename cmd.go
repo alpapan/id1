@@ -147,6 +147,6 @@ func (t Command) execUnauthorised() ([]byte, error) {
 	case List:
 		return t.list()
 	default:
-		return []byte{}, fmt.Errorf("not supported")
+		return []byte{}, ErrNotSupported
 	}
 }

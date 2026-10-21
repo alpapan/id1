@@ -10,6 +10,8 @@
 package id1
 
 import (
+	"errors"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -106,7 +108,7 @@ func (t *Command) move() error {
 
 	root, err := openStoreRoot()
 	if err != nil {
-		return ErrNotFound
+		return err
 	}
 	defer root.Close()
 
@@ -122,11 +124,16 @@ func (t *Command) move() error {
 	}
 
 	if _, err := root.Stat(oldKey); err != nil {
-		return ErrNotFound
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
 	}
 
 	if _, err := root.Stat(relPath); err == nil {
 		return ErrExists
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 
 	newDirRel := filepath.Dir(relPath)
