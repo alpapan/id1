@@ -284,6 +284,7 @@ func TestID1NcReadCredentialAtBoot(t *testing.T) {
 			cmd := exec.CommandContext(ctx, bin)
 			cmd.Env = append(os.Environ(),
 				"PORT="+port,
+				"BIND_ADDR=127.0.0.1",
 				"DBPATH="+t.TempDir(),
 				"MTLS_ENABLED=false",
 				"ENV=test",
