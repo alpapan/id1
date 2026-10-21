@@ -10,6 +10,8 @@
 package id1
 
 import (
+	"errors"
+	"io/fs"
 	"path/filepath"
 )
 
@@ -24,9 +26,12 @@ func (t *Command) del() error {
 		return ErrForbidden
 	}
 
+	// A store that cannot be opened is a failure, never "not found": a caller
+	// that treats ErrNotFound as "already absent" would otherwise report a key
+	// removed while it is still stored.
 	root, err := openStoreRoot()
 	if err != nil {
-		return ErrNotFound
+		return err
 	}
 	defer root.Close()
 
@@ -47,7 +52,10 @@ func (t *Command) del() error {
 
 	stat, err := root.Stat(rel)
 	if err != nil {
-		return ErrNotFound
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrNotFound
+		}
+		return err
 	}
 	if stat.IsDir() {
 		pubsub.Publish(t)
