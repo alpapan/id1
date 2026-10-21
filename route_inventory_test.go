@@ -3,7 +3,7 @@ package id1
 // Route inventory: every HTTP path this repository can register must appear in
 // the allow-list below, classified by how it is exposed.
 //
-// Why this guard exists. All 20 of id1's route registrations live in main.go_,
+// Why this guard exists. All 21 of id1's route registrations live in main.go_,
 // whose trailing underscore hides it from the Go toolchain: `go list` does not
 // name it, `go build ./...` does not compile it, and `go test ./...` cannot
 // reach it. Two more registrations live in the build-tagged files demo_on.go
@@ -104,10 +104,11 @@ var wantRoutes = map[string]exposure{
 	// trusted-provisioner registration are
 	// additionally gated by X-ID1-Internal-Secret and mTLS respectively, but the
 	// gate is the second line of defence; not being routed is the first.
-	"/internal/nc-token":           exposureInternal,
-	"/internal/nc-provision":       exposureInternal,
-	"/internal/sync_ticket":        exposureInternal,
-	"/internal/sovereign/register": exposureInternal,
+	"/internal/nc-token":             exposureInternal,
+	"/internal/nc-provision":         exposureInternal,
+	"/internal/sync_ticket":          exposureInternal,
+	"/internal/sovereign/register":   exposureInternal,
+	"/internal/sovereign/deregister": exposureInternal,
 	// Kubernetes probe target. Returns a fixed status object and no identity.
 	"/health": exposureInternal,
 	// The subtree form of /sync: Traefik matches the exact path /sync only.
@@ -283,7 +284,7 @@ func packageRegistrations(t *testing.T) []registration {
 	if err != nil {
 		t.Fatalf("derive routes from %s: %v", dir, err)
 	}
-	// The floor is the declared inventory's own size: 20 registrations in
+	// The floor is the declared inventory's own size: 21 registrations in
 	// main.go_ plus one each in demo_on.go and testmint_on.go. Set below that,
 	// a deletion of several routes would leave the canary satisfied and rest
 	// entirely on the registered-nowhere check.

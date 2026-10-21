@@ -28,7 +28,7 @@ func (t *Command) set() error {
 		return ErrForbidden
 	}
 	if !preflightChecks(t) {
-		return fmt.Errorf("failed preflight checks")
+		return ErrPreflightFailed
 	}
 
 	root, err := openStoreRoot()
