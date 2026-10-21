@@ -211,7 +211,7 @@ func TestMTLSConnectivity_NextcloudMintAppToken(t *testing.T) {
 
 	c := &NextcloudClient{URL: server.URL}
 
-	token, err := c.MintAppToken(context.Background(), "test-orcid", "user-pass")
+	token, err := c.MintAppToken(context.Background(), "test-orcid", "user-pass", NcMintUserAgent)
 	if err != nil {
 		t.Fatalf("MintAppToken failed: %v", err)
 	}

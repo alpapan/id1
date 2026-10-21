@@ -30,6 +30,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,12 +154,15 @@ func TestID1NcEndpointRegistration(t *testing.T) {
 	t.Run("registered_when_both_secrets_present", func(t *testing.T) {
 		port := freePort(t)
 		startID1(t, bin, map[string]string{
-			"PORT":                port,
-			"DBPATH":              t.TempDir(),
-			"MTLS_ENABLED":        "false",
-			"ENV":                 "test",
-			"NC_DERIVATION_KEY":   derivationKeyHex,
-			"ID1_INTERNAL_SECRET": "integration-secret",
+			"PORT":                             port,
+			"DBPATH":                           t.TempDir(),
+			"MTLS_ENABLED":                     "false",
+			"ENV":                              "test",
+			"NC_DERIVATION_KEY":                derivationKeyHex,
+			"ID1_INTERNAL_SECRET":              "integration-secret",
+			"NEXTCLOUD_URL":                    "http://127.0.0.1:" + freePort(t),
+			"NC_PROVISIONER_USER":              "admin",
+			"NC_PROVISIONER_READ_APP_PASSWORD": "integration-read-token",
 		})
 		client := &http.Client{Timeout: 3 * time.Second}
 		base := "http://127.0.0.1:" + port
@@ -243,6 +247,91 @@ func TestID1NcEndpointRegistration(t *testing.T) {
 
 		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusNotFound)
 		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "integration-secret", http.StatusNotFound)
+	})
+}
+
+// TestID1NcReadCredentialAtBoot pins the startup check of the provisioning account's READ app
+// password. The check lives in main.go_, which `go test ./...` cannot compile, so this tier is the
+// only one that can assert the process actually stops (an empty token or a refusal) or keeps serving
+// (Nextcloud not answering yet, the normal first-start order). The waits are bounded because the
+// regression is a binary that does NOT exit.
+func TestID1NcReadCredentialAtBoot(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	const derivationKeyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	const refusedToken = "revoked-read-token"
+
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer refusing.Close()
+
+	refusals := []struct {
+		name         string
+		token        string
+		wantInOutput string
+	}{
+		{"empty_token", "", "NC_PROVISIONER_READ_APP_PASSWORD"},
+		{"refused_token", refusedToken, "refused"},
+	}
+	if len(refusals) != 2 {
+		t.Fatalf("expected two refusal cases, got %d", len(refusals))
+	}
+	for _, tc := range refusals {
+		t.Run(tc.name+"_stops_the_process", func(t *testing.T) {
+			port := freePort(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin)
+			cmd.Env = append(os.Environ(),
+				"PORT="+port,
+				"DBPATH="+t.TempDir(),
+				"MTLS_ENABLED=false",
+				"ENV=test",
+				"NC_DERIVATION_KEY="+derivationKeyHex,
+				"ID1_INTERNAL_SECRET=integration-secret",
+				"NEXTCLOUD_URL="+refusing.URL,
+				"NC_PROVISIONER_USER=admin",
+				"NC_PROVISIONER_READ_APP_PASSWORD="+tc.token,
+			)
+			output, err := cmd.CombinedOutput()
+
+			if ctx.Err() != nil {
+				t.Fatalf("id1 kept running; it must refuse to boot.\n%s", output)
+			}
+			if err == nil {
+				t.Fatalf("id1 exited cleanly; it must refuse to boot.\n%s", output)
+			}
+			if !strings.Contains(string(output), tc.wantInOutput) {
+				t.Fatalf("the refusal must contain %q; got:\n%s", tc.wantInOutput, output)
+			}
+			if tc.token != "" && strings.Contains(string(output), tc.token) {
+				t.Fatalf("the refusal must not echo the token; got:\n%s", output)
+			}
+			if resp, getErr := (&http.Client{Timeout: 2 * time.Second}).Get("http://127.0.0.1:" + port + "/health"); getErr == nil {
+				resp.Body.Close()
+				t.Fatal("id1 served /health despite a bad read credential")
+			}
+		})
+	}
+
+	t.Run("unreachable_nextcloud_keeps_serving", func(t *testing.T) {
+		port := freePort(t)
+		startID1(t, bin, map[string]string{
+			"PORT":                             port,
+			"DBPATH":                           t.TempDir(),
+			"MTLS_ENABLED":                     "false",
+			"ENV":                              "test",
+			"NC_DERIVATION_KEY":                derivationKeyHex,
+			"ID1_INTERNAL_SECRET":              "integration-secret",
+			"NEXTCLOUD_URL":                    "http://127.0.0.1:" + freePort(t),
+			"NC_PROVISIONER_USER":              "admin",
+			"NC_PROVISIONER_READ_APP_PASSWORD": "integration-read-token",
+		})
+		client := &http.Client{Timeout: 5 * time.Second}
+		base := "http://127.0.0.1:" + port
+		assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+		assertStatus(t, client, base+"/health", http.StatusOK)
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusUnauthorized)
 	})
 }
 
