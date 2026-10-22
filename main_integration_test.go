@@ -161,7 +161,7 @@ func TestID1NcEndpointRegistration(t *testing.T) {
 			"NC_DERIVATION_KEY":                derivationKeyHex,
 			"ID1_INTERNAL_SECRET":              "integration-secret",
 			"NEXTCLOUD_URL":                    "http://127.0.0.1:" + freePort(t),
-			"NC_PROVISIONER_USER":              "admin",
+			"NC_PROVISIONER_USER":              ncProvisionerTestUser,
 			"NC_PROVISIONER_READ_APP_PASSWORD": "integration-read-token",
 		})
 		client := &http.Client{Timeout: 3 * time.Second}
@@ -291,7 +291,7 @@ func TestID1NcReadCredentialAtBoot(t *testing.T) {
 				"NC_DERIVATION_KEY="+derivationKeyHex,
 				"ID1_INTERNAL_SECRET=integration-secret",
 				"NEXTCLOUD_URL="+refusing.URL,
-				"NC_PROVISIONER_USER=admin",
+				"NC_PROVISIONER_USER="+ncProvisionerTestUser,
 				"NC_PROVISIONER_READ_APP_PASSWORD="+tc.token,
 			)
 			output, err := cmd.CombinedOutput()
@@ -325,7 +325,7 @@ func TestID1NcReadCredentialAtBoot(t *testing.T) {
 			"NC_DERIVATION_KEY":                derivationKeyHex,
 			"ID1_INTERNAL_SECRET":              "integration-secret",
 			"NEXTCLOUD_URL":                    "http://127.0.0.1:" + freePort(t),
-			"NC_PROVISIONER_USER":              "admin",
+			"NC_PROVISIONER_USER":              ncProvisionerTestUser,
 			"NC_PROVISIONER_READ_APP_PASSWORD": "integration-read-token",
 		})
 		client := &http.Client{Timeout: 5 * time.Second}

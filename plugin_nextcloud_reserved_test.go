@@ -47,14 +47,14 @@ func ncEndpointCases() []ncEndpointCase {
 			name: "provision", method: "POST", path: "/internal/nc-provision", wantAllow: http.StatusNoContent,
 			wantType: "text/plain; charset=utf-8", wantBody: "orcid not served\n",
 			build: func(ncURL string) http.HandlerFunc {
-				return HandleNcProvision(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+				return HandleNcProvision(&NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 			},
 		},
 		{
 			name: "token", method: "GET", path: "/internal/nc-token", wantAllow: http.StatusOK,
 			wantType: "application/json", wantBody: `{"error":"orcid_not_served"}`,
 			build: func(ncURL string) http.HandlerFunc {
-				return HandleNcToken(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+				return HandleNcToken(&NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 			},
 		},
 	}
