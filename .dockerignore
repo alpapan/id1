@@ -1,0 +1,5 @@
+# Local-only files kept out of the image and out of skaffold's checksum tag. `.git` is the
+# submodule's pointer file, which names this checkout's own git directory.
+.git
+.pixi
+pixi.lock
