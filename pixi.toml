@@ -30,13 +30,11 @@ test-testmint = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWa
 # Live end-to-end tests gated behind the `integration` build tag (the default `test`
 # and the pre-commit hook skip them). main_integration_test.go builds the real main.go_
 # binary and runs it in both TLS modes. TestMain auto-loads .env.test, same as `test`.
-test-integration = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=integration ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-integration-testmint`
 # The integration suite compiled in the dev/test image shape. TestID1MintsRequireBuildTags
 # builds every real binary shape itself, so this variant exists to compile the tagged
 # unit files alongside it, not to change what that test asserts.
-test-integration-testmint = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=integration,testmint ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-curatoriumdemo`
 # Curatorium's own deployment shape: compiles demo_on.go (the demo-identity
@@ -49,7 +47,6 @@ test-curatoriumdemo = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^
 # `pixi run -m apps/id1/pixi.toml test-integration-curatoriumdemo`
 # The integration suite compiled with demo_on.go's unit tests alongside it, for
 # the same reason as test-integration-testmint above.
-test-integration-curatoriumdemo = "bash -c 'go test -p \"$(scripts/cpu_share.sh)\" -skip \"^TestWalker\" -tags=integration,curatoriumdemo ./... \"$@\"' _"
 
 # `pixi run -m apps/id1/pixi.toml test-race`
 # The untagged `test` task (and the pre-commit gate that runs it) carries no
@@ -83,6 +80,9 @@ lint-testmint = "bash -c 'go vet -p \"$(scripts/cpu_share.sh)\" -tags=testmint .
 # `go vet ./...` never looks at demo_on.go either. Both curatoriumdemo shapes
 # need vetting, same rationale as lint-testmint.
 lint-curatoriumdemo = "bash -c 'go vet -p \"$(scripts/cpu_share.sh)\" -tags=curatoriumdemo ./... \"$@\"' _"
+test-integration = """bash -c 'go test -p "$(scripts/cpu_share.sh)" -skip "^TestWalker" -tags=integration ./... -v "$@"' _"""
+test-integration-testmint = """bash -c 'go test -p "$(scripts/cpu_share.sh)" -skip "^TestWalker" -tags=integration,testmint ./... -v "$@"' _"""
+test-integration-curatoriumdemo = """bash -c 'go test -p "$(scripts/cpu_share.sh)" -skip "^TestWalker" -tags=integration,curatoriumdemo ./... -v "$@"' _"""
 
 # --- BEGIN GENERATED pycache redirect: edit scripts/pycache_prefix.sh, never these lines ---
 # CPython writes __pycache__ directories and .pyc files beside the source it imports, and
