@@ -93,8 +93,8 @@ func isKnownAMR(v string) bool {
 const reservedTestOrcidPrefix = "0000-0000-"
 
 // testMintFixedIdentities are the identities outside the reserved test range that the
-// deployment seeds itself and that tests sign in as: the system accounts and the demo
-// user.
+// deployment seeds itself and that tests sign in as: the system accounts
+// 0000-0000-0000-0001 to 0000-0000-0000-0009 inclusive and the demo user.
 var testMintFixedIdentities = map[string]bool{
 	"0000-0000-0000-0001": true,
 	"0000-0000-0000-0002": true,
@@ -103,6 +103,8 @@ var testMintFixedIdentities = map[string]bool{
 	"0000-0000-0000-0005": true,
 	"0000-0000-0000-0006": true,
 	"0000-0000-0000-0007": true,
+	"0000-0000-0000-0008": true,
+	"0000-0000-0000-0009": true,
 	"0009-0009-9355-3782": true,
 }
 

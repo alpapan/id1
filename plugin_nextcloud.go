@@ -34,6 +34,17 @@ import (
 // where X is a digit (last character may also be 'X' checksum).
 var orcidPattern = regexp.MustCompile(`^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$`)
 
+// internalNextcloudOrcids are the internal accounts (admin, shared-folder and
+// provisioner) whose Nextcloud credentials never come from the derived-password
+// endpoints. /internal/nc-provision and /internal/nc-token refuse them even to
+// a caller holding the internal secret, because the derived password would
+// otherwise let that caller create or log in as an account it does not own.
+var internalNextcloudOrcids = map[string]bool{
+	"0000-0000-0000-0001": true,
+	"0000-0000-0000-0002": true,
+	"0000-0000-0000-0009": true,
+}
+
 // ocsProvisioningHints maps known OCS Provisioning API statuscodes to
 // human-readable hints. Used to annotate error messages so operators can
 // diagnose failures without looking up the code in Nextcloud docs.
@@ -931,6 +942,14 @@ func ncMintUserAgentFor(rawQuery string) (string, error) {
 	}
 }
 
+// writeNcOrcidNotServed answers /internal/nc-token for an internal account with
+// 403 and {"error":"orcid_not_served"}, the JSON shape of its other refusals.
+func writeNcOrcidNotServed(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	fmt.Fprint(w, `{"error":"orcid_not_served"}`)
+}
+
 // writeNcBadRequest answers 400 with {"error":"<code>"}, the JSON shape this
 // handler's 409 answers already use.
 func writeNcBadRequest(w http.ResponseWriter, code string) {
@@ -1034,6 +1053,10 @@ func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret str
 		}
 		if !orcidPattern.MatchString(orcid) {
 			http.Error(w, "malformed orcid", http.StatusBadRequest)
+			return
+		}
+		if internalNextcloudOrcids[orcid] {
+			writeNcOrcidNotServed(w)
 			return
 		}
 
@@ -1143,6 +1166,10 @@ func HandleNcProvision(nc *NextcloudClient, derivationKey []byte, internalSecret
 		}
 		if !orcidPattern.MatchString(orcid) {
 			http.Error(w, "malformed orcid", http.StatusBadRequest)
+			return
+		}
+		if internalNextcloudOrcids[orcid] {
+			http.Error(w, "orcid not served", http.StatusForbidden)
 			return
 		}
 

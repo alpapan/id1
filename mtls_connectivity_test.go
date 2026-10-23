@@ -173,7 +173,7 @@ func TestMTLSConnectivity_NextcloudEnsureUserExists(t *testing.T) {
 
 	c := &NextcloudClient{
 		URL:      server.URL,
-		Username: "admin",
+		Username: ncProvisionerTestUser,
 		Password: "admin-secret",
 	}
 

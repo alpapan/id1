@@ -78,7 +78,7 @@ func (f *purposeNextcloud) snapshot() (lookups int, userAgents []string) {
 // (so no password block carries over between calls) and returns the recorder.
 func callNcToken(t *testing.T, fake *purposeNextcloud, currentKey []byte, rawQuery string, previousKeys ...[]byte) *httptest.ResponseRecorder {
 	t.Helper()
-	handler := HandleNcToken(&NextcloudClient{URL: fake.URL, Username: "admin", Password: "secret"}, currentKey, "internal-secret", 2*time.Second, previousKeys...)
+	handler := HandleNcToken(&NextcloudClient{URL: fake.URL, Username: ncProvisionerTestUser, Password: "secret"}, currentKey, "internal-secret", 2*time.Second, previousKeys...)
 	req := httptest.NewRequest("GET", "/internal/nc-token?"+rawQuery, nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
 	rr := httptest.NewRecorder()
