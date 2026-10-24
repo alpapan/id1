@@ -46,7 +46,7 @@ func TestNextcloudClient_EnsureUserExists_RateLimitIsReportedAsRateLimit(t *test
 	srv := throttlingNextcloud(t)
 	logged := captureLog(t)
 
-	c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	require.ErrorIs(t, err, ErrNextcloudRateLimited,
@@ -58,7 +58,7 @@ func TestNextcloudClient_EnsureUserExists_RateLimitIsReportedAsRateLimit(t *test
 func TestHandleNcProvision_RateLimitedReturns503(t *testing.T) {
 	srv := throttlingNextcloud(t)
 
-	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
