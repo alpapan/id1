@@ -84,13 +84,13 @@ func TestDeriveNextcloudPassword_EmptyOrcid(t *testing.T) {
 
 func TestNewNextcloudClient_ReadsEnv(t *testing.T) {
 	t.Setenv("NEXTCLOUD_URL", "http://test.example")
-	t.Setenv("NC_PROVISIONER_USER", "admin")
+	t.Setenv("NC_PROVISIONER_USER", ncProvisionerTestUser)
 	t.Setenv("NC_PROVISIONER_PASSWORD", "secret")
 
 	c := NewNextcloudClient()
 
 	assert.Equal(t, "http://test.example", c.URL)
-	assert.Equal(t, "admin", c.Username)
+	assert.Equal(t, ncProvisionerTestUser, c.Username)
 	assert.Equal(t, "secret", c.Password)
 }
 
@@ -122,7 +122,7 @@ func TestNextcloudClient_EnsureUserExists_Created(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestNextcloudClient_EnsureUserExists_Created200(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	assert.NoError(t, err, "OCS v2 statuscode 200 must be treated as success")
@@ -153,7 +153,7 @@ func TestNextcloudClient_EnsureUserExists_AlreadyExists(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	assert.NoError(t, err, "102 (already exists) must be treated as success")
@@ -166,7 +166,7 @@ func TestNextcloudClient_EnsureUserExists_OCSError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	require.Error(t, err)
@@ -196,7 +196,7 @@ func TestNextcloudClient_EnsureUserExists_KnownErrorCodesAreExplained(t *testing
 			}))
 			defer server.Close()
 
-			c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+			c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 			err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 			require.Error(t, err)
@@ -218,7 +218,7 @@ func TestNextcloudClient_EnsureUserExists_101HintNamesTheConcurrentCreate(t *tes
 	}))
 	defer server.Close()
 
-	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	require.Error(t, err)
@@ -235,7 +235,7 @@ func TestNextcloudClient_EnsureUserExists_NamesTheMissingBootstrapGroup(t *testi
 	}))
 	defer server.Close()
 
-	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	require.Error(t, err)
@@ -250,7 +250,7 @@ func TestNextcloudClient_EnsureUserExists_UnknownCodeFallsBackToGenericHint(t *t
 	}))
 	defer server.Close()
 
-	c := &NextcloudClient{URL: server.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: server.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
 
 	require.Error(t, err)
@@ -314,7 +314,7 @@ func TestHandleNcToken_HappyPath(t *testing.T) {
 	ncURL, userCalls, mintCalls, cleanup := countingNextcloud(t, "MINTED-TOKEN")
 	defer cleanup()
 
-	handler := HandleNcToken(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -378,7 +378,7 @@ func TestHandleNcToken_NextcloudDown(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -444,7 +444,7 @@ func TestHandleNcToken_EmptyConfiguredSecretRejectsEmptyHeader(t *testing.T) {
 	ncURL, userCalls, mintCalls, cleanup := countingNextcloud(t, "SHOULD-NOT-BE-MINTED")
 	defer cleanup()
 
-	handler := HandleNcToken(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "", 2*time.Second)
 
 	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 	// no X-ID1-Internal-Secret header, and no configured secret either
@@ -489,7 +489,7 @@ func TestHandleNcToken_MissingAccountIsNeverLoggedInAs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("current-key"), "internal-secret", 2*time.Second, []byte("previous-key"))
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("current-key"), "internal-secret", 2*time.Second, []byte("previous-key"))
 
 	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -708,7 +708,7 @@ func TestHandleNcToken_ThrottledExistenceReadReturns503WithoutALogin(t *testing.
 	}))
 	defer srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -739,7 +739,7 @@ func TestHandleNcToken_ProvisionerWithoutRightsIsNotAMissingAccount(t *testing.T
 	}))
 	defer srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -761,7 +761,7 @@ func TestHandleNcToken_PasswordRejectionBlocksFurtherLoginsForThatUser(t *testin
 	}))
 	defer srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
@@ -791,7 +791,7 @@ func TestHandleNcToken_PasswordBlockIsPerUser(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 	call := func(orcid string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/internal/nc-token?orcid="+orcid, nil)
 		req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -843,7 +843,7 @@ func TestHandleNcToken_PasswordBlockLiftsAfterTheCooldown(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcToken(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 	call := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0009-0002-8023-3658", nil)
 		req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -922,7 +922,7 @@ func TestNextcloudClient_UserExists_ExistingAccount(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+			c := &NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}
 			exists, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
 
 			require.NoError(t, err)
@@ -939,7 +939,7 @@ func TestNextcloudClient_UserExists_MissingAccount(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	exists, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
 
 	require.NoError(t, err)
@@ -954,7 +954,7 @@ func TestNextcloudClient_UserExists_ProvisionerWithoutRightsIsAnError(t *testing
 	}))
 	defer srv.Close()
 
-	c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	exists, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
 
 	require.Error(t, err, "OCS 998 means the provisioning account cannot see the user, not that the user is missing")
@@ -967,7 +967,7 @@ func TestNextcloudClient_UserExists_RateLimitIsReportedAsRateLimit(t *testing.T)
 	srv := throttlingNextcloud(t)
 	logged := captureLog(t)
 
-	c := &NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}
+	c := &NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}
 	_, err := c.UserExists(context.Background(), "0009-0002-8023-3658")
 
 	require.ErrorIs(t, err, ErrNextcloudRateLimited)
@@ -1076,7 +1076,7 @@ func TestHandleNcProvision_ClientDisconnectIsNotReportedAsAnOutage(t *testing.T)
 	}))
 	defer srv.Close()
 
-	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 5*time.Second)
+	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 5*time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil).WithContext(ctx)
@@ -1230,7 +1230,7 @@ var ncLogInjectionCases = []ncLogInjectionCase{
 		name:    "HandleNcProvision",
 		ocsCode: 101,
 		newHandler: func(ncURL string) http.HandlerFunc {
-			return HandleNcProvision(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+			return HandleNcProvision(&NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 		},
 		newRequest: func() *http.Request {
 			req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
@@ -1567,7 +1567,7 @@ func TestHandleNcProvision_CreatesAccountOnly(t *testing.T) {
 	ncURL, userCalls, mintCalls, cleanup := countingNextcloud(t, "UNUSED")
 	defer cleanup()
 
-	handler := HandleNcProvision(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcProvision(&NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -1600,7 +1600,7 @@ func TestHandleNcProvision_IsIdempotent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
@@ -1729,7 +1729,7 @@ func TestHandleNcProvision_ConcurrencyIsScopedToOrcid(t *testing.T) {
 			ncURL, peak, cleanup := concurrencyTrackingNextcloud(t, len(tc.orcids))
 			defer cleanup()
 
-			nc := &NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}
+			nc := &NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}
 			handler := HandleNcProvision(nc, []byte("test-key"), "internal-secret", 2*time.Second)
 
 			provisionConcurrently(t, handler, tc.orcids)
@@ -1816,7 +1816,7 @@ func TestHandleNcProvision_RejectsEmptyConfiguredSecret(t *testing.T) {
 	ncURL, userCalls, _, cleanup := countingNextcloud(t, "UNUSED")
 	defer cleanup()
 
-	handler := HandleNcProvision(&NextcloudClient{URL: ncURL, Username: "admin", Password: "secret"}, []byte("test-key"), "", 2*time.Second)
+	handler := HandleNcProvision(&NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "", 2*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
 	rr := httptest.NewRecorder()
@@ -1841,7 +1841,7 @@ func TestHandleNcProvision_NextcloudDownReturns502(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close()
 
-	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
+	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
 	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
@@ -1859,7 +1859,7 @@ func TestHandleNcProvision_BoundsItselfWithItsOwnTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: "admin", Password: "secret"}, []byte("test-key"), "internal-secret", 100*time.Millisecond)
+	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 100*time.Millisecond)
 
 	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
