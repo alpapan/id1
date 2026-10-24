@@ -28,11 +28,11 @@ import (
 
 const (
 	readCredTestOrcid    = "0009-0002-8023-3658"
-	readCredTestAdmin    = "admin"
+	readCredTestAdmin    = ncProvisionerTestUser
 	readCredTestPassword = "login-password-aaa"
 	readCredTestToken    = "read-token-bbb"
 
-	readCredOKBody  = `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"admin"}}}`
+	readCredOKBody  = `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"0000-0000-0000-0009"}}}`
 	readCredDenied  = `{"ocs":{"meta":{"statuscode":997,"status":"failure","message":"Current user is not logged in"},"data":[]}}`
 	readCredNoRight = `{"ocs":{"meta":{"statuscode":998,"status":"failure","message":""},"data":[]}}`
 )
