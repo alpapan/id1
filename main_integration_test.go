@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -334,6 +335,89 @@ func TestID1NcReadCredentialAtBoot(t *testing.T) {
 		assertStatus(t, client, base+"/health", http.StatusOK)
 		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusUnauthorized)
 	})
+}
+
+// TestID1NcProvisionerPasswordAtBoot pins what the built binary does with a wrong
+// NC_PROVISIONER_PASSWORD: it keeps serving, presents the password to Nextcloud once at
+// startup, and then answers every /internal/nc-provision request 500
+// nextcloud_provisioner_password_refused without contacting Nextcloud. The startup check
+// lives in main.go_, which `go test ./...` cannot compile, so this tier is the only one
+// that can assert it.
+func TestID1NcProvisionerPasswordAtBoot(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	const derivationKeyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	const readToken = "integration-read-token"
+	const wrongPassword = "integration-wrong-login-password"
+
+	var mu sync.Mutex
+	loginPasswordRequests := 0
+	nextcloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, password, _ := r.BasicAuth()
+		w.Header().Set("Content-Type", "application/json")
+		if password == readToken {
+			_, _ = w.Write([]byte(`{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"0000-0000-0000-0009"}}}`))
+			return
+		}
+		mu.Lock()
+		loginPasswordRequests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"ocs":{"meta":{"statuscode":997,"status":"failure","message":"Current user is not logged in"},"data":[]}}`))
+	}))
+	defer nextcloud.Close()
+	countLoginPasswordRequests := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return loginPasswordRequests
+	}
+
+	port := freePort(t)
+	startID1(t, bin, map[string]string{
+		"PORT":                             port,
+		"DBPATH":                           t.TempDir(),
+		"MTLS_ENABLED":                     "false",
+		"ENV":                              "test",
+		"NC_DERIVATION_KEY":                derivationKeyHex,
+		"ID1_INTERNAL_SECRET":              "integration-secret",
+		"NEXTCLOUD_URL":                    nextcloud.URL,
+		"NC_PROVISIONER_USER":              ncProvisionerTestUser,
+		"NC_PROVISIONER_PASSWORD":          wrongPassword,
+		"NC_PROVISIONER_READ_APP_PASSWORD": readToken,
+	})
+	client := &http.Client{Timeout: 5 * time.Second}
+	base := "http://127.0.0.1:" + port
+	assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
+	assertStatus(t, client, base+"/health", http.StatusOK)
+
+	if got := countLoginPasswordRequests(); got != 1 {
+		t.Fatalf("the startup check must present the login password once before serving; got %d requests", got)
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		req, err := http.NewRequest(http.MethodPost, base+"/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
+		if err != nil {
+			t.Fatalf("attempt %d: build request: %v", attempt, err)
+		}
+		req.Header.Set("X-ID1-Internal-Secret", "integration-secret")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		var body bytes.Buffer
+		_, _ = body.ReadFrom(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("attempt %d: got %d, want 500; body %q", attempt, resp.StatusCode, body.String())
+		}
+		if !strings.Contains(body.String(), `"nextcloud_provisioner_password_refused"`) {
+			t.Fatalf("attempt %d: body %q lacks the error code", attempt, body.String())
+		}
+		if strings.Contains(body.String(), wrongPassword) {
+			t.Fatalf("attempt %d: the answer must not echo the password; got %q", attempt, body.String())
+		}
+	}
+	if got := countLoginPasswordRequests(); got != 1 {
+		t.Fatalf("no account-creation request may reach Nextcloud after the refusal; got %d login-password requests", got)
+	}
 }
 
 // assertNcStatus issues a request with an explicit method and optional

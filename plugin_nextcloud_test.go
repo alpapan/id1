@@ -1730,6 +1730,9 @@ func TestHandleNcProvision_ConcurrencyIsScopedToOrcid(t *testing.T) {
 			defer cleanup()
 
 			nc := &NextcloudClient{URL: ncURL, Username: ncProvisionerTestUser, Password: "secret"}
+			// The steady state: Nextcloud has accepted the login password once.
+			// Before that, attempts for different ORCIDs run one at a time.
+			nc.provisionerPasswordAccepted.Store(true)
 			handler := HandleNcProvision(nc, []byte("test-key"), "internal-secret", 2*time.Second)
 
 			provisionConcurrently(t, handler, tc.orcids)
