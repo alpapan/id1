@@ -668,6 +668,48 @@ func TestNextcloudClient_UserExists_AnAcceptedTokenAtHoldExpiryEndsTheRefusal(t 
 	assert.EqualValues(t, 0, c.readCredentialRefusedAt.Load(), "an accepted token ends the refusal")
 }
 
+var readCredInconclusiveAnswers = []struct {
+	name   string
+	status int
+	body   string
+}{
+	{"http_429", http.StatusTooManyRequests, `slow down`},
+	{"http_500_not_json", http.StatusInternalServerError, `oops`},
+	{"ocs_998_no_rights", http.StatusNotFound, readCredNoRight},
+}
+
+func TestNextcloudClient_UserExists_AnInconclusiveAnswerAtHoldExpiryLeavesTheRefusalForTheNextCaller(t *testing.T) {
+	require.Len(t, readCredInconclusiveAnswers, 3, "a deleted case must fail this guard rather than pass quietly")
+	for _, tc := range readCredInconclusiveAnswers {
+		t.Run(tc.name, func(t *testing.T) {
+			moveClock := setNcNow(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			server := newSlowReadCredServer(t, http.StatusUnauthorized, readCredDenied)
+			c := readCredClient(server.server.URL)
+			_, err := c.UserExists(context.Background(), readCredTestOrcid)
+			require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+			refusedAt := c.readCredentialRefusedAt.Load()
+			require.NotZero(t, refusedAt)
+
+			server.answer(tc.status, tc.body)
+			moveClock(time.Date(2026, 1, 1, 0, 31, 0, 0, time.UTC))
+			_, err = c.UserExists(context.Background(), readCredTestOrcid)
+			require.Error(t, err)
+			assert.False(t, errors.Is(err, ErrNcReadCredentialRefused), "an inconclusive answer is not a refusal: %v", err)
+			assert.Equal(t, refusedAt, c.readCredentialRefusedAt.Load(), "an inconclusive answer neither ends nor renews the refusal")
+			require.EqualValues(t, 2, server.requests.Load())
+
+			// Nextcloud now refuses; callers that arrive together present the token once.
+			server.answer(http.StatusUnauthorized, readCredDenied)
+			_, errs := userExistsTogether(c, 8)
+
+			for i, err := range errs {
+				assert.ErrorIs(t, err, ErrNcReadCredentialRefused, "request %d", i)
+			}
+			assert.EqualValues(t, 3, server.requests.Load(), "the next caller presents the token once; the rest act on its refusal")
+		})
+	}
+}
+
 func TestVerifyNcReadCredentialAtBoot_EmptyProvisioningUserIsFatalAndSendsNothing(t *testing.T) {
 	fake := newReadCredFake(t, http.StatusOK, readCredOKBody)
 	c := &NextcloudClient{URL: fake.server.URL, Password: readCredTestPassword, ReadPassword: readCredTestToken}
