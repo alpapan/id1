@@ -208,6 +208,10 @@ func main() {
 		// window, and id1 otherwise uses this one only when a new user signs in. A refusal after
 		// boot is logged, never fatal.
 		go id1.RecheckNcReadCredentialEvery(ctx, ncClient, id1.NcReadCredentialRecheckInterval, log.Printf)
+		// The login password authenticates only account creation, so a wrong or empty one never
+		// stops the process: VerifyNcProvisionerPasswordAtBoot checks it once and, on a refusal,
+		// /internal/nc-provision answers 500 without contacting Nextcloud until id1 restarts.
+		fmt.Println(id1.VerifyNcProvisionerPasswordAtBoot(ncClient))
 		http.HandleFunc("/internal/nc-token", id1.HandleNcToken(ncClient, derivationKey, internalSecret, id1.NcTokenTimeout, previousKeys...))
 		http.HandleFunc("/internal/nc-provision", id1.HandleNcProvision(ncClient, derivationKey, internalSecret, id1.NcProvisionTimeout))
 		fmt.Println("Registered /internal/nc-token and /internal/nc-provision endpoints")

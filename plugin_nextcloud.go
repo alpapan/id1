@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -317,7 +318,9 @@ const ncRejectionStreakMaxTracked = 10000
 // for a misconfiguration alert, the per-ORCID provisioning locks used to
 // serialise concurrent provisioning attempts, and the per-ORCID password
 // blocks that stop logins for an account refusing every derivation key - are
-// each guarded by their own mutex.
+// each guarded by their own mutex. Further fields remember that Nextcloud
+// refused, or accepted, one of the provisioning account's own credentials, so
+// a refused credential is not presented again.
 type NextcloudClient struct {
 	URL      string
 	Username string
@@ -364,6 +367,32 @@ type NextcloudClient struct {
 	// an alert and is never read for control flow.
 	passwordBlocksMu sync.Mutex
 	passwordBlocks   map[string]time.Time
+
+	// provisionerPasswordRefused is set once Nextcloud refuses Password.
+	// EnsureUserExists and CheckProvisionerPassword then send nothing, because
+	// every further request would be one more failed login against id1's own
+	// address. Only a restart clears it: the remedy that repairs Password also
+	// restarts id1.
+	provisionerPasswordRefused atomic.Bool
+
+	// provisionerPasswordMu serialises EnsureUserExists until Nextcloud has
+	// accepted Password once (provisionerPasswordAccepted), so first requests
+	// that arrive together present a refused Password once, not once each.
+	provisionerPasswordMu       sync.Mutex
+	provisionerPasswordAccepted atomic.Bool
+
+	// readCredentialRefusedAt is the instant, in Unix nanoseconds read from
+	// ncNow, at which Nextcloud last refused the credential UserExists or
+	// CheckProvisionerReadCredential presents; zero means no refusal is held.
+	// For ncReadCredentialRefusalHold after it, UserExists sends nothing and
+	// returns ErrNcReadCredentialRefused. CheckProvisionerReadCredential sets
+	// it to zero when Nextcloud accepts the credential.
+	readCredentialRefusedAt atomic.Int64
+
+	// readCredentialProbeMu serialises the UserExists calls that find a refusal
+	// whose hold has ended, so the first of them presents the credential and the
+	// rest act on its outcome instead of presenting it again.
+	readCredentialProbeMu sync.Mutex
 }
 
 // ncProvisionLock is one ORCID's provisioning mutex plus the count of
@@ -432,7 +461,26 @@ func NewNextcloudClient() *NextcloudClient {
 // A new account is created directly in NcBootstrapGroup. Nextcloud answers 102
 // for an existing account before it reads the groups, so an existing account is
 // not changed.
+//
+// HTTP 401 and OCS 997 mean Nextcloud refused Password, the provisioning
+// account's login password. The refusal is logged once and remembered, and
+// from then on, as with an empty Password, EnsureUserExists sends nothing and
+// returns ErrNcProvisionerPasswordRefused: every further request would be one
+// more failed login against id1's own address, which every user shares.
 func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password string) error {
+	if c.Password == "" || c.provisionerPasswordRefused.Load() {
+		return ErrNcProvisionerPasswordRefused
+	}
+	if !c.provisionerPasswordAccepted.Load() {
+		// Until Nextcloud has accepted Password once, attempts run one at a
+		// time, so a refusal is presented once even when several first
+		// requests arrive together.
+		c.provisionerPasswordMu.Lock()
+		defer c.provisionerPasswordMu.Unlock()
+		if c.provisionerPasswordRefused.Load() {
+			return ErrNcProvisionerPasswordRefused
+		}
+	}
 	endpoint := c.URL + "/ocs/v2.php/cloud/users?format=json"
 	formData := url.Values{
 		"userid":   {orcid},
@@ -464,6 +512,9 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 		log.Printf("nc-provision: nextcloud rate-limited for %s (HTTP 429) - %s", orcid, ncThrottleRecovery)
 		return ErrNextcloudRateLimited
 	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return c.refuseProvisionerPassword("HTTP 401")
+	}
 
 	var ocsResult OCSResponse
 	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
@@ -471,12 +522,27 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 	}
 	switch ocsResult.OCS.Meta.Statuscode {
 	case 100, 102, 200:
+		c.provisionerPasswordAccepted.Store(true)
 		return nil
+	case 997:
+		return c.refuseProvisionerPassword("OCS 997")
 	case 104:
 		return fmt.Errorf("%w; the group %q must exist before id1 creates an account, and the Nextcloud start-up hook creates it on every boot", formatOCSError("/cloud/users", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsProvisioningHints), NcBootstrapGroup)
 	default:
 		return formatOCSError("/cloud/users", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsProvisioningHints)
 	}
+}
+
+// refuseProvisionerPassword remembers that Nextcloud refused Password, logs it
+// once with the operator remedy, and returns ErrNcProvisionerPasswordRefused.
+// shape names the answer Nextcloud gave; the log line never contains either
+// credential.
+func (c *NextcloudClient) refuseProvisionerPassword(shape string) error {
+	if c.provisionerPasswordRefused.CompareAndSwap(false, true) {
+		log.Printf("ERROR: Nextcloud refused the provisioning account's login password (NC_PROVISIONER_PASSWORD, %s); "+
+			"/internal/nc-provision answers 500 without contacting Nextcloud until id1 restarts. %s", shape, ncProvisionerPasswordRemedy)
+	}
+	return ErrNcProvisionerPasswordRefused
 }
 
 // MintAppToken calls Nextcloud's getapppassword endpoint as the given user
@@ -625,7 +691,39 @@ func (c *NextcloudClient) clearRejectionStreak(orcid string) {
 //
 // The provisioning account's login succeeds, so the read adds nothing to
 // Nextcloud's failed-login count, unlike a login as a user who does not exist.
+//
+// A refusal is held: for ncReadCredentialRefusalHold, or until
+// CheckProvisionerReadCredential next sees the credential accepted, UserExists
+// sends nothing and returns ErrNcReadCredentialRefused, so a refused
+// credential costs one failed login per hold, not one per /internal/nc-token
+// request.
+//
+// When the hold ends, calls that arrive together are serialised: the first
+// presents the credential, and each later call acts on what that left behind -
+// a new hold (refused, nothing sent), an ended refusal (accepted, proceed), or
+// neither (inconclusive, it presents next). A refused credential is therefore
+// presented once per expiry, not once per simultaneous call.
 func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, error) {
+	if c.readCredentialRefusalHeld() {
+		return false, ErrNcReadCredentialRefused
+	}
+	// refusedAt is the refusal this call is probing; zero when none is pending.
+	refusedAt := c.readCredentialRefusedAt.Load()
+	if refusedAt != 0 {
+		c.readCredentialProbeMu.Lock()
+		switch {
+		case c.readCredentialRefusalHeld():
+			c.readCredentialProbeMu.Unlock()
+			return false, ErrNcReadCredentialRefused
+		case c.readCredentialRefusedAt.Load() == 0:
+			// A call ahead of this one saw the credential accepted.
+			c.readCredentialProbeMu.Unlock()
+			refusedAt = 0
+		default:
+			refusedAt = c.readCredentialRefusedAt.Load()
+			defer c.readCredentialProbeMu.Unlock()
+		}
+	}
 	endpoint := c.URL + "/ocs/v2.php/cloud/users/" + url.PathEscape(orcid) + "?format=json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -651,6 +749,7 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 		return false, ErrNextcloudRateLimited
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		c.noteReadCredentialRefused()
 		return false, ErrNcReadCredentialRefused
 	}
 
@@ -660,10 +759,14 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 	}
 	switch ocsResult.OCS.Meta.Statuscode {
 	case 100, 200:
+		c.readCredentialRefusedAt.CompareAndSwap(refusedAt, 0)
 		return true, nil
 	case 404:
+		// Nextcloud accepted the credential and has no such account.
+		c.readCredentialRefusedAt.CompareAndSwap(refusedAt, 0)
 		return false, nil
 	case 997:
+		c.noteReadCredentialRefused()
 		return false, ErrNcReadCredentialRefused
 	default:
 		return false, formatOCSError("/cloud/users/{userid}", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsUserLookupHints)
@@ -675,6 +778,39 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 // another account. Restoring it is an operator action (see
 // VerifyNcReadCredentialAtBoot for the commands); nothing in id1 can repair it.
 var ErrNcReadCredentialRefused = errors.New("nextcloud refused the provisioning account's read app password")
+
+// ErrNcProvisionerPasswordRefused reports that Nextcloud refused the
+// provisioning account's login password (NC_PROVISIONER_PASSWORD), or that the
+// password is empty. EnsureUserExists returns it, and HandleNcProvision answers
+// it 500 {"error":"nextcloud_provisioner_password_refused"}. Restoring the
+// password is an operator action (ncProvisionerPasswordRemedy); nothing in id1
+// can repair it.
+var ErrNcProvisionerPasswordRefused = errors.New("nextcloud refused the provisioning account's login password")
+
+// ncProvisionerPasswordRemedy is the operator action that restores a refused or
+// empty login password of the provisioning account.
+const ncProvisionerPasswordRemedy = "Set NC_PROVISIONER_PASSWORD in curatorium-secrets with `curatorium k3s secrets sync`, " +
+	"make the provisioning account's Nextcloud password match it with `curatorium k3s secrets reconcile-nextcloud-passwords`, " +
+	"then restart id1 with `curatorium k3s restart id1 --force-rollout`: id1 sends no account-creation request after a refusal until it restarts."
+
+// ncReadCredentialRefusalHold is how long UserExists presents nothing after a
+// refusal of the READ app password. One refusal per hold is far below
+// Nextcloud's brute-force limit (more than 10 failed logins from one address
+// in 30 minutes), and a refusal that was transient costs at most one hold.
+const ncReadCredentialRefusalHold = 30 * time.Minute
+
+// noteReadCredentialRefused records that Nextcloud refused the credential
+// UserExists presents, starting a hold of ncReadCredentialRefusalHold.
+func (c *NextcloudClient) noteReadCredentialRefused() {
+	c.readCredentialRefusedAt.Store(ncNow().UnixNano())
+}
+
+// readCredentialRefusalHeld reports whether a refusal of the READ app password
+// is inside its hold.
+func (c *NextcloudClient) readCredentialRefusalHeld() bool {
+	at := c.readCredentialRefusedAt.Load()
+	return at != 0 && ncNow().Before(time.Unix(0, at).Add(ncReadCredentialRefusalHold))
+}
 
 // errNcReadPasswordUnset is returned by CheckProvisionerReadCredential for a
 // client with no ReadPassword. It is not a refusal: nothing was sent.
@@ -714,6 +850,10 @@ func (c *NextcloudClient) readAuthPassword() string {
 // (ErrNcReadCredentialRefused); HTTP 429 is ErrNextcloudRateLimited; any other
 // answer or transport failure is an ordinary error. It never presents Password
 // in place of the token, and an empty ReadPassword sends nothing.
+//
+// It always sends its request, even after a refusal: a refusal starts the hold
+// that stops UserExists sending, and an acceptance ends it, so the periodic
+// recheck also lets UserExists present the token again.
 func (c *NextcloudClient) CheckProvisionerReadCredential(ctx context.Context) error {
 	if c.ReadPassword == "" {
 		return errNcReadPasswordUnset
@@ -738,6 +878,7 @@ func (c *NextcloudClient) CheckProvisionerReadCredential(ctx context.Context) er
 
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
+		c.noteReadCredentialRefused()
 		return ErrNcReadCredentialRefused
 	case http.StatusTooManyRequests:
 		return ErrNextcloudRateLimited
@@ -748,8 +889,10 @@ func (c *NextcloudClient) CheckProvisionerReadCredential(ctx context.Context) er
 	}
 	switch ocsResult.OCS.Meta.Statuscode {
 	case 100, 200:
+		c.readCredentialRefusedAt.Store(0)
 		return nil
 	case 997:
+		c.noteReadCredentialRefused()
 		return ErrNcReadCredentialRefused
 	default:
 		return formatOCSError("/cloud/users/{userid}", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsUserLookupHints)
@@ -759,7 +902,9 @@ func (c *NextcloudClient) CheckProvisionerReadCredential(ctx context.Context) er
 // VerifyNcReadCredentialAtBoot decides what main.go_ does about the
 // provisioning account's READ app password at startup, and says so in a message
 // that never contains either credential. fatal is true when the process must
-// stop: the token is empty, or Nextcloud refused it. Every other outcome - an
+// stop: the token is empty, NC_PROVISIONER_USER is empty (no request is sent
+// for an empty account name), or Nextcloud refused the token. Every other
+// outcome - an
 // accepted token, Nextcloud not answering yet (the normal order on a first
 // start, because id1 comes up before Nextcloud), throttling, an unexpected
 // answer - is reported and startup continues.
@@ -769,6 +914,10 @@ func (c *NextcloudClient) CheckProvisionerReadCredential(ctx context.Context) er
 func VerifyNcReadCredentialAtBoot(c *NextcloudClient) (fatal bool, message string) {
 	if c.ReadPassword == "" {
 		return true, "NC_PROVISIONER_READ_APP_PASSWORD is empty; id1 will not start the Nextcloud endpoints without the provisioning account's read app password. " + ncReadCredentialRemedy
+	}
+	if c.Username == "" {
+		return true, "NC_PROVISIONER_USER is empty; id1 will not start the Nextcloud endpoints without the provisioning account's name. " +
+			"Set it and apply it with `curatorium k3s secrets sync`, then restart id1 with `curatorium k3s restart id1 --force-rollout`."
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ncReadCredentialBootTimeout)
 	defer cancel()
@@ -780,6 +929,89 @@ func VerifyNcReadCredentialAtBoot(c *NextcloudClient) (fatal bool, message strin
 		return true, "Nextcloud refused the provisioning account's read app password (NC_PROVISIONER_READ_APP_PASSWORD). " + ncReadCredentialRemedy
 	default:
 		return false, fmt.Sprintf("Nextcloud read credential unverified: %v", err)
+	}
+}
+
+// CheckProvisionerPassword asks Nextcloud once whether it accepts Password, the
+// provisioning account's login password, by reading that account's own record
+// with it. HTTP 401, HTTP 403 and OCS 997 mean the password was refused: the
+// refusal is remembered, as EnsureUserExists remembers one, and
+// ErrNcProvisionerPasswordRefused is returned. HTTP 429 is
+// ErrNextcloudRateLimited; any other answer or transport failure is an
+// ordinary error and nothing is remembered. An empty Password, or one already
+// refused, sends nothing and returns ErrNcProvisionerPasswordRefused.
+func (c *NextcloudClient) CheckProvisionerPassword(ctx context.Context) error {
+	if c.Password == "" || c.provisionerPasswordRefused.Load() {
+		return ErrNcProvisionerPasswordRefused
+	}
+	endpoint := c.URL + "/ocs/v2.php/cloud/users/" + url.PathEscape(c.Username) + "?format=json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("OCS-APIREQUEST", "true")
+	req.SetBasicAuth(c.Username, c.Password)
+
+	client := &http.Client{Timeout: ncHTTPClientTimeout}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		c.provisionerPasswordRefused.Store(true)
+		return ErrNcProvisionerPasswordRefused
+	case http.StatusTooManyRequests:
+		return ErrNextcloudRateLimited
+	}
+	var ocsResult OCSResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ocsResult); err != nil {
+		return fmt.Errorf("decode OCS response: %w", err)
+	}
+	switch ocsResult.OCS.Meta.Statuscode {
+	case 100, 200:
+		c.provisionerPasswordAccepted.Store(true)
+		return nil
+	case 997:
+		c.provisionerPasswordRefused.Store(true)
+		return ErrNcProvisionerPasswordRefused
+	default:
+		return formatOCSError("/cloud/users/{userid}", ocsResult.OCS.Meta.Statuscode, ocsResult.OCS.Meta.Message, ocsUserLookupHints)
+	}
+}
+
+// VerifyNcProvisionerPasswordAtBoot checks the provisioning account's login
+// password once at startup and returns the line main.go_ prints, which never
+// contains either credential. It never stops the process: id1 keeps serving
+// sign-in and /internal/nc-token, and only account creation is refused. An
+// empty Password sends nothing. A refusal is remembered by
+// CheckProvisionerPassword, so /internal/nc-provision answers 500 without
+// contacting Nextcloud. Nextcloud not answering yet (the normal order on a
+// first start), throttling or an unexpected answer remembers nothing; the
+// first refused account creation is then logged and remembered by
+// EnsureUserExists.
+//
+// The decision lives here rather than in main.go_ because that file is never
+// compiled by `go test ./...` and cannot be asserted from there.
+func VerifyNcProvisionerPasswordAtBoot(c *NextcloudClient) string {
+	if c.Password == "" {
+		return "ERROR: NC_PROVISIONER_PASSWORD is empty; /internal/nc-provision answers 500 without contacting Nextcloud, so no new Nextcloud account is created. " + ncProvisionerPasswordRemedy
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ncReadCredentialBootTimeout)
+	defer cancel()
+	err := c.CheckProvisionerPassword(ctx)
+	switch {
+	case err == nil:
+		return "Nextcloud accepted the provisioning account's login password"
+	case errors.Is(err, ErrNcProvisionerPasswordRefused):
+		return "ERROR: Nextcloud refused the provisioning account's login password (NC_PROVISIONER_PASSWORD); /internal/nc-provision answers 500 without contacting Nextcloud, so no new Nextcloud account is created. " + ncProvisionerPasswordRemedy
+	default:
+		return fmt.Sprintf("Nextcloud login password unverified: %v", err)
 	}
 }
 
@@ -1145,6 +1377,13 @@ func HandleNcToken(nc *NextcloudClient, derivationKey []byte, internalSecret str
 // endpoint is idempotent and safe to fire on every new Curatorium user. It
 // mints no app password: repeated calls create no credentials.
 //
+// When Nextcloud has refused the provisioning account's login password, or the
+// password is empty, the handler answers 500
+// {"error":"nextcloud_provisioner_password_refused"} without contacting
+// Nextcloud (EnsureUserExists remembers the refusal). It is a lasting fault of
+// id1's configuration, so it is not one of the 502, 503 and 504 statuses a
+// caller retries.
+//
 // Account creation is slow, so this handler carries a far wider budget than
 // minting. id1 registers no server-side ReadTimeout or WriteTimeout, so the
 // handler bounds itself with timeout rather than relying on the caller's
@@ -1203,6 +1442,14 @@ func HandleNcProvision(nc *NextcloudClient, derivationKey []byte, internalSecret
 		defer nc.releaseProvisionLock(orcid, lock)
 
 		if err := nc.EnsureUserExists(ctx, orcid, pw); err != nil {
+			if errors.Is(err, ErrNcProvisionerPasswordRefused) {
+				// Already logged, with the remedy, by EnsureUserExists when
+				// Nextcloud refused it, or at startup by main.go_.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"error":"nextcloud_provisioner_password_refused"}`)
+				return
+			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				http.Error(w, "nextcloud timeout", http.StatusGatewayTimeout)
 				return
