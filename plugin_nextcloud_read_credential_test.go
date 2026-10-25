@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -580,6 +581,91 @@ func TestNextcloudClient_ARefusedReadTokenIsPresentedAgainAfterTheHold(t *testin
 	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
 	_, _, auths = fake.seen()
 	assert.Len(t, auths, 2, "once the hold has passed the token is presented once more")
+}
+
+// slowReadCredServer answers every request after a pause, with the status and
+// body held in answer, and counts the requests it receives. The pause keeps
+// concurrent callers in flight together.
+type slowReadCredServer struct {
+	server   *httptest.Server
+	requests atomic.Int32
+	status   atomic.Int32
+	body     atomic.Value
+}
+
+func newSlowReadCredServer(t *testing.T, status int, body string) *slowReadCredServer {
+	t.Helper()
+	s := &slowReadCredServer{}
+	s.status.Store(int32(status))
+	s.body.Store(body)
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.requests.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(int(s.status.Load()))
+		fmt.Fprint(w, s.body.Load().(string))
+	}))
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+func (s *slowReadCredServer) answer(status int, body string) {
+	s.status.Store(int32(status))
+	s.body.Store(body)
+}
+
+// userExistsTogether runs n UserExists calls at once and returns their results.
+func userExistsTogether(c *NextcloudClient, n int) (exists []bool, errs []error) {
+	exists = make([]bool, n)
+	errs = make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			exists[i], errs[i] = c.UserExists(context.Background(), readCredTestOrcid)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	return exists, errs
+}
+
+func TestNextcloudClient_UserExists_SimultaneousRequestsAtHoldExpiryPresentARefusedTokenOnce(t *testing.T) {
+	moveClock := setNcNow(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	server := newSlowReadCredServer(t, http.StatusUnauthorized, readCredDenied)
+	c := readCredClient(server.server.URL)
+	_, err := c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	require.EqualValues(t, 1, server.requests.Load())
+
+	moveClock(time.Date(2026, 1, 1, 0, 31, 0, 0, time.UTC))
+	_, errs := userExistsTogether(c, 8)
+
+	for i, err := range errs {
+		assert.ErrorIs(t, err, ErrNcReadCredentialRefused, "request %d", i)
+	}
+	assert.EqualValues(t, 2, server.requests.Load(), "the refused token is presented once at expiry, not once per simultaneous request")
+}
+
+func TestNextcloudClient_UserExists_AnAcceptedTokenAtHoldExpiryEndsTheRefusal(t *testing.T) {
+	moveClock := setNcNow(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	server := newSlowReadCredServer(t, http.StatusUnauthorized, readCredDenied)
+	c := readCredClient(server.server.URL)
+	_, err := c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+
+	server.answer(http.StatusOK, readCredOKBody)
+	moveClock(time.Date(2026, 1, 1, 0, 31, 0, 0, time.UTC))
+	exists, errs := userExistsTogether(c, 8)
+
+	for i := range errs {
+		assert.NoError(t, errs[i], "request %d", i)
+		assert.True(t, exists[i], "request %d", i)
+	}
+	assert.EqualValues(t, 0, c.readCredentialRefusedAt.Load(), "an accepted token ends the refusal")
 }
 
 func TestVerifyNcReadCredentialAtBoot_EmptyProvisioningUserIsFatalAndSendsNothing(t *testing.T) {

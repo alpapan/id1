@@ -388,6 +388,11 @@ type NextcloudClient struct {
 	// returns ErrNcReadCredentialRefused. CheckProvisionerReadCredential sets
 	// it to zero when Nextcloud accepts the credential.
 	readCredentialRefusedAt atomic.Int64
+
+	// readCredentialProbeMu serialises the UserExists calls that find a refusal
+	// whose hold has ended, so the first of them presents the credential and the
+	// rest act on its outcome instead of presenting it again.
+	readCredentialProbeMu sync.Mutex
 }
 
 // ncProvisionLock is one ORCID's provisioning mutex plus the count of
@@ -692,9 +697,32 @@ func (c *NextcloudClient) clearRejectionStreak(orcid string) {
 // sends nothing and returns ErrNcReadCredentialRefused, so a refused
 // credential costs one failed login per hold, not one per /internal/nc-token
 // request.
+//
+// When the hold ends, calls that arrive together are serialised: the first
+// presents the credential, and each later call acts on what that left behind -
+// a new hold (refused, nothing sent), an ended refusal (accepted, proceed), or
+// neither (inconclusive, it presents next). A refused credential is therefore
+// presented once per expiry, not once per simultaneous call.
 func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, error) {
 	if c.readCredentialRefusalHeld() {
 		return false, ErrNcReadCredentialRefused
+	}
+	// refusedAt is the refusal this call is probing; zero when none is pending.
+	refusedAt := c.readCredentialRefusedAt.Load()
+	if refusedAt != 0 {
+		c.readCredentialProbeMu.Lock()
+		switch {
+		case c.readCredentialRefusalHeld():
+			c.readCredentialProbeMu.Unlock()
+			return false, ErrNcReadCredentialRefused
+		case c.readCredentialRefusedAt.Load() == 0:
+			// A call ahead of this one saw the credential accepted.
+			c.readCredentialProbeMu.Unlock()
+			refusedAt = 0
+		default:
+			refusedAt = c.readCredentialRefusedAt.Load()
+			defer c.readCredentialProbeMu.Unlock()
+		}
 	}
 	endpoint := c.URL + "/ocs/v2.php/cloud/users/" + url.PathEscape(orcid) + "?format=json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -731,8 +759,11 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 	}
 	switch ocsResult.OCS.Meta.Statuscode {
 	case 100, 200:
+		c.readCredentialRefusedAt.CompareAndSwap(refusedAt, 0)
 		return true, nil
 	case 404:
+		// Nextcloud accepted the credential and has no such account.
+		c.readCredentialRefusedAt.CompareAndSwap(refusedAt, 0)
 		return false, nil
 	case 997:
 		c.noteReadCredentialRefused()
