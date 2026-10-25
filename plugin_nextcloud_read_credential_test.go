@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -462,4 +463,263 @@ func TestRecheckNcReadCredentialEvery_StopsWhenItsContextIsCancelled(t *testing.
 	time.Sleep(10 * recheckTestInterval)
 	_, _, after := fake.seen()
 	assert.Equal(t, len(before), len(after), "no request may leave after the loop has stopped")
+}
+
+// ---------------------------------------------------------------------------
+// A refused READ token is presented once, not once per request.
+// ---------------------------------------------------------------------------
+
+// switchableReadCredFake is a real HTTP server standing in for Nextcloud. It answers every request
+// with HTTP 401 and the OCS 997 refusal until accept is called, then with readCredOKBody, and counts
+// the requests it answered.
+type switchableReadCredFake struct {
+	mu       sync.Mutex
+	server   *httptest.Server
+	accepts  bool
+	requests int
+}
+
+func newSwitchableReadCredFake(t *testing.T) *switchableReadCredFake {
+	t.Helper()
+	f := &switchableReadCredFake{}
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.requests++
+		accepts := f.accepts
+		f.mu.Unlock()
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if accepts {
+			fmt.Fprint(w, readCredOKBody)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, readCredDenied)
+	}))
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *switchableReadCredFake) accept() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accepts = true
+}
+
+func (f *switchableReadCredFake) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requests
+}
+
+func TestHandleNcToken_ARefusedReadTokenIsPresentedOnceNotOncePerRequest(t *testing.T) {
+	fake := newReadCredFake(t, http.StatusUnauthorized, readCredDenied)
+	captureLog(t)
+	handler := HandleNcToken(readCredClient(fake.server.URL), []byte("0123456789abcdef0123456789abcdef"), "internal-secret", 2*time.Second)
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/internal/nc-token?orcid="+readCredTestOrcid, nil)
+		req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rr.Code, "attempt %d", i+1)
+		assert.JSONEq(t, `{"error":"nextcloud_read_credential_refused"}`, rr.Body.String())
+	}
+	_, _, auths := fake.seen()
+	assert.Len(t, auths, 1, "after a refusal the token is not presented again until a recheck accepts it")
+}
+
+func TestNextcloudClient_ARefusedRecheckStopsUserExistsPresentingTheToken(t *testing.T) {
+	fake := newReadCredFake(t, http.StatusUnauthorized, readCredDenied)
+	c := readCredClient(fake.server.URL)
+
+	require.ErrorIs(t, c.CheckProvisionerReadCredential(context.Background()), ErrNcReadCredentialRefused)
+	_, err := c.UserExists(context.Background(), readCredTestOrcid)
+
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	_, _, auths := fake.seen()
+	assert.Len(t, auths, 1, "a token the recheck saw refused is not presented by the existence read")
+}
+
+func TestNextcloudClient_AnAcceptedRecheckLetsUserExistsPresentTheTokenAgain(t *testing.T) {
+	fake := newSwitchableReadCredFake(t)
+	c := readCredClient(fake.server.URL)
+
+	_, err := c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	_, err = c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	require.Equal(t, 1, fake.count(), "the second read must not present the token Nextcloud refused")
+
+	fake.accept()
+	require.NoError(t, c.CheckProvisionerReadCredential(context.Background()))
+	exists, err := c.UserExists(context.Background(), readCredTestOrcid)
+
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, 3, fake.count())
+}
+
+func TestNextcloudClient_ARefusedReadTokenIsPresentedAgainAfterTheHold(t *testing.T) {
+	moveClock := setNcNow(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fake := newReadCredFake(t, http.StatusUnauthorized, readCredDenied)
+	c := readCredClient(fake.server.URL)
+
+	_, err := c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	moveClock(time.Date(2026, 1, 1, 0, 29, 0, 0, time.UTC))
+	_, err = c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	_, _, auths := fake.seen()
+	require.Len(t, auths, 1, "inside the 30-minute hold the token Nextcloud refused is not presented")
+
+	moveClock(time.Date(2026, 1, 1, 0, 31, 0, 0, time.UTC))
+	_, err = c.UserExists(context.Background(), readCredTestOrcid)
+
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	_, _, auths = fake.seen()
+	assert.Len(t, auths, 2, "once the hold has passed the token is presented once more")
+}
+
+// slowReadCredServer answers every request after a pause, with the status and
+// body held in answer, and counts the requests it receives. The pause keeps
+// concurrent callers in flight together.
+type slowReadCredServer struct {
+	server   *httptest.Server
+	requests atomic.Int32
+	status   atomic.Int32
+	body     atomic.Value
+}
+
+func newSlowReadCredServer(t *testing.T, status int, body string) *slowReadCredServer {
+	t.Helper()
+	s := &slowReadCredServer{}
+	s.status.Store(int32(status))
+	s.body.Store(body)
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.requests.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(int(s.status.Load()))
+		fmt.Fprint(w, s.body.Load().(string))
+	}))
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+func (s *slowReadCredServer) answer(status int, body string) {
+	s.status.Store(int32(status))
+	s.body.Store(body)
+}
+
+// userExistsTogether runs n UserExists calls at once and returns their results.
+func userExistsTogether(c *NextcloudClient, n int) (exists []bool, errs []error) {
+	exists = make([]bool, n)
+	errs = make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			exists[i], errs[i] = c.UserExists(context.Background(), readCredTestOrcid)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	return exists, errs
+}
+
+func TestNextcloudClient_UserExists_SimultaneousRequestsAtHoldExpiryPresentARefusedTokenOnce(t *testing.T) {
+	moveClock := setNcNow(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	server := newSlowReadCredServer(t, http.StatusUnauthorized, readCredDenied)
+	c := readCredClient(server.server.URL)
+	_, err := c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+	require.EqualValues(t, 1, server.requests.Load())
+
+	moveClock(time.Date(2026, 1, 1, 0, 31, 0, 0, time.UTC))
+	_, errs := userExistsTogether(c, 8)
+
+	for i, err := range errs {
+		assert.ErrorIs(t, err, ErrNcReadCredentialRefused, "request %d", i)
+	}
+	assert.EqualValues(t, 2, server.requests.Load(), "the refused token is presented once at expiry, not once per simultaneous request")
+}
+
+func TestNextcloudClient_UserExists_AnAcceptedTokenAtHoldExpiryEndsTheRefusal(t *testing.T) {
+	moveClock := setNcNow(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	server := newSlowReadCredServer(t, http.StatusUnauthorized, readCredDenied)
+	c := readCredClient(server.server.URL)
+	_, err := c.UserExists(context.Background(), readCredTestOrcid)
+	require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+
+	server.answer(http.StatusOK, readCredOKBody)
+	moveClock(time.Date(2026, 1, 1, 0, 31, 0, 0, time.UTC))
+	exists, errs := userExistsTogether(c, 8)
+
+	for i := range errs {
+		assert.NoError(t, errs[i], "request %d", i)
+		assert.True(t, exists[i], "request %d", i)
+	}
+	assert.EqualValues(t, 0, c.readCredentialRefusedAt.Load(), "an accepted token ends the refusal")
+}
+
+var readCredInconclusiveAnswers = []struct {
+	name   string
+	status int
+	body   string
+}{
+	{"http_429", http.StatusTooManyRequests, `slow down`},
+	{"http_500_not_json", http.StatusInternalServerError, `oops`},
+	{"ocs_998_no_rights", http.StatusNotFound, readCredNoRight},
+}
+
+func TestNextcloudClient_UserExists_AnInconclusiveAnswerAtHoldExpiryLeavesTheRefusalForTheNextCaller(t *testing.T) {
+	require.Len(t, readCredInconclusiveAnswers, 3, "a deleted case must fail this guard rather than pass quietly")
+	for _, tc := range readCredInconclusiveAnswers {
+		t.Run(tc.name, func(t *testing.T) {
+			moveClock := setNcNow(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			server := newSlowReadCredServer(t, http.StatusUnauthorized, readCredDenied)
+			c := readCredClient(server.server.URL)
+			_, err := c.UserExists(context.Background(), readCredTestOrcid)
+			require.ErrorIs(t, err, ErrNcReadCredentialRefused)
+			refusedAt := c.readCredentialRefusedAt.Load()
+			require.NotZero(t, refusedAt)
+
+			server.answer(tc.status, tc.body)
+			moveClock(time.Date(2026, 1, 1, 0, 31, 0, 0, time.UTC))
+			_, err = c.UserExists(context.Background(), readCredTestOrcid)
+			require.Error(t, err)
+			assert.False(t, errors.Is(err, ErrNcReadCredentialRefused), "an inconclusive answer is not a refusal: %v", err)
+			assert.Equal(t, refusedAt, c.readCredentialRefusedAt.Load(), "an inconclusive answer neither ends nor renews the refusal")
+			require.EqualValues(t, 2, server.requests.Load())
+
+			// Nextcloud now refuses; callers that arrive together present the token once.
+			server.answer(http.StatusUnauthorized, readCredDenied)
+			_, errs := userExistsTogether(c, 8)
+
+			for i, err := range errs {
+				assert.ErrorIs(t, err, ErrNcReadCredentialRefused, "request %d", i)
+			}
+			assert.EqualValues(t, 3, server.requests.Load(), "the next caller presents the token once; the rest act on its refusal")
+		})
+	}
+}
+
+func TestVerifyNcReadCredentialAtBoot_EmptyProvisioningUserIsFatalAndSendsNothing(t *testing.T) {
+	fake := newReadCredFake(t, http.StatusOK, readCredOKBody)
+	c := &NextcloudClient{URL: fake.server.URL, Password: readCredTestPassword, ReadPassword: readCredTestToken}
+
+	fatal, message := VerifyNcReadCredentialAtBoot(c)
+
+	assert.True(t, fatal)
+	assert.Contains(t, message, "NC_PROVISIONER_USER")
+	assert.NotContains(t, message, readCredTestToken)
+	assert.NotContains(t, message, readCredTestPassword)
+	_, _, auths := fake.seen()
+	assert.Empty(t, auths, "no request may name an empty account")
 }
