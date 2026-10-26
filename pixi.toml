@@ -62,7 +62,7 @@ test-race = """bash -c 'go test -v -count=1 -p "$(scripts/cpu_share.sh)" -skip "
 # `pixi run -m apps/id1/pixi.toml test-walkers`
 # The tests named `TestWalker...` read id1's own source tree (the credential-literal scan and the route
 # inventory). Every other test task skips them with -skip "^TestWalker"; this task runs them alone, on
-# the storage node over ssh when the checkout's .env.test declares CURATORIUM_STORAGE_NODE_ADDRESS and
+# the storage node over ssh when the checkout's env file declares CURATORIUM_STORAGE_NODE_ADDRESS and
 # locally otherwise (bin/storage_node_run.sh at the monorepo root). They compile in the untagged shape,
 # so one run covers them.
 test-walkers = """bash -c '[ -n "${CURATORIUM_ON_STORAGE_NODE:-}" ] || ! [ -f ../../bin/storage_node_run.sh ] || exec bash ../../bin/storage_node_run.sh pixi run test-walkers "$@"; P=$(scripts/cpu_share.sh) || exit 69; go test -v -count=1 -p "$P" -run "^TestWalker" ./... "$@"' _"""
