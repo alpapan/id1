@@ -94,10 +94,14 @@ const reservedTestOrcidPrefix = "0000-0000-"
 
 // testMintFixedIdentities are the identities outside the reserved test range that the
 // deployment seeds itself and that tests sign in as: the system accounts
-// 0000-0000-0000-0001 to 0000-0000-0000-0009 inclusive and the demo user.
+// 0000-0000-0000-0001 to 0000-0000-0000-0009 inclusive except 0000-0000-0000-0002,
+// and the demo user.
+//
+// 0000-0000-0000-0002 is absent on purpose: the files account owns the shared
+// folder's records and signs in nowhere. It is seeded inactive, and the test mint
+// must not be a second way to sign as it.
 var testMintFixedIdentities = map[string]bool{
 	"0000-0000-0000-0001": true,
-	"0000-0000-0000-0002": true,
 	"0000-0000-0000-0003": true,
 	"0000-0000-0000-0004": true,
 	"0000-0000-0000-0005": true,
