@@ -281,6 +281,53 @@ func TestRegisterCommitWrongNonce(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, commitRec.Code)
 }
 
+// A nonce of the correct length that differs from the issued one in a single byte
+// passes the length check and must be refused by the byte comparison itself.
+func TestRegisterCommitSameLengthWrongNonce(t *testing.T) {
+	kv := setupTestKVStore(t)
+	keyID, signingKey, err := GetOrCreateSigningKey(kv)
+	require.NoError(t, err)
+
+	privKey, pubPEM := testGenerateRSAKeyPair(t)
+	orcid := "0000-0001-2345-6789"
+	deviceId := "device-1"
+	tok, err := signJWT(orcid, []string{"orcid"}, signingKey, keyID)
+	require.NoError(t, err)
+
+	body, _ := json.Marshal(RegisterBeginRequest{PublicKeyPEM: pubPEM, DeviceId: deviceId})
+	req := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/begin?id="+orcid, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	HandleRegisterBegin(kv)(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code, "begin: %s", rec.Body.String())
+
+	var beginResp RegisterBeginResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &beginResp))
+	challengeBytes, err := base64.StdEncoding.DecodeString(beginResp.Challenge)
+	require.NoError(t, err)
+	nonce, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, challengeBytes, nil)
+	require.NoError(t, err)
+	require.Len(t, nonce, 32)
+
+	tampered := append([]byte(nil), nonce...)
+	tampered[len(tampered)-1] ^= 0x01
+
+	commitBody, _ := json.Marshal(RegisterCommitRequest{
+		RegistrationToken: beginResp.RegistrationToken,
+		Nonce:             base64.StdEncoding.EncodeToString(tampered),
+		DeviceId:          deviceId,
+	})
+	commitReq := httptest.NewRequest(http.MethodPost, "/auth/sovereign/register/commit?id="+orcid, bytes.NewReader(commitBody))
+	commitReq.Header.Set("Content-Type", "application/json")
+	commitRec := httptest.NewRecorder()
+	HandleRegisterCommit(kv)(commitRec, commitReq)
+
+	assert.Equal(t, http.StatusUnauthorized, commitRec.Code, "body: %s", commitRec.Body.String())
+	_, err = CmdGet(mustKK(t, orcid, "pub", "keys", deviceId)).execUnauthorised()
+	assert.Error(t, err, "a refused nonce must not promote the pending key")
+}
+
 func TestRegisterCommitExpiredToken(t *testing.T) {
 	kv := setupTestKVStore(t)
 	GetOrCreateSigningKey(kv)
