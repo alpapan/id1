@@ -11,6 +11,7 @@ package id1
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -288,13 +289,7 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Nonce verification failed", http.StatusUnauthorized)
 			return
 		}
-		match := true
-		for i := range expectedNonce {
-			if submittedNonce[i] != expectedNonce[i] {
-				match = false
-			}
-		}
-		if !match {
+		if subtle.ConstantTimeCompare(submittedNonce, expectedNonce) != 1 {
 			http.Error(w, "Nonce verification failed", http.StatusUnauthorized)
 			return
 		}
