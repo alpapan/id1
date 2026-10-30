@@ -229,6 +229,7 @@ func TestIsReservedTestOrcid(t *testing.T) {
 func TestIsTestMintOrcid(t *testing.T) {
 	for _, orcid := range []string{
 		"0000-0000-0000-0001",
+		"0000-0000-0000-0002",
 		"0000-0000-0000-0004",
 		"0000-0000-0000-0007",
 		"0000-0000-0000-0008",
@@ -239,7 +240,6 @@ func TestIsTestMintOrcid(t *testing.T) {
 		assert.True(t, isTestMintOrcid(orcid), orcid)
 	}
 	for _, orcid := range []string{
-		"0000-0000-0000-0002",
 		"0000-0000-0000-0010",
 		"0009-0002-8023-3658",
 		"0000-0002-1825-0097",
@@ -251,7 +251,7 @@ func TestIsTestMintOrcid(t *testing.T) {
 func TestHandleTestUser_RefusesAnIDOutsideTheReservedRange(t *testing.T) {
 	kv := setupTestKVStore(t)
 	handler := HandleTestUser(kv)
-	for _, orcid := range []string{"0000-0002-1825-0097", "0000-0000-0000-0029", "0009-0002-8023-3658", "0000-0000-0000-0002"} {
+	for _, orcid := range []string{"0000-0002-1825-0097", "0000-0000-0000-0029", "0009-0002-8023-3658"} {
 		rec := httptest.NewRecorder()
 		handler(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid="+orcid, nil))
 		assert.Equal(t, http.StatusForbidden, rec.Code, orcid)
@@ -265,7 +265,7 @@ func TestHandleTestUser_SignsTheFixedIdentitiesOutsideTheRange(t *testing.T) {
 	handler := HandleTestUser(kv)
 	_, privKey, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
-	for _, orcid := range []string{"0000-0000-0000-0001", "0000-0000-0000-0003", "0000-0000-0000-0004", "0000-0000-0000-0005", "0000-0000-0000-0006", "0000-0000-0000-0007", "0000-0000-0000-0008", "0000-0000-0000-0009", "0009-0009-9355-3782"} {
+	for _, orcid := range []string{"0000-0000-0000-0001", "0000-0000-0000-0002", "0000-0000-0000-0003", "0000-0000-0000-0004", "0000-0000-0000-0005", "0000-0000-0000-0006", "0000-0000-0000-0007", "0000-0000-0000-0008", "0000-0000-0000-0009", "0009-0009-9355-3782"} {
 		rec := httptest.NewRecorder()
 		handler(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid="+orcid, nil))
 		require.Equal(t, http.StatusOK, rec.Code, orcid)
