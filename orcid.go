@@ -456,6 +456,14 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SECURITY: an ORCID login never signs in as one of the deployment's own
+	// accounts. Refused before any device key is touched or any token is signed.
+	if isReservedOrcidBlock(orcidID) {
+		log.Printf("orcid callback refused: token response named an iD in the reserved block")
+		http.Error(w, "ORCID iD is reserved", http.StatusForbidden)
+		return
+	}
+
 	// Get or create signing key for RS256 JWT
 	keyID, privKey, err := GetOrCreateSigningKey(h.kvStore)
 	if err != nil {
