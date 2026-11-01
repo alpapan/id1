@@ -521,6 +521,8 @@ func TestOrcidCallbackLogsExchangeFailureWithoutSecrets(t *testing.T) {
 				"valid_state": {created: time.Now(), verifier: verifier},
 			}
 			h := newTestOrcidHandlerWithState(t, mockServer.URL, getFrontendURL(), states)
+			// The retry backoff is not this test's subject; skip its waits.
+			h.pause = func(time.Duration) {}
 			if h.oauth2Config.ClientSecret == "" {
 				t.Fatal("test handler must have a non-empty client secret, or the secret-absence assertion below is vacuous")
 			}
