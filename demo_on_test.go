@@ -18,6 +18,7 @@ import (
 // pages are production surface and depend on it in every environment,
 // production included.
 func TestRegisterDemoRoutes_RegistersUnconditionally(t *testing.T) {
+	t.Setenv("ORCID_DEMO_USER", "0000-0000-0000-0108")
 	mux := http.NewServeMux()
 	RegisterDemoRoutes(mux, ID1KeyValueStore{})
 
@@ -29,6 +30,7 @@ func TestRegisterDemoRoutes_RegistersUnconditionally(t *testing.T) {
 
 func TestHandleDemoUser(t *testing.T) {
 	kvStore := setupTestKVStore(t)
+	demoUser := requireDemoUserSetting(t)
 
 	handler := HandleDemoUser(kvStore)
 
@@ -62,8 +64,8 @@ func TestHandleDemoUser(t *testing.T) {
 		if !ok {
 			t.Fatal("claims should be RegisteredClaims")
 		}
-		if claims.Subject != demoUserORCID {
-			t.Errorf("expected subject %q, got %q", demoUserORCID, claims.Subject)
+		if claims.Subject != demoUser {
+			t.Errorf("expected subject %q, got %q", demoUser, claims.Subject)
 		}
 	})
 
@@ -90,7 +92,9 @@ func TestHandleDemoUser_MintsNonAdminDemoUser(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
 	require.NoError(t, err)
-	assert.Equal(t, "0009-0009-9355-3782", claims.Subject,
-		"demo endpoint must mint the non-admin demo user, never the admin ORCID 0009-0002-8023-3658")
+	assert.Equal(t, requireDemoUserSetting(t), claims.Subject,
+		"demo endpoint must mint the iD named by ORCID_DEMO_USER")
+	assert.NotEqual(t, requireRealUserSetting(t), claims.Subject,
+		"demo endpoint must never mint the iD named by ORCID_SANDBOX_REAL_USER, the administrator")
 	assert.Contains(t, claims.AMR, "demo")
 }
