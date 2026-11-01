@@ -127,10 +127,11 @@ func TestID1MintsRequireBuildTags(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			port := freePort(t)
 			startID1(t, tc.bin, map[string]string{
-				"PORT":         port,
-				"DBPATH":       t.TempDir(),
-				"MTLS_ENABLED": "false",
-				"ENV":          tc.env,
+				"PORT":            port,
+				"DBPATH":          t.TempDir(),
+				"MTLS_ENABLED":    "false",
+				"ENV":             tc.env,
+				"ORCID_DEMO_USER": requireDemoUserSetting(t),
 			})
 			client := &http.Client{Timeout: 3 * time.Second}
 			// /pub/jwks.json is registered in every env; polling it confirms readiness,
@@ -171,13 +172,13 @@ func TestID1NcEndpointRegistration(t *testing.T) {
 
 		// Registered and gated: no header means 401 from the handler, not 404
 		// from the KV catch-all.
-		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusUnauthorized)
-		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "", http.StatusUnauthorized)
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0000-0000-0000-0108", http.StatusUnauthorized)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0000-0000-0000-0108", "", http.StatusUnauthorized)
 
 		// Each handler is registered at its OWN path with its OWN method gate.
 		// These are what catch the two paths being swapped.
-		assertNcStatus(t, client, "POST", base+"/internal/nc-token?orcid=0009-0002-8023-3658", "integration-secret", http.StatusMethodNotAllowed)
-		assertNcStatus(t, client, "GET", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "integration-secret", http.StatusMethodNotAllowed)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-token?orcid=0000-0000-0000-0108", "integration-secret", http.StatusMethodNotAllowed)
+		assertNcStatus(t, client, "GET", base+"/internal/nc-provision?orcid=0000-0000-0000-0108", "integration-secret", http.StatusMethodNotAllowed)
 	})
 
 	t.Run("not_registered_when_internal_secret_is_empty", func(t *testing.T) {
@@ -196,8 +197,8 @@ func TestID1NcEndpointRegistration(t *testing.T) {
 
 		// Unrouted: both fall through to the KV catch-all, which answers 404
 		// for an unknown id.
-		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusNotFound)
-		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "", http.StatusNotFound)
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0000-0000-0000-0108", http.StatusNotFound)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0000-0000-0000-0108", "", http.StatusNotFound)
 	})
 
 	// A key that is not hex used to abort the process, which under Kubernetes
@@ -222,8 +223,8 @@ func TestID1NcEndpointRegistration(t *testing.T) {
 
 		// The two Nextcloud endpoints are unrouted rather than registered with
 		// a partially-decoded key.
-		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusNotFound)
-		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "integration-secret", http.StatusNotFound)
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0000-0000-0000-0108", http.StatusNotFound)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0000-0000-0000-0108", "integration-secret", http.StatusNotFound)
 	})
 
 	// A key that is valid hex but shorter than the provisioned 32 bytes gets
@@ -246,8 +247,8 @@ func TestID1NcEndpointRegistration(t *testing.T) {
 		assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
 		assertStatus(t, client, base+"/health", http.StatusOK)
 
-		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusNotFound)
-		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0009-0002-8023-3658", "integration-secret", http.StatusNotFound)
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0000-0000-0000-0108", http.StatusNotFound)
+		assertNcStatus(t, client, "POST", base+"/internal/nc-provision?orcid=0000-0000-0000-0108", "integration-secret", http.StatusNotFound)
 	})
 }
 
@@ -333,7 +334,7 @@ func TestID1NcReadCredentialAtBoot(t *testing.T) {
 		base := "http://127.0.0.1:" + port
 		assertJWKSHasRSAKey(t, client, base+"/pub/jwks.json")
 		assertStatus(t, client, base+"/health", http.StatusOK)
-		assertStatus(t, client, base+"/internal/nc-token?orcid=0009-0002-8023-3658", http.StatusUnauthorized)
+		assertStatus(t, client, base+"/internal/nc-token?orcid=0000-0000-0000-0108", http.StatusUnauthorized)
 	})
 }
 
@@ -393,7 +394,7 @@ func TestID1NcProvisionerPasswordAtBoot(t *testing.T) {
 		t.Fatalf("the startup check must present the login password once before serving; got %d requests", got)
 	}
 	for attempt := 1; attempt <= 3; attempt++ {
-		req, err := http.NewRequest(http.MethodPost, base+"/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
+		req, err := http.NewRequest(http.MethodPost, base+"/internal/nc-provision?orcid=0000-0000-0000-0108", nil)
 		if err != nil {
 			t.Fatalf("attempt %d: build request: %v", attempt, err)
 		}
