@@ -107,6 +107,7 @@ var wantRoutes = map[string]exposure{
 	"/internal/nc-token":             exposureInternal,
 	"/internal/nc-provision":         exposureInternal,
 	"/internal/sync_ticket":          exposureInternal,
+	"/internal/account/purge":        exposureInternal,
 	"/internal/sovereign/register":   exposureInternal,
 	"/internal/sovereign/deregister": exposureInternal,
 	// Kubernetes probe target. Returns a fixed status object and no identity.
