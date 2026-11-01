@@ -335,6 +335,12 @@ type NextcloudClient struct {
 	// Nextcloud endpoints with an empty one.
 	ReadPassword string
 
+	// Transport, when set, carries every request this client sends. Nil keeps
+	// the default: the TLS transport BuildTLSTransport returns, or Go's own
+	// when it returns none. NewNextcloudClient leaves it nil; a test sets it
+	// to answer in memory.
+	Transport http.RoundTripper
+
 	// rejectionStreaks counts consecutive refused mints per ORCID, cleared for
 	// that ORCID as soon as one of their mints succeeds. It exists only to tell
 	// an expected first-login refusal apart from a user who is never going to
@@ -402,6 +408,20 @@ type NextcloudClient struct {
 type ncProvisionLock struct {
 	mu   sync.Mutex
 	refs int
+}
+
+// httpClient is the HTTP client every request to Nextcloud goes through,
+// bounded by ncHTTPClientTimeout.
+func (c *NextcloudClient) httpClient() *http.Client {
+	client := &http.Client{Timeout: ncHTTPClientTimeout}
+	if c.Transport != nil {
+		client.Transport = c.Transport
+		return client
+	}
+	if transport, _ := BuildTLSTransport(); transport != nil {
+		client.Transport = transport
+	}
+	return client
 }
 
 // acquireProvisionLock returns the (possibly new) lock guarding provisioning
@@ -495,10 +515,7 @@ func (c *NextcloudClient) EnsureUserExists(ctx context.Context, orcid, password 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(c.Username, c.Password)
 
-	client := &http.Client{Timeout: ncHTTPClientTimeout}
-	if transport, _ := BuildTLSTransport(); transport != nil {
-		client.Transport = transport
-	}
+	client := c.httpClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
@@ -577,10 +594,7 @@ func (c *NextcloudClient) MintAppToken(ctx context.Context, orcid, userPassword,
 	req.Header.Set("User-Agent", userAgent)
 	req.SetBasicAuth(orcid, userPassword)
 
-	client := &http.Client{Timeout: ncHTTPClientTimeout}
-	if transport, _ := BuildTLSTransport(); transport != nil {
-		client.Transport = transport
-	}
+	client := c.httpClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request: %w", err)
@@ -732,10 +746,7 @@ func (c *NextcloudClient) UserExists(ctx context.Context, orcid string) (bool, e
 	req.Header.Set("OCS-APIREQUEST", "true")
 	req.SetBasicAuth(c.Username, c.readAuthPassword())
 
-	client := &http.Client{Timeout: ncHTTPClientTimeout}
-	if transport, _ := BuildTLSTransport(); transport != nil {
-		client.Transport = transport
-	}
+	client := c.httpClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("request: %w", err)
@@ -866,10 +877,7 @@ func (c *NextcloudClient) CheckProvisionerReadCredential(ctx context.Context) er
 	req.Header.Set("OCS-APIREQUEST", "true")
 	req.SetBasicAuth(c.Username, c.ReadPassword)
 
-	client := &http.Client{Timeout: ncHTTPClientTimeout}
-	if transport, _ := BuildTLSTransport(); transport != nil {
-		client.Transport = transport
-	}
+	client := c.httpClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
@@ -952,10 +960,7 @@ func (c *NextcloudClient) CheckProvisionerPassword(ctx context.Context) error {
 	req.Header.Set("OCS-APIREQUEST", "true")
 	req.SetBasicAuth(c.Username, c.Password)
 
-	client := &http.Client{Timeout: ncHTTPClientTimeout}
-	if transport, _ := BuildTLSTransport(); transport != nil {
-		client.Transport = transport
-	}
+	client := c.httpClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
