@@ -35,7 +35,7 @@ func TestMintAppToken_RateLimitLogNamesTheResetCommand(t *testing.T) {
 	logged := captureLog(t)
 
 	c := &NextcloudClient{URL: srv.URL}
-	_, err := c.MintAppToken(context.Background(), "0009-0002-8023-3658", "NC_derivedPw", NcMintUserAgent)
+	_, err := c.MintAppToken(context.Background(), "0000-0000-0000-0108", "NC_derivedPw", NcMintUserAgent)
 
 	require.ErrorIs(t, err, ErrNextcloudRateLimited)
 	assert.Contains(t, logged(), ncThrottleResetCommand,
@@ -47,7 +47,7 @@ func TestNextcloudClient_EnsureUserExists_RateLimitIsReportedAsRateLimit(t *test
 	logged := captureLog(t)
 
 	c := &NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}
-	err := c.EnsureUserExists(context.Background(), "0009-0002-8023-3658", "NC_derivedPw")
+	err := c.EnsureUserExists(context.Background(), "0000-0000-0000-0108", "NC_derivedPw")
 
 	require.ErrorIs(t, err, ErrNextcloudRateLimited,
 		"HTTP 429 is throttling, not a malformed OCS response")
@@ -60,7 +60,7 @@ func TestHandleNcProvision_RateLimitedReturns503(t *testing.T) {
 
 	handler := HandleNcProvision(&NextcloudClient{URL: srv.URL, Username: ncProvisionerTestUser, Password: "secret"}, []byte("test-key"), "internal-secret", 2*time.Second)
 
-	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0009-0002-8023-3658", nil)
+	req := httptest.NewRequest("POST", "/internal/nc-provision?orcid=0000-0000-0000-0108", nil)
 	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const purposeTestOrcid = "0009-0002-8023-3658"
+const purposeTestOrcid = "0000-0000-0000-0108"
 
 // purposeNextcloud is a fake Nextcloud (the external boundary) that records
 // how many account-existence reads it served and the User-Agent of every
@@ -48,7 +48,7 @@ func newPurposeNextcloud(t *testing.T, acceptPassword string) *purposeNextcloud 
 		switch {
 		case strings.HasPrefix(r.URL.Path, ncUserLookupPrefix):
 			fake.lookups++
-			fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"0009-0002-8023-3658","enabled":true}}}`)
+			fmt.Fprint(w, `{"ocs":{"meta":{"statuscode":200,"status":"ok","message":"OK"},"data":{"id":"0000-0000-0000-0108","enabled":true}}}`)
 		case r.URL.Path == "/ocs/v2.php/core/getapppassword":
 			fake.mintUserAgents = append(fake.mintUserAgents, r.Header.Get("User-Agent"))
 			_, password, _ := r.BasicAuth()

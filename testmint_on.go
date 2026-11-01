@@ -94,7 +94,8 @@ const reservedTestOrcidPrefix = "0000-0000-"
 
 // testMintFixedIdentities are the identities outside the reserved test range that the
 // deployment seeds itself and that tests sign in as: the system accounts
-// 0000-0000-0000-0001 to 0000-0000-0000-0009 inclusive, and the demo user.
+// 0000-0000-0000-0001 to 0000-0000-0000-0009 inclusive. The demo user is not listed: its
+// iD is the value of ORCID_DEMO_USER, which isTestMintOrcid reads.
 //
 // 0000-0000-0000-0002 is the files account. It owns the shared folder's records
 // and holds the admin role, and the seed steps that call the backend act as it.
@@ -108,7 +109,6 @@ var testMintFixedIdentities = map[string]bool{
 	"0000-0000-0000-0007": true,
 	"0000-0000-0000-0008": true,
 	"0000-0000-0000-0009": true,
-	"0009-0009-9355-3782": true,
 }
 
 // orcidCheckCharacter is the ISO 7064 MOD 11-2 check character of a fifteen-digit
@@ -141,5 +141,9 @@ func isReservedTestOrcid(orcid string) bool {
 
 // isTestMintOrcid reports whether the test mint may sign a token for orcid.
 func isTestMintOrcid(orcid string) bool {
-	return isReservedTestOrcid(orcid) || testMintFixedIdentities[orcid]
+	if isReservedTestOrcid(orcid) || testMintFixedIdentities[orcid] {
+		return true
+	}
+	demoUser := os.Getenv("ORCID_DEMO_USER")
+	return demoUser != "" && orcid == demoUser
 }
