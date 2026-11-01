@@ -5,6 +5,7 @@ package id1
 import (
 	"fmt"
 	"net/http"
+	"os"
 )
 
 // RegisterDemoRoutes registers the demo-identity mint at /auth/unauth_demo.
@@ -14,16 +15,40 @@ import (
 // /api/demo/unauth-token, never directly. Unconditional here: no ENV check,
 // because those pages are live in every Curatorium environment including
 // production. annot8r_id1 must never carry this handler - see demo_off.go.
+// The process stops at boot (panic, the same fail-fast as jwtIssuer) when
+// ORCID_DEMO_USER is unset or is not an ORCID iD: there is no default iD.
 func RegisterDemoRoutes(mux *http.ServeMux, kvStore KeyValueStore) {
+	mustDemoUserORCID()
 	mux.HandleFunc("/auth/unauth_demo", HandleDemoUser(kvStore))
 }
 
-// demoUserORCID is the ORCID of the seeded demo_user (migrations/seed/02b_user_core_seed.sql),
-// granted all roles EXCEPT admin (migrations/seed/99_seed_tables.sql). This is deliberately
-// the NON-admin demo identity: the earlier value 0009-0002-8023-3658 is the real admin
-// ORCID (all roles including admin), so minting it here from a public endpoint handed
-// anonymous callers an admin token.
-const demoUserORCID = "0009-0009-9355-3782"
+// demoUserEnv names the setting that holds the ORCID iD of the seeded demo_user
+// (migrations/seed/02b_user_core_seed.sql), granted all roles EXCEPT admin
+// (migrations/seed/99_seed_tables.sql). The setting must name the NON-admin demo
+// identity, never the iD that ORCID_SANDBOX_REAL_USER names (the real person, who is the
+// administrator): minting an administrator from a public endpoint would hand anonymous
+// callers an admin token. There is no default.
+const demoUserEnv = "ORCID_DEMO_USER"
+
+// lookupDemoUserORCID returns the demo user's iD from the setting. It reports false when
+// the setting is unset or is not an ORCID iD, so every caller fails closed.
+func lookupDemoUserORCID() (string, bool) {
+	value := os.Getenv(demoUserEnv)
+	if !orcidIDPattern.MatchString(value) {
+		return "", false
+	}
+	return value, true
+}
+
+// mustDemoUserORCID is lookupDemoUserORCID for boot: it panics, naming the setting, when
+// the value is unusable.
+func mustDemoUserORCID() string {
+	value, ok := lookupDemoUserORCID()
+	if !ok {
+		panic(demoUserEnv + " is required and has no default; set it to the ORCID iD of the seeded non-admin demo user that /auth/unauth_demo mints tokens for")
+	}
+	return value
+}
 
 // HandleDemoUser returns an HTTP handler that issues a JWT for the non-admin demo_user.
 // Compiled in only under the `curatoriumdemo` build tag. Reachable only in-cluster on
@@ -37,12 +62,17 @@ func HandleDemoUser(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		demoORCID, ok := lookupDemoUserORCID()
+		if !ok {
+			http.Error(w, "Demo user not configured", http.StatusInternalServerError)
+			return
+		}
 		keyID, privKey, err := GetOrCreateSigningKey(kvStore)
 		if err != nil {
 			http.Error(w, "Failed to get signing key", http.StatusInternalServerError)
 			return
 		}
-		jwtToken, err := signJWT(demoUserORCID, []string{"demo"}, privKey, keyID)
+		jwtToken, err := signJWT(demoORCID, []string{"demo"}, privKey, keyID)
 		if err != nil {
 			http.Error(w, "Failed to sign JWT", http.StatusInternalServerError)
 			return

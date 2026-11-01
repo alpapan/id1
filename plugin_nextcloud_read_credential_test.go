@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	readCredTestOrcid    = "0009-0002-8023-3658"
+	readCredTestOrcid    = "0000-0000-0000-0108"
 	readCredTestAdmin    = ncProvisionerTestUser
 	readCredTestPassword = "login-password-aaa"
 	readCredTestToken    = "read-token-bbb"
