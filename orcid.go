@@ -156,6 +156,11 @@ type OrcidHandler struct {
 	// orcidExchangeHTTPTimeout" - production code (NewOrcidHandler) always
 	// sets it explicitly; a test may inject a much shorter bound.
 	exchangeTimeout time.Duration
+
+	// pause waits out the backoff between token-exchange attempts. Nil means
+	// time.Sleep, which NewOrcidHandler leaves in place; a test whose subject
+	// is not the backoff may inject a pause that returns at once.
+	pause func(time.Duration)
 }
 
 // NewOrcidHandler builds an OrcidHandler from environment variables.
@@ -434,7 +439,11 @@ func (h *OrcidHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		if attempt < maxExchangeAttempts-1 {
 			// Exponential backoff: 1s, 2s (doubling each time)
 			backoffMs := time.Duration(math.Pow(2, float64(attempt))*1000) * time.Millisecond
-			time.Sleep(backoffMs)
+			if h.pause != nil {
+				h.pause(backoffMs)
+			} else {
+				time.Sleep(backoffMs)
+			}
 		}
 	}
 

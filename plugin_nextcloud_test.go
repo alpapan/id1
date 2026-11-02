@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1027,21 +1028,41 @@ func TestHandleNcToken_BoundsItselfWithItsOwnTimeout(t *testing.T) {
 // few seconds it takes when idle. The production budget must outlast that
 // answer, or the caller is told 504 for a lookup that was about to succeed.
 func TestHandleNcToken_ProductionBudgetOutlastsASlowNextcloudRead(t *testing.T) {
-	const slowRead = 6 * time.Second
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(slowRead)
-		withAccountLookup(false, nil)(w, r)
-	}))
-	defer srv.Close()
+	synctest.Test(t, func(t *testing.T) {
+		const slowRead = 6 * time.Second
+		transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			select {
+			case <-time.After(slowRead):
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			}
+			rec := httptest.NewRecorder()
+			withAccountLookup(false, nil)(rec, req)
+			resp := rec.Result()
+			resp.Request = req
+			return resp, nil
+		})
 
-	handler := HandleNcToken(&NextcloudClient{URL: srv.URL}, []byte("test-key"), "internal-secret", NcTokenTimeout)
+		handler := HandleNcToken(&NextcloudClient{URL: "http://nextcloud.invalid", Transport: transport}, []byte("test-key"), "internal-secret", NcTokenTimeout)
 
-	req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0000-0000-0000-0108", nil)
-	req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+		req := httptest.NewRequest("GET", "/internal/nc-token?orcid=0000-0000-0000-0108", nil)
+		req.Header.Set("X-ID1-Internal-Secret", "internal-secret")
+		rr := httptest.NewRecorder()
+		started := time.Now()
+		handler.ServeHTTP(rr, req)
 
-	assert.Equal(t, http.StatusConflict, rr.Code, "a read answered after %s must still be answered, not timed out", slowRead)
+		assert.Equal(t, http.StatusConflict, rr.Code, "a read answered after %s must still be answered, not timed out", slowRead)
+		assert.GreaterOrEqual(t, time.Since(started), slowRead, "the fake read must have taken the full %s on the test's clock", slowRead)
+	})
+}
+
+// roundTripFunc answers an http.Client's requests in memory. A synctest bubble
+// never counts a real socket as blocked, so a test on a fake clock needs its
+// fake server to answer without one.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 // A caller that hangs up cancels the request context, which is not the
