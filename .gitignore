@@ -12,3 +12,6 @@ id1db
 !.audit/*.log
 **/.audit/**
 pixi.lock
+
+# Written by the build: the Go build tags, so the image tag changes with them.
+.go-tags
