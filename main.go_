@@ -313,6 +313,17 @@ func main() {
 		fmt.Println("ID1_INTERNAL_SECRET not set; /internal/sync_ticket endpoint disabled")
 	}
 
+	// Internal account purge: the backend calls this while purging a removed
+	// researcher's account, to delete the whole {orcid} record (account key,
+	// device keys, salt). Same X-ID1-Internal-Secret gate as /internal/sync_ticket
+	// above. Never on the Traefik public route list - reachable only in-cluster.
+	if internalSecret != "" {
+		http.HandleFunc("/internal/account/purge", id1.HandleInternalAccountPurge())
+		fmt.Println("Registered /internal/account/purge account-record purge endpoint")
+	} else {
+		fmt.Println("ID1_INTERNAL_SECRET not set; /internal/account/purge endpoint disabled")
+	}
+
 	// Set up Automerge sync proxy (must be registered before the catch-all handler).
 	// The proxy authenticates each upgrade with a single-use ticket burned from the KV.
 	syncServerAddr := os.Getenv("AUTOMERGE_SYNC_SERVER")
