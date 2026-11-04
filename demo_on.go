@@ -53,8 +53,9 @@ func mustDemoUserORCID() string {
 // HandleDemoUser returns an HTTP handler that issues a JWT for the non-admin demo_user.
 // Compiled in only under the `curatoriumdemo` build tag. Reachable only in-cluster on
 // Curatorium's own deployment: the path is absent from the Traefik public route list
-// and from the Next.js rewrite array; the browser reaches it through the frontend
-// proxy /api/demo/unauth-token, which rate-limits it.
+// and from the frontend's dev auth passthrough (DEV_AUTH_PATHS in
+// apps/frontend/src/server/http/dev-auth-proxy.ts); the browser reaches it through the
+// frontend proxy /api/demo/unauth-token, which rate-limits it.
 // This enables the demo/blast-live page to submit real BLAST jobs without ORCID login.
 func HandleDemoUser(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
