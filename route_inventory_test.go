@@ -57,7 +57,8 @@ const (
 	// internet reaches it. Every one of these must authenticate its own caller.
 	exposurePublic exposure = iota
 	// exposureInternal: ClusterIP-only. No Traefik matcher reaches it, by an
-	// exact path or by a prefix, and no Next.js rewrite names it.
+	// exact path or by a prefix, and the frontend's dev auth passthrough
+	// (DEV_AUTH_PATHS) does not list it.
 	exposureInternal
 	// exposureBuildTagged: compiled in only under a build tag, so a binary
 	// built without that tag carries neither the route nor its handler.
@@ -100,7 +101,7 @@ var wantRoutes = map[string]exposure{
 
 	// --- Internal: in-cluster callers only. ---
 	// No matcher reaches these by an exact path or by the WebDAV PathPrefix, and
-	// no Next.js rewrite names them. The two Nextcloud bridges and the
+	// the frontend's dev auth passthrough (DEV_AUTH_PATHS) does not list them. The two Nextcloud bridges and the
 	// trusted-provisioner registration are
 	// additionally gated by X-ID1-Internal-Secret and mTLS respectively, but the
 	// gate is the second line of defence; not being routed is the first.
