@@ -438,8 +438,7 @@ type id1TokenClaims struct {
 // amr records the mint-path provenance (see id1TokenClaims.AMR); callers must
 // pass it explicitly so a forgotten mint site fails to compile rather than
 // silently minting a provenance-less token.
-// Service identities (sub="service") receive a 24-hour TTL to support
-// long-running batch jobs; ORCID user JWTs (any other subject) get 1 hour.
+// Every subject receives the same TTL, jwtExpirationHours (1 hour).
 func signJWT(orcidID string, amr []string, privateKey *rsa.PrivateKey, keyID string) (string, error) {
 	return signJWTWithAuthTime(orcidID, "", amr, privateKey, keyID, time.Now())
 }
