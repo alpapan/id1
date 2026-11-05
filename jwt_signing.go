@@ -450,11 +450,7 @@ func signJWT(orcidID string, amr []string, privateKey *rsa.PrivateKey, keyID str
 func signJWTWithAuthTime(orcidID, device string, amr []string, privateKey *rsa.PrivateKey, keyID string, authTime time.Time) (string, error) {
 	now := time.Now()
 
-	// Branch on subject: service identities get 24-hour TTL, ORCID users get 1 hour
 	ttl := time.Hour * jwtExpirationHours
-	if orcidID == "service" {
-		ttl = 24 * time.Hour
-	}
 
 	claims := id1TokenClaims{
 		BootID:   bootID,
