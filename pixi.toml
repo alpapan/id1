@@ -97,16 +97,12 @@ test-integration-curatoriumdemo = """bash -c 'go test -count=1 -p "$(scripts/cpu
 # did not run, the expansion refuses and the task never starts, instead of the cache
 # falling back beside the source in silence.
 #
-# Both tables are scoped to Unix. The script is a shell script for a shared checkout; pixi
-# runs the default activation scripts on win-64 as well and warns there that the extension
-# does not fit the platform, and a Windows machine has no shared checkout to protect.
-#
 # This block is generated. Edit scripts/pycache_prefix.sh for the path, or
 # scripts/admin/pycache_activation.py in the Curatorium monorepo for these lines, then run
 # that generator. Never edit this block in place.
 [target.unix.activation.env]
 PYTHONPYCACHEPREFIX = "${CURATORIUM_PYCACHE_PREFIX:?the pycache activation script did not run for this workspace}"
 
-[target.unix.activation]
+[activation]
 scripts = ["scripts/pycache_prefix.sh"]
 # --- END GENERATED pycache redirect ---
