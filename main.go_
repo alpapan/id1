@@ -283,7 +283,8 @@ func main() {
 	// Demo identity mint. Compiled in only under the `curatoriumdemo` build tag -
 	// Curatorium's own deployment, where it is always registered (no ENV check: the
 	// demo pages are production surface) and reachable only in-cluster, since it is
-	// on neither the Traefik public path list nor the Next.js rewrite array - the
+	// on neither the Traefik public path list nor the frontend's dev auth passthrough
+	// (DEV_AUTH_PATHS in apps/frontend/src/server/http/dev-auth-proxy.ts) - the
 	// only path to it is the frontend's in-cluster proxy /api/demo/unauth-token.
 	// annot8r_id1 never requests this tag and so never carries the handler: it has
 	// no ORCID, no browser, no Traefik, and no rate-limited proxy in front of it.
