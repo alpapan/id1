@@ -24,8 +24,8 @@ const pubKeyTTL = "604800"   // 7 days - refreshed on every login
 
 // errNotPersonSubject is returned when ?id is not an ORCID iD. This public path
 // registers a person's browser device key only. Machine and reserved identities
-// (the "service" subject, the "_system" and "_authstate" namespaces, any other
-// non-ORCID id) are provisioned through the internal-secret bootstrap at
+// (the "_system" and "_authstate" namespaces, any other non-ORCID id) are
+// provisioned through the internal-secret bootstrap at
 // {id}/pub/key, never here: a machine JWT must not be able to turn itself into a
 // lasting device key.
 const errNotPersonSubject = "id must be an ORCID iD"
