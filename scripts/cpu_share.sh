@@ -32,8 +32,15 @@ CAP=18
 # would read as a smaller host; the processors this process may run on are what count.
 # Both are unset for the call. A host with no `nproc` (BSD userland) is asked
 # `getconf _NPROCESSORS_ONLN`, which counts the online processors.
+# Every halt message names the command that was asked.
+if command -v nproc >/dev/null 2>&1; then
+    counter="nproc"
+else
+    counter="getconf _NPROCESSORS_ONLN"
+fi
+
 count_processors() {
-    if command -v nproc >/dev/null 2>&1; then
+    if [ "${counter}" = "nproc" ]; then
         (unset OMP_NUM_THREADS OMP_THREAD_LIMIT; nproc)
     else
         getconf _NPROCESSORS_ONLN
@@ -41,12 +48,12 @@ count_processors() {
 }
 
 if ! cpus="$(count_processors 2>/dev/null)"; then
-    echo "cpu_share.sh: neither nproc nor getconf _NPROCESSORS_ONLN gave the host's processor count, so it is unknown. A share cannot be derived from it." >&2
+    echo "cpu_share.sh: ${counter} failed, so the host's processor count is unknown. A share cannot be derived from it." >&2
     exit 69
 fi
 
 if ! printf '%s' "${cpus}" | grep -qE '^[0-9]+$' || [ "${cpus}" -lt 1 ]; then
-    echo "cpu_share.sh: the processor count read was '${cpus}', which is not a positive whole number of processors." >&2
+    echo "cpu_share.sh: ${counter} printed '${cpus}', which is not a positive whole number of processors." >&2
     exit 69
 fi
 
