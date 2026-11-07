@@ -30,13 +30,30 @@ CAP=18
 
 # `nproc` honours OMP_NUM_THREADS and OMP_THREAD_LIMIT, so a caller's own thread cap
 # would read as a smaller host; the processors this process may run on are what count.
-if ! cpus="$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc 2>/dev/null)"; then
-    echo "cpu_share.sh: nproc failed, so the host's processor count is unknown. A share cannot be derived from it." >&2
+# Both are unset for the call. A host with no `nproc` (BSD userland) is asked
+# `getconf _NPROCESSORS_ONLN`, which counts the online processors.
+# Every halt message names the command that was asked.
+if command -v nproc >/dev/null 2>&1; then
+    counter="nproc"
+else
+    counter="getconf _NPROCESSORS_ONLN"
+fi
+
+count_processors() {
+    if [ "${counter}" = "nproc" ]; then
+        (unset OMP_NUM_THREADS OMP_THREAD_LIMIT; nproc)
+    else
+        getconf _NPROCESSORS_ONLN
+    fi
+}
+
+if ! cpus="$(count_processors 2>/dev/null)"; then
+    echo "cpu_share.sh: ${counter} failed, so the host's processor count is unknown. A share cannot be derived from it." >&2
     exit 69
 fi
 
 if ! printf '%s' "${cpus}" | grep -qE '^[0-9]+$' || [ "${cpus}" -lt 1 ]; then
-    echo "cpu_share.sh: nproc printed '${cpus}', which is not a positive whole number of processors." >&2
+    echo "cpu_share.sh: ${counter} printed '${cpus}', which is not a positive whole number of processors." >&2
     exit 69
 fi
 
