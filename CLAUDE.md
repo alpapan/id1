@@ -44,7 +44,7 @@ Internet -> cloudflared -> Traefik (TLS-terminating IngressRoute) -> id1-router:
 ## Build from the monorepo, not locally
 
 - Do NOT `docker build -t id1:latest .` here (the upstream README suggests it). The monorepo build handles image tagging, secret injection, PVC mounts for id1's KV store, TLS cert mounting and Traefik `IngressRoute` wiring.
-- From the monorepo root (host) or the worktree: `ENV=test pixi run curatorium k3s build id1 --rebuild --drop`; then `k3s logs id1 --tail 100` and `k3s restart id1` under the same `ENV=test pixi run curatorium` prefix.
+- From the monorepo root (host) or the worktree: `ENV=test pixi run curatorium k3s build id1 --rebuild --drop`; then `k3s diag logs id1 --tail 100` and `k3s lifecycle restart id1` under the same `ENV=test pixi run curatorium` prefix.
 
 ## This checkout IS the fork
 
