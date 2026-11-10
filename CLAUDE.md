@@ -1,14 +1,28 @@
 # CLAUDE.md
 
-> **Load the `id1` skill before working in this submodule (HARD RULE).** Covers the generic KV/auth core + Curatorium deployment grafts (RS256, ORCID, sovereign key, mTLS) at file and symbol detail - this file only carries what the skill doesn't: network topology, build/test/commit. Subagents don't inherit it - name it.
+> **Load the `id1` skill before working in this submodule (HARD RULE).** Covers the generic KV/auth core and the Curatorium deployment grafts (RS256, ORCID, sovereign key, mTLS) at file and symbol detail. This file carries network topology, build, test and commit notes.
 
 ## Monorepo Context
 
-Vendored as `apps/id1` (top-level submodule). **id1 is the Curatorium auth router**, and one of several Traefik-exposed services (the others are the rclone sidecar on `/data`, apollo on `/apollo`, the frontend as the host catch-all, and the backend on `/api/v0/files/tus` on the browser host and its machine-host callback routes). Traefik routes, by exact path, `/auth/sovereign/token`, `/auth/sovereign/register/begin`, `/auth/sovereign/register/commit`, `/auth/sovereign/devices`, `/auth/orcid`, `/auth/orcid/callback`, `/auth/orcid/exchange` (the browser redeems the one-time login code the callback redirect carries for the JWT), `/auth/refresh`, `/auth/sync_ticket`, `/pub/jwks.json` and `/sync`, plus the `/nextcloud/remote.php/dav` prefix, to id1 (`Config._frontend_traefik_route_yaml`). `/internal/*` is **not** on that list and is reachable only in-cluster; everything else is ClusterIP-internal.
-
-id1 sends `Access-Control-Allow-Origin` only when the request's `Origin` equals the pod variable `CURATORIUM_BROWSER_ORIGIN` exactly. The variable comes from the `curatorium-secrets` key `FRONTEND_URL` (the bare browser origin, distinct from id1's own `FRONTEND_URL` env var, which is the full post-ORCID landing page taken from the secret key `ORCID_FRONTEND_REGISTER_URL`) through a `secretKeyRef` in `apps/backend/k8/templates/3-id1-deployment.yaml.template`, has no default, and id1 refuses to start when it is empty. The same variable gates WebSocket upgrades on both upgraders (the KV socket and `/sync`): an upgrade with no `Origin` header (a non-browser client) or with `Origin` exactly equal to it passes the origin check, and any other is refused with 403. The KV socket checks authentication first, so an unauthenticated KV upgrade is answered with 401 and the challenge, or 404, before the origin check runs; `/sync` checks the origin before it reads the ticket. A KV WebSocket message larger than `KVBodyLimitBytes` closes the connection, and so does a client message larger than `KVBodyLimitBytes` on `/sync` (`SetReadLimit` in `sync_proxy.go`; the backend-to-client direction is not capped). id1 caps every request body at 64 KiB (`DefaultBodyLimitBytes`), raises the key/value route `/{key...}` to 10 MiB (`KVBodyLimitBytes`), applies no cap to the `/nextcloud` WebDAV proxy (`BodyUncapped`), and answers 413 before any handler runs when a request declares a length over its cap; a body with no declared length fails inside the handler once it passes the cap (413 on the key/value route, the handler's own error elsewhere) (`IngressBodyLimits` and `LimitBody` in `limits.go`, wired in `main.go_`).
-
-Not in the skill: the JWT lands in `localStorage['CURATORIUM_JWT']`; same-origin sharing means a sign-in propagates cross-tab via `storage` events (`AuthProvider.tsx`).
+- Vendored as `apps/id1` (top-level submodule). id1 is the Curatorium auth router and one of several Traefik-exposed services; the others are the rclone sidecar on `/data`, apollo on `/apollo`, the frontend as the host catch-all, and the backend on `/api/v0/files/tus` on the browser host plus its machine-host callback routes.
+- Traefik routes these to id1 by exact path (`Config._frontend_traefik_route_yaml`):
+  - `/auth/sovereign/token`, `/auth/sovereign/register/begin`, `/auth/sovereign/register/commit`, `/auth/sovereign/devices`
+  - `/auth/orcid`, `/auth/orcid/callback`, `/auth/orcid/exchange` (the browser redeems the one-time login code the callback redirect carries for the JWT)
+  - `/auth/refresh`, `/auth/sync_ticket`, `/pub/jwks.json`, `/sync`
+  - plus the `/nextcloud/remote.php/dav` prefix
+- `/internal/*` is not on that list: reachable only in-cluster. Everything else is ClusterIP-internal.
+- CORS: `Access-Control-Allow-Origin` is sent only when the request's `Origin` equals the pod variable `CURATORIUM_BROWSER_ORIGIN` exactly.
+  - The variable comes from the `curatorium-secrets` key `FRONTEND_URL` (the bare browser origin) through a `secretKeyRef` in `apps/backend/k8/templates/3-id1-deployment.yaml.template`. It has no default; id1 refuses to start when it is empty.
+  - That secret key is distinct from id1's own `FRONTEND_URL` env var, the full post-ORCID landing page taken from the secret key `ORCID_FRONTEND_REGISTER_URL`.
+- WebSocket origin: the same variable gates both upgraders (the KV socket and `/sync`). An upgrade with no `Origin` header (non-browser client) or an `Origin` exactly equal to it passes; any other gets 403.
+  - The KV socket checks authentication first: an unauthenticated KV upgrade gets 401 with the challenge, or 404, before the origin check.
+  - `/sync` checks the origin before it reads the ticket.
+- Message caps: a KV WebSocket message larger than `KVBodyLimitBytes` closes the connection; so does a client message larger than `KVBodyLimitBytes` on `/sync` (`SetReadLimit` in `sync_proxy.go`; the backend-to-client direction is not capped).
+- Request body caps (`IngressBodyLimits` and `LimitBody` in `limits.go`, wired in `main.go_`):
+  - Every request: 64 KiB (`DefaultBodyLimitBytes`). Key/value route `/{key...}`: 10 MiB (`KVBodyLimitBytes`). `/nextcloud` WebDAV proxy: no cap (`BodyUncapped`).
+  - A request that declares a length over its cap gets 413 before any handler runs.
+  - A body with no declared length fails inside the handler once it passes the cap: 413 on the key/value route, the handler's own error elsewhere.
+- Not in the skill: the JWT lands in `localStorage['CURATORIUM_JWT']`; `localStorage` is per-origin, so a sign-in reaches other tabs via `storage` events (`apps/frontend/src/lib/auth/AuthProvider.tsx`).
 
 ### Service topology (Curatorium view)
 
@@ -20,54 +34,36 @@ Internet -> cloudflared -> Traefik (TLS-terminating IngressRoute) -> id1-router:
                                                                 postgres:5432 (internal)
 ```
 
-Traefik terminates TLS with the `letsencrypt-wildcard-tls` secret on the `websecure` entry point. The `frontend-sync-to-id1` and `frontend-auth-to-id1` `IngressRoute`s match `Host(<CURATORIUM_DOMAIN>)` plus the paths above and forward to `id1-router:8080`; `machine-host-to-nextcloud` does the same for `/nextcloud/remote.php/dav` on the machine domain, and is rendered only when `MACHINE_DOMAIN` is set. The upstream scheme is `http`, or `https` through the `id1-insecure` `ServersTransport` when `MTLS_ENABLED=true` (`Config._frontend_traefik_route_yaml` and `Config._machine_host_traefik_route_yaml`, rendered into `apps/backend/k8/templates/0-traefik-passthrough.yaml.template`, which defines plain `IngressRoute`s despite its name; no `IngressRouteTCP` is involved).
-
-The JWKS read is unauthenticated (internal ClusterIP) - Starlette validates the browser's user JWT against it. The backend's calls to `/internal/nc-token` and `/internal/nc-provision` carry the `X-ID1-Internal-Secret` header, which must equal id1's `ID1_INTERNAL_SECRET`.
+- The `frontend-sync-to-id1` and `frontend-auth-to-id1` `IngressRoute`s match `Host(<CURATORIUM_DOMAIN>)` plus the paths above and forward to `id1-router:8080`.
+- `machine-host-to-nextcloud` does the same for `/nextcloud/remote.php/dav` on the machine domain, rendered only when `MACHINE_DOMAIN` is set.
+- Upstream scheme is `http`, or `https` through the `id1-insecure` `ServersTransport` when `MTLS_ENABLED=true`.
+- Rendered by `Config._frontend_traefik_route_yaml` and `Config._machine_host_traefik_route_yaml` into `apps/backend/k8/templates/0-traefik-passthrough.yaml.template` (its header documents the TLS secret and the matchers); plain TLS-terminating `IngressRoute`s despite the name, no `IngressRouteTCP`.
+- The JWKS read is unauthenticated (internal ClusterIP); Starlette validates the browser's user JWT against it.
+- The backend's calls to `/internal/nc-token` and `/internal/nc-provision` carry the `X-ID1-Internal-Secret` header, which must equal id1's `ID1_INTERNAL_SECRET`.
 
 ## Build from the monorepo, not locally
 
-Do NOT `docker build -t id1:latest .` here (upstream README suggests it) - use the monorepo build system:
-
-```bash
-cd ~/software/curatorium   # or the worktree
-ENV=test pixi run curatorium k3s build id1 --rebuild --drop
-ENV=test pixi run curatorium k3s logs id1 --tail 100
-ENV=test pixi run curatorium k3s restart id1
-```
-
-Handles image tagging, secret injection, PVC mounts for id1's KV store, TLS cert mounting, Traefik `IngressRoute` wiring.
+- Do NOT `docker build -t id1:latest .` here (the upstream README suggests it). The monorepo build handles image tagging, secret injection, PVC mounts for id1's KV store, TLS cert mounting and Traefik `IngressRoute` wiring.
+- From the monorepo root (host) or the worktree: `ENV=test pixi run curatorium k3s build id1 --rebuild --drop`; then `k3s logs id1 --tail 100` and `k3s restart id1` under the same `ENV=test pixi run curatorium` prefix.
 
 ## This checkout IS the fork
 
-`apps/id1` is a checkout of `https://github.com/alpapan/id1.git` (`origin`, branch `main`) - not a
-separate source from "the fork". Submodule commits are pushed to that fork's `origin/main` so the
-monorepo pointer references a reachable SHA. `annot8r_id1`, the standalone auth authority for
-annot8r_uniprot, is built from the SAME fork source (`main.go_` renamed to `main.go`, built as a
-separate Go module with a `replace` onto the id1 lib, mirroring `apps/id1/Dockerfile`); there is no
-separate annot8r_id1 repo, and a standalone host builds it by cloning the fork directly.
+- `apps/id1` is a checkout of `https://github.com/alpapan/id1.git` (`origin`, branch `main`), not a separate source from "the fork".
+- Submodule commits are pushed to the fork's `origin/main` so the monorepo pointer references a reachable SHA.
+- `annot8r_id1` (the standalone auth authority for annot8r_uniprot) is built from the SAME fork source: `main.go_` renamed to `main.go`, built as a separate Go module with a `replace` onto the id1 lib, mirroring `apps/id1/Dockerfile`.
+- There is no separate annot8r_id1 repo; a standalone host builds it by cloning the fork directly.
 
 ## Tests
 
-```bash
-cd apps/id1
-go test ./... -v
-```
+- Run the declared task: `ENV=test pixi run -m apps/id1/pixi.toml test`; add `test-testmint`, `test-curatoriumdemo` and `test-integration` where the change touches those handlers or `main.go_` (a bare `go test` compiles neither mint handler). One test: `go test -run <name> -v` from `apps/id1`.
+- mTLS-specific tests: `tls_config_test.go`, `mtls_connectivity_test.go`.
+- **`main.go_` is a Docker build template, not a Go artefact.**
+  - The Dockerfile's build stage copies it in (`COPY main.go_ /go/src/cmd/main.go`) and compiles it as a separate `id1-main` module. It is never part of the on-disk `id1` package, so `go test ./...` never compiles it.
+  - Logic placed there is unreachable by the test suite: extract it into the `id1` package as an exported function and call it from `main.go_` (pattern: `id1.IsDevOrTestEnv(env string) bool` in `jwt_signing.go`, tested in `jwt_signing_test.go`).
+- Config resolution is `ResolveConfig(getenv)` in `config.go` (`PORT`, then `ID1_AUTH_PORT`, then 8080; `DBPATH`, then `/mnt/id1db` (pod)), unit-tested in `config_test.go`.
+- `HandleJWKS()` (in `jwt_signing.go`) serves traffic only once registered for `/pub/jwks.json` in `main.go_`. The backend middleware validates RS256 tokens against `http://id1-router:8080/pub/jwks.json` (`https` when `MTLS_ENABLED=true`).
 
-mTLS-specific tests: `tls_config_test.go`, `mtls_connectivity_test.go`.
+## Commits
 
-**`main.go_` is a Docker build template, not a Go artefact.** The Dockerfile copies it to
-`/go/src/cmd/main.go` where it compiles as a separate `id1-main` module; because it is never part of
-the on-disk `id1` package, `go test ./...` never compiles it. Logic placed there is unreachable by
-the test suite - extract it into the `id1` package as an exported function and call it from
-`main.go_` (pattern: `id1.IsDevOrTestEnv(env string) bool` in `jwt_signing.go`, tested in
-`jwt_signing_test.go`). Config resolution lives in `config.go` `ResolveConfig(getenv)`
-(`PORT` then `ID1_AUTH_PORT` then 8080; `DBPATH` then `/mnt/id1db`), unit-tested in `config_test.go`.
-
-`HandleJWKS()` is defined in `jwt_signing.go` but only serves traffic once registered as an HTTP
-handler for `/pub/jwks.json` in `main.go_` - the backend middleware validates RS256 tokens against
-`http://id1-router:8080/pub/jwks.json` (`https` when `MTLS_ENABLED=true`).
-
-## Commit submodule changes from here
-
-`cd apps/id1 && git add <file> && git commit -m "feat(id1): ..."`
-The monorepo pins a specific commit; bumping it needs a separate commit at the Curatorium monorepo root.
+- `apps/id1` is a submodule (the fork's `main`, see above); the monorepo pins a specific commit of it.
+- Commit from the monorepo root, one commit per program (root `CLAUDE.md`): stage files explicitly (`git add apps/id1/<file>`) and end the message with the `Claude-Session:` trailer the root file requires.
