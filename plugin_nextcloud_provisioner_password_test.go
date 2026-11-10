@@ -64,7 +64,7 @@ func TestNextcloudClient_EnsureUserExists_ARefusedPasswordIsSentOnceAndLoggedOnc
 			assert.Equal(t, []string{readCredBasic(readCredTestAdmin, readCredTestPassword)}, auths, "a refused login password is presented once, never again")
 			assert.Equal(t, 1, strings.Count(logged(), ncPasswordRefusedPhrase), "the refusal is logged once")
 			assert.Contains(t, logged(), "ERROR")
-			assert.Contains(t, logged(), "curatorium k3s restart id1 --force-rollout")
+			assert.Contains(t, logged(), "curatorium k3s lifecycle restart id1 --force-rollout")
 			assert.NotContains(t, logged(), readCredTestPassword)
 			assert.NotContains(t, logged(), readCredTestToken)
 		})
@@ -256,7 +256,7 @@ func TestVerifyNcProvisionerPasswordAtBoot_ARefusedPasswordIsReportedAndRemember
 
 	assert.True(t, strings.HasPrefix(message, "ERROR: "), "got %q", message)
 	assert.Contains(t, message, ncPasswordRefusedPhrase)
-	assert.Contains(t, message, "curatorium k3s restart id1 --force-rollout")
+	assert.Contains(t, message, "curatorium k3s lifecycle restart id1 --force-rollout")
 	assert.NotContains(t, message, readCredTestPassword)
 	assert.NotContains(t, message, readCredTestToken)
 	err := c.EnsureUserExists(context.Background(), readCredTestOrcid, "NC_derivedPw")
