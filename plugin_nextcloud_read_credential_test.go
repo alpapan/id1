@@ -286,8 +286,8 @@ func TestVerifyNcReadCredentialAtBoot_RefusedTokenIsFatalAndNeverEchoesTheSecret
 	assert.True(t, fatal)
 	assert.Contains(t, message, "refused")
 	assert.Contains(t, message, "NC_PROVISIONER_READ_APP_PASSWORD")
-	assert.Contains(t, message, "curatorium k3s restart id1 --force-rollout")
-	assert.NotContains(t, message, "k3s reboot")
+	assert.Contains(t, message, "curatorium k3s lifecycle restart id1 --force-rollout")
+	assert.NotContains(t, message, "k3s lifecycle reboot")
 	assert.NotContains(t, message, readCredTestToken)
 	assert.NotContains(t, message, readCredTestPassword)
 }
