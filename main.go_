@@ -7,8 +7,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"strings"
 
@@ -17,52 +15,6 @@ import (
 )
 
 var version = "latest"
-
-// nextcloudProxy creates a reverse proxy for Nextcloud requests
-func nextcloudProxy(target string) (http.HandlerFunc, error) {
-	targetURL, err := url.Parse(target)
-	if err != nil {
-		return nil, fmt.Errorf("invalid NEXTCLOUD_URL: %w", err)
-	}
-
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	if transport, err := id1.BuildTLSTransport(); err == nil && transport != nil {
-		proxy.Transport = transport
-	}
-
-	// Customize the director to strip /nextcloud prefix
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		// Strip the /nextcloud prefix from the path
-		req.URL.Path = strings.TrimPrefix(req.URL.Path, "/nextcloud")
-		if req.URL.Path == "" {
-			req.URL.Path = "/"
-		}
-		if req.URL.RawPath != "" {
-			req.URL.RawPath = strings.TrimPrefix(req.URL.RawPath, "/nextcloud")
-			if req.URL.RawPath == "" {
-				req.URL.RawPath = "/"
-			}
-		}
-
-		// Set the Host header to the target
-		req.Host = targetURL.Host
-
-		// Call the original director for any additional setup
-		originalDirector(req)
-
-		log.Printf("[nextcloud-proxy] %s %s -> %s%s", req.Method, req.URL.Path, targetURL.Host, req.URL.Path)
-	}
-
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("[nextcloud-proxy] Error: %v", err)
-		http.Error(w, "Nextcloud service unavailable", http.StatusBadGateway)
-	}
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		proxy.ServeHTTP(w, r)
-	}, nil
-}
 
 func main() {
 	// An argument-carrying invocation is operations work against the key/value
@@ -122,15 +74,23 @@ func main() {
 		fmt.Println("JWT signing key initialized")
 	}
 
-	// Set up Nextcloud proxy first (before the catch-all handler)
-	if nextcloudURL != "" {
-		proxyHandler, err := nextcloudProxy(nextcloudURL)
+	// Set up the Nextcloud proxy first (before the catch-all handler). It forwards to
+	// Nextcloud's id1-only port (NEXTCLOUD_PROXY_URL) and states the caller address
+	// there (id1.NewNextcloudProxyHandler). NEXTCLOUD_URL stays the address id1's own
+	// Nextcloud API calls use. Every key the proxy reads has no default: a missing one
+	// stops the process here, before anything listens.
+	if os.Getenv("NEXTCLOUD_PROXY_URL") != "" {
+		proxyConfig, err := id1.ResolveNextcloudProxyConfig(os.Getenv)
 		if err != nil {
-			log.Fatalf("Failed to create Nextcloud proxy: %v", err)
+			log.Fatalf("Failed to configure the Nextcloud proxy: %v", err)
 		}
-		http.HandleFunc("/nextcloud/", proxyHandler)
-		http.HandleFunc("/nextcloud", proxyHandler)
-		fmt.Println("Registered /nextcloud/* proxy handler")
+		if proxyConfig.TraefikCA == nil {
+			log.Print("\n" + id1.NoTraefikProofWarning)
+		}
+		proxyHandler := id1.NewNextcloudProxyHandler(proxyConfig)
+		http.Handle("/nextcloud/", proxyHandler)
+		http.Handle("/nextcloud", proxyHandler)
+		fmt.Printf("Registered /nextcloud/* proxy handler -> %s (edge proof: %s)\n", proxyConfig.TargetURL, proxyConfig.Rule.Method)
 	}
 
 	// Register ORCID routes BEFORE the catch-all handler.

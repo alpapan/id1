@@ -99,6 +99,20 @@ func BuildTLSConfig() (*tls.Config, error) {
 			return nil, fmt.Errorf("id1: failed to parse CA cert")
 		}
 	}
+	// TRAEFIK_PROXY_CA_FILE is the dedicated CA that signs only Traefik's client
+	// certificate for the /nextcloud proxy (id1-proxy-mtls-ca). It joins the pool so
+	// that certificate verifies on this listener; RequestFromTraefik then requires
+	// the chain to end at this CA, so a certificate from the shared cluster CA
+	// cannot stand in for it.
+	if traefikCAFile := os.Getenv("TRAEFIK_PROXY_CA_FILE"); traefikCAFile != "" {
+		traefikPEM, err := os.ReadFile(traefikCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("id1: failed to read TRAEFIK_PROXY_CA_FILE: %w", err)
+		}
+		if !pool.AppendCertsFromPEM(traefikPEM) {
+			return nil, fmt.Errorf("id1: failed to parse TRAEFIK_PROXY_CA_FILE %s", traefikCAFile)
+		}
+	}
 	cfg.ClientCAs = pool
 
 	return cfg, nil
