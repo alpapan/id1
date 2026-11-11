@@ -106,12 +106,13 @@ var ocsUserLookupHints = map[int]string{
 // ncPasswordBlockCooldown is how long id1 attempts no login for a user whose
 // existing Nextcloud account refused every derivation key. Nextcloud's
 // brute-force protection counts failed logins per caller address over a
-// 30-minute window (auth.bruteforce.max-attempts, default 10), and id1 is one
-// address for every user, so each further attempt for an account that cannot
-// authenticate spends a budget that every other user's logins draw on. No
-// login can succeed while the block holds, because the block skips the login
-// itself: it lifts only when the cooldown expires, so a user whose password is
-// repaired stays refused for up to this long.
+// 30-minute window (auth.bruteforce.max-attempts, default 10). The block stays
+// for two reasons. First, id1 runs as one replica, so id1's own logins all come
+// from one pod address. Second, each failed login spends a budget that every
+// other user's logins from that address draw on. No login can succeed while the
+// block holds, because the block skips the login itself: it lifts only when the
+// cooldown expires, so a user whose password is repaired stays refused for up
+// to this long.
 const ncPasswordBlockCooldown = 30 * time.Minute
 
 // ncPasswordBlockMaxTracked bounds the password-block table. Entries are
