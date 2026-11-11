@@ -810,7 +810,7 @@ var ErrNcProvisionerPasswordRefused = errors.New("nextcloud refused the provisio
 // empty login password of the provisioning account.
 const ncProvisionerPasswordRemedy = "Set NC_PROVISIONER_PASSWORD in curatorium-secrets with `curatorium k3s secrets sync`, " +
 	"make the provisioning account's Nextcloud password match it with `curatorium k3s secrets reconcile-nextcloud-passwords`, " +
-	"then restart id1 with `curatorium k3s restart id1 --force-rollout`: id1 sends no account-creation request after a refusal until it restarts."
+	"then restart id1 with `curatorium k3s lifecycle restart id1 --force-rollout`: id1 sends no account-creation request after a refusal until it restarts."
 
 // ncReadCredentialRefusalHold is how long UserExists presents nothing after a
 // refusal of the READ app password. One refusal per hold is far below
@@ -852,7 +852,7 @@ const NcReadCredentialRecheckInterval = 24 * time.Hour
 // READ app password.
 const ncReadCredentialRemedy = "Blank the key with `curatorium k3s secrets sync --rotate-key NC_PROVISIONER_READ_APP_PASSWORD`, " +
 	"then mint a new one with `curatorium k3s secrets reconcile-nextcloud-passwords`, which also restarts id1. " +
-	"When that reports id1 was not restarted, restart it with `curatorium k3s restart id1 --force-rollout`."
+	"When that reports id1 was not restarted, restart it with `curatorium k3s lifecycle restart id1 --force-rollout`."
 
 // readAuthPassword is the password UserExists presents: the READ app password
 // when the client holds one, otherwise the login password.
@@ -933,7 +933,7 @@ func VerifyNcReadCredentialAtBoot(c *NextcloudClient) (fatal bool, message strin
 	}
 	if c.Username == "" {
 		return true, "NC_PROVISIONER_USER is empty; id1 will not start the Nextcloud endpoints without the provisioning account's name. " +
-			"Set it and apply it with `curatorium k3s secrets sync`, then restart id1 with `curatorium k3s restart id1 --force-rollout`."
+			"Set it and apply it with `curatorium k3s secrets sync`, then restart id1 with `curatorium k3s lifecycle restart id1 --force-rollout`."
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ncReadCredentialBootTimeout)
 	defer cancel()
