@@ -9,8 +9,10 @@
 package id1
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -53,6 +55,48 @@ func newProxyUnderTest(t *testing.T, rule ClientAddressRule, ca *x509.Certificat
 		t.Fatalf("parse backend URL: %v", err)
 	}
 	return NewNextcloudProxyHandler(NextcloudProxyConfig{TargetURL: target, Rule: rule, TraefikCA: ca}), stub
+}
+
+// onComputePort returns req as if net/http had accepted it on ComputeProxyPort.
+func onComputePort(req *http.Request) *http.Request {
+	local := &net.TCPAddr{IP: net.ParseIP("10.42.0.5"), Port: 8081}
+	return req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, local))
+}
+
+func TestNextcloudProxyHandlerStatesComputeAccountAddress(t *testing.T) {
+	handler, stub := newProxyUnderTest(t, connectorTestRule(), nil)
+	req := httptest.NewRequest("PROPFIND", "/nextcloud/remote.php/dav/files/0000-0002-1825-0097/", nil)
+	req.SetBasicAuth("0000-0002-1825-0097", "app-password")
+	// An unproved peer: on the main port the connector rule refuses it with 403.
+	req.Header.Set("X-Real-Ip", "10.42.9.9")
+	req.Header.Set(ClientAddressHeader, "198.51.100.1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, onComputePort(req))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	seen := stub.requests()
+	if len(seen) != 1 {
+		t.Fatalf("Nextcloud saw %d requests, want 1", len(seen))
+	}
+	want := ComputeAccountAddress("0000-0002-1825-0097").String()
+	if len(seen[0].address) != 1 || seen[0].address[0] != want {
+		t.Fatalf("Nextcloud %s = %q, want exactly [%s]", ClientAddressHeader, seen[0].address, want)
+	}
+}
+
+func TestNextcloudProxyHandlerRefusesComputeRequestWithoutAccount(t *testing.T) {
+	handler, stub := newProxyUnderTest(t, connectorTestRule(), nil)
+	req := httptest.NewRequest("PROPFIND", "/nextcloud/remote.php/dav/files/alice/", nil)
+	req.SetBasicAuth("alice", "app-password")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, onComputePort(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if seen := stub.requests(); len(seen) != 0 {
+		t.Fatalf("Nextcloud saw %d requests, want 0", len(seen))
+	}
 }
 
 func TestNextcloudProxyHandlerStatesConnectorEdgeAddress(t *testing.T) {

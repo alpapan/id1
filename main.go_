@@ -91,6 +91,18 @@ func main() {
 		http.Handle("/nextcloud/", proxyHandler)
 		http.Handle("/nextcloud", proxyHandler)
 		fmt.Printf("Registered /nextcloud/* proxy handler -> %s (edge proof: %s)\n", proxyConfig.TargetURL, proxyConfig.Rule.Method)
+		// The compute port serves the same mux on the same addresses. A request accepted
+		// on it is attributed to its account (id1.DecideComputeAddress), so it opens only
+		// where the Nextcloud proxy is configured.
+		if port == id1.ComputeProxyPort {
+			log.Fatalf("the main port %s is the compute proxy port: the two listeners need different ports", port)
+		}
+		computeAddrs, err := id1.ListenAddresses(bindAddr, id1.ComputeProxyPort)
+		if err != nil {
+			log.Fatalf("Invalid bind address for the compute proxy port: %v", err)
+		}
+		listenAddrs = append(listenAddrs, computeAddrs...)
+		fmt.Printf("Registered compute proxy port %s: requests on it are attributed by account\n", id1.ComputeProxyPort)
 	}
 
 	// Register ORCID routes BEFORE the catch-all handler.

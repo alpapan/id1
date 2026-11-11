@@ -45,7 +45,9 @@ type NextcloudProxyConfig struct {
 
 // NewNextcloudProxyHandler returns the /nextcloud handler: it requires Traefik's client
 // certificate (when TraefikCA is set), decides the caller address, states it in
-// ClientAddressHeader and forwards the request with the /nextcloud prefix removed.
+// ClientAddressHeader and forwards the request with the /nextcloud prefix removed. A
+// request accepted on ComputeProxyPort is decided by DecideComputeAddress (one address
+// per account); every other request by cfg.Rule.
 func NewNextcloudProxyHandler(cfg NextcloudProxyConfig) http.Handler {
 	proxy := httputil.NewSingleHostReverseProxy(cfg.TargetURL)
 	if cfg.Transport != nil {
@@ -77,7 +79,12 @@ func NewNextcloudProxyHandler(cfg NextcloudProxyConfig) http.Handler {
 			http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 			return
 		}
-		decision := cfg.Rule.Decide(r.Context(), r.Header)
+		var decision ClientAddressDecision
+		if arrivedOnComputePort(r) {
+			decision = DecideComputeAddress(r)
+		} else {
+			decision = cfg.Rule.Decide(r.Context(), r.Header)
+		}
 		if decision.Status != 0 {
 			log.Printf("[nextcloud-proxy] refused %s %s with %d: %s", r.Method, r.URL.Path, decision.Status, decision.Reason)
 			http.Error(w, http.StatusText(decision.Status), decision.Status)
