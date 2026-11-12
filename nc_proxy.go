@@ -100,7 +100,7 @@ func NewNextcloudProxyHandler(cfg NextcloudProxyConfig) http.Handler {
 //
 //   - NEXTCLOUD_PROXY_URL: https URL of Nextcloud's id1-only port.
 //   - EDGE_PROOF_METHOD: connector-address or edge-secret.
-//   - CLUSTER_POD_CIDR: the pod range; an edge address inside it is refused.
+//   - POD_EGRESS_CLUSTER_POD_CIDR: the pod range; an edge address inside it is refused.
 //   - EDGE_PROOF_SECRET: required for edge-secret.
 //   - TRAEFIK_PROXY_CA_FILE: required when MTLS_ENABLED is "true".
 //   - NEXTCLOUD_CLIENT_CERT_FILE, NEXTCLOUD_CLIENT_KEY_FILE: id1's client certificate,
@@ -120,9 +120,9 @@ func ResolveNextcloudProxyConfig(getenv func(string) string) (NextcloudProxyConf
 	if err != nil {
 		return cfg, err
 	}
-	podRange, err := netip.ParsePrefix(getenv("CLUSTER_POD_CIDR"))
+	podRange, err := netip.ParsePrefix(getenv("POD_EGRESS_CLUSTER_POD_CIDR"))
 	if err != nil {
-		return cfg, fmt.Errorf("id1: CLUSTER_POD_CIDR must be a CIDR prefix, got %q: %w", getenv("CLUSTER_POD_CIDR"), err)
+		return cfg, fmt.Errorf("id1: POD_EGRESS_CLUSTER_POD_CIDR must be a CIDR prefix, got %q: %w", getenv("POD_EGRESS_CLUSTER_POD_CIDR"), err)
 	}
 	rule := ClientAddressRule{Method: method, PodRange: podRange.Masked()}
 	switch method {

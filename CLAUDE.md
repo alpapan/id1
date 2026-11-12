@@ -59,7 +59,7 @@ The variables have no defaults. They are read only when `NEXTCLOUD_PROXY_URL` is
 | `NEXTCLOUD_PROXY_URL` | https URL of Nextcloud's id1-only port (`https://nextcloud:8087`) | the `/nextcloud` proxy is not registered and id1 starts; non-https stops id1 |
 | `EDGE_PROOF_METHOD` | `connector-address` or `edge-secret` | stops id1 (when the proxy is registered); the manifest render halts first |
 | `EDGE_PROOF_SECRET` | compared with `X-Curatorium-Edge` under `edge-secret`; from `curatorium-secrets` | stops id1 under `edge-secret`; ignored under `connector-address` |
-| `CLUSTER_POD_CIDR` | the pod range; a caller address inside it is refused (400) | stops id1 |
+| `POD_EGRESS_CLUSTER_POD_CIDR` | the pod range; a caller address inside it is refused (400) | stops id1 |
 | `MTLS_ENABLED` | `true` requires Traefik's client certificate on `/nextcloud`; any other value requires none and logs a warning at start | off |
 | `TRAEFIK_PROXY_CA_FILE` | PEM CA that signs Traefik's certificate (`id1-proxy-mtls-ca`); also added to the listener's client CAs | stops id1 when `MTLS_ENABLED=true` |
 | `NEXTCLOUD_CLIENT_CERT_FILE`, `NEXTCLOUD_CLIENT_KEY_FILE` | id1's client certificate for Nextcloud (`id1-nextcloud-client`), required whatever `MTLS_ENABLED` says | stops id1 |

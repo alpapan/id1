@@ -255,14 +255,14 @@ func writeProxyEnvFiles(t *testing.T) proxyEnvFiles {
 
 func proxyEnv(files proxyEnvFiles, overrides map[string]string) func(string) string {
 	env := map[string]string{
-		"NEXTCLOUD_PROXY_URL":        "https://nextcloud:8087",
-		"EDGE_PROOF_METHOD":          "connector-address",
-		"CLUSTER_POD_CIDR":           "10.42.0.0/16",
-		"MTLS_ENABLED":               "false",
-		"NEXTCLOUD_CLIENT_CERT_FILE": files.clientCert,
-		"NEXTCLOUD_CLIENT_KEY_FILE":  files.clientKey,
-		"NEXTCLOUD_SERVER_CA_FILE":   files.serverCA,
-		"TRAEFIK_PROXY_CA_FILE":      files.traefikCA,
+		"NEXTCLOUD_PROXY_URL":         "https://nextcloud:8087",
+		"EDGE_PROOF_METHOD":           "connector-address",
+		"POD_EGRESS_CLUSTER_POD_CIDR": "10.42.0.0/16",
+		"MTLS_ENABLED":                "false",
+		"NEXTCLOUD_CLIENT_CERT_FILE":  files.clientCert,
+		"NEXTCLOUD_CLIENT_KEY_FILE":   files.clientKey,
+		"NEXTCLOUD_SERVER_CA_FILE":    files.serverCA,
+		"TRAEFIK_PROXY_CA_FILE":       files.traefikCA,
 	}
 	for k, v := range overrides {
 		env[k] = v
@@ -322,8 +322,8 @@ func TestResolveNextcloudProxyConfigRefusals(t *testing.T) {
 		{"proxy URL not https", map[string]string{"NEXTCLOUD_PROXY_URL": "http://nextcloud:80"}, "NEXTCLOUD_PROXY_URL"},
 		{"method unset", map[string]string{"EDGE_PROOF_METHOD": ""}, "EDGE_PROOF_METHOD"},
 		{"method unknown", map[string]string{"EDGE_PROOF_METHOD": "auto"}, "EDGE_PROOF_METHOD"},
-		{"pod range unset", map[string]string{"CLUSTER_POD_CIDR": ""}, "CLUSTER_POD_CIDR"},
-		{"pod range not a prefix", map[string]string{"CLUSTER_POD_CIDR": "10.42.0.0"}, "CLUSTER_POD_CIDR"},
+		{"pod range unset", map[string]string{"POD_EGRESS_CLUSTER_POD_CIDR": ""}, "POD_EGRESS_CLUSTER_POD_CIDR"},
+		{"pod range not a prefix", map[string]string{"POD_EGRESS_CLUSTER_POD_CIDR": "10.42.0.0"}, "POD_EGRESS_CLUSTER_POD_CIDR"},
 		{"edge secret unset", map[string]string{"EDGE_PROOF_METHOD": "edge-secret", "EDGE_PROOF_SECRET": ""}, "EDGE_PROOF_SECRET"},
 		{"Traefik CA unset with mTLS on", map[string]string{"MTLS_ENABLED": "true", "TRAEFIK_PROXY_CA_FILE": ""}, "TRAEFIK_PROXY_CA_FILE"},
 		{"client certificate unset", map[string]string{"NEXTCLOUD_CLIENT_CERT_FILE": ""}, "NEXTCLOUD_CLIENT_CERT_FILE"},
