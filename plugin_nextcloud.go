@@ -106,12 +106,13 @@ var ocsUserLookupHints = map[int]string{
 // ncPasswordBlockCooldown is how long id1 attempts no login for a user whose
 // existing Nextcloud account refused every derivation key. Nextcloud's
 // brute-force protection counts failed logins per caller address over a
-// 30-minute window (auth.bruteforce.max-attempts, default 10), and id1 is one
-// address for every user, so each further attempt for an account that cannot
-// authenticate spends a budget that every other user's logins draw on. No
-// login can succeed while the block holds, because the block skips the login
-// itself: it lifts only when the cooldown expires, so a user whose password is
-// repaired stays refused for up to this long.
+// 30-minute window (auth.bruteforce.max-attempts, default 10). The block stays
+// for two reasons. First, id1 runs as one replica, so id1's own logins all come
+// from one pod address. Second, each failed login spends a budget that every
+// other user's logins from that address draw on. No login can succeed while the
+// block holds, because the block skips the login itself: it lifts only when the
+// cooldown expires, so a user whose password is repaired stays refused for up
+// to this long.
 const ncPasswordBlockCooldown = 30 * time.Minute
 
 // ncPasswordBlockMaxTracked bounds the password-block table. Entries are
@@ -146,6 +147,13 @@ const NcMintUserAgent = "curatorium-auth/1"
 // tokens can tell a job token from the interactive one and read the operation
 // number back from the token's name.
 const NcJobMintUserAgentPrefix = "curatorium-job/1 op="
+
+// NcDeviceMintUserAgentPrefix begins the User-Agent of an app password minted
+// for one desktop or mobile Nextcloud client that its owner approved. The rest
+// of the User-Agent is the device name the backend sends, which matches
+// ncDeviceNamePattern. Neither the idle sweep nor a key rotation selects a
+// token by this prefix: both select NcMintUserAgent only.
+const NcDeviceMintUserAgentPrefix = "curatorium-device/1 "
 
 // NcTokenTimeout bounds the mint-only token handler. One shared budget covers
 // every Nextcloud round trip a request makes. In the steady state that is two:
@@ -1114,15 +1122,22 @@ func writeNcPasswordRejected(w http.ResponseWriter) {
 const (
 	ncPurposeInteractive = "interactive"
 	ncPurposeJob         = "job"
+	ncPurposeDevice      = "device"
 )
 
-// The three codes /internal/nc-token answers with HTTP 400 for a bad purpose, a
-// bad operation_id or a query string that does not parse. The text of each is
-// the value of the "error" field.
+// ncDeviceNamePattern is the closed character set and the length cap of the
+// name query parameter under the device purpose. No space, slash, colon or
+// control character can reach the User-Agent header.
+var ncDeviceNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// The four codes /internal/nc-token answers with HTTP 400 for a bad purpose, a
+// bad operation_id, a bad device name or a query string that does not parse.
+// The text of each is the value of the "error" field.
 var (
 	errNcInvalidPurpose     = errors.New("invalid_purpose")
 	errNcInvalidOperationID = errors.New("invalid_operation_id")
 	errNcInvalidQuery       = errors.New("invalid_query")
+	errNcInvalidDeviceName  = errors.New("invalid_device_name")
 )
 
 // ncMintUserAgentFor chooses the User-Agent a mint request carries, from the
@@ -1133,16 +1148,24 @@ var (
 // purpose would then look absent and be minted as interactive. A string that
 // does not parse is errNcInvalidQuery.
 //
-// purpose is a closed set: absent or "interactive" gives NcMintUserAgent, and
-// "job" gives NcJobMintUserAgentPrefix followed by the operation number. Any
+// purpose is a closed set: absent or "interactive" gives NcMintUserAgent,
+// "job" gives NcJobMintUserAgentPrefix followed by the operation number, and
+// "device" gives NcDeviceMintUserAgentPrefix followed by the device name. Any
 // other value, an empty or repeated purpose, is errNcInvalidPurpose.
 //
 // operation_id belongs to "job" alone. Under "job" it must appear exactly once
 // and parse with strconv.ParseInt(s, 10, 64) to a value greater than zero;
-// otherwise, and whenever it accompanies "interactive" or no purpose, the answer
-// is errNcInvalidOperationID. The User-Agent is built from the parsed integer
-// with strconv.FormatInt, never from the raw query text, so nothing but digits
-// (and a leading minus, which is refused above) can reach the header.
+// otherwise, and whenever it accompanies "interactive", "device" or no
+// purpose, the answer is errNcInvalidOperationID. The User-Agent is built from
+// the parsed integer with strconv.FormatInt, never from the raw query text, so
+// nothing but digits (and a leading minus, which is refused above) can reach
+// the header.
+//
+// name belongs to "device" alone. Under "device" it must appear exactly once
+// and match ncDeviceNamePattern; otherwise, and whenever it accompanies
+// "interactive", "job" or no purpose, the answer is errNcInvalidDeviceName. An
+// operation_id is checked before name, so "device" with both is
+// errNcInvalidOperationID.
 func ncMintUserAgentFor(rawQuery string) (string, error) {
 	query, err := url.ParseQuery(rawQuery)
 	if err != nil {
@@ -1159,10 +1182,14 @@ func ncMintUserAgentFor(rawQuery string) (string, error) {
 	if operationPresent && len(operationValues) != 1 {
 		return "", errNcInvalidOperationID
 	}
+	nameValues, namePresent := query["name"]
 	switch purpose {
 	case ncPurposeInteractive:
 		if operationPresent {
 			return "", errNcInvalidOperationID
+		}
+		if namePresent {
+			return "", errNcInvalidDeviceName
 		}
 		return NcMintUserAgent, nil
 	case ncPurposeJob:
@@ -1173,7 +1200,21 @@ func ncMintUserAgentFor(rawQuery string) (string, error) {
 		if err != nil || operationID <= 0 {
 			return "", errNcInvalidOperationID
 		}
+		if namePresent {
+			return "", errNcInvalidDeviceName
+		}
 		return NcJobMintUserAgentPrefix + strconv.FormatInt(operationID, 10), nil
+	case ncPurposeDevice:
+		if operationPresent {
+			return "", errNcInvalidOperationID
+		}
+		if !namePresent || len(nameValues) != 1 {
+			return "", errNcInvalidDeviceName
+		}
+		if !ncDeviceNamePattern.MatchString(nameValues[0]) {
+			return "", errNcInvalidDeviceName
+		}
+		return NcDeviceMintUserAgentPrefix + nameValues[0], nil
 	default:
 		return "", errNcInvalidPurpose
 	}

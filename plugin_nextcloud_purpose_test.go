@@ -121,6 +121,21 @@ func TestNcMintUserAgentFor(t *testing.T) {
 		{name: "job_repeated_operation", query: "purpose=job&operation_id=1&operation_id=2", wantErr: errNcInvalidOperationID},
 		{name: "interactive_with_operation", query: "purpose=interactive&operation_id=5", wantErr: errNcInvalidOperationID},
 		{name: "absent_purpose_with_operation", query: "operation_id=5", wantErr: errNcInvalidOperationID},
+		{name: "device_with_name", query: "purpose=device&name=Alexs-Laptop", wantAgent: "curatorium-device/1 Alexs-Laptop"},
+		{name: "device_name_with_dot_dash_underscore", query: "purpose=device&name=mirall_35.0.2-x86", wantAgent: "curatorium-device/1 mirall_35.0.2-x86"},
+		{name: "device_name_at_the_length_cap", query: "purpose=device&name=" + strings.Repeat("a", 64), wantAgent: "curatorium-device/1 " + strings.Repeat("a", 64)},
+		{name: "device_without_name", query: "purpose=device", wantErr: errNcInvalidDeviceName},
+		{name: "device_empty_name", query: "purpose=device&name=", wantErr: errNcInvalidDeviceName},
+		{name: "device_name_over_the_length_cap", query: "purpose=device&name=" + strings.Repeat("a", 65), wantErr: errNcInvalidDeviceName},
+		{name: "device_name_with_a_space", query: "purpose=device&name=Alexs%20Laptop", wantErr: errNcInvalidDeviceName},
+		{name: "device_name_with_a_slash", query: "purpose=device&name=a%2Fb", wantErr: errNcInvalidDeviceName},
+		{name: "device_name_header_injection", query: "purpose=device&name=a%0d%0aX-Evil%3A%201", wantErr: errNcInvalidDeviceName},
+		{name: "device_repeated_name", query: "purpose=device&name=a&name=b", wantErr: errNcInvalidDeviceName},
+		{name: "device_with_operation", query: "purpose=device&name=a&operation_id=5", wantErr: errNcInvalidOperationID},
+		{name: "interactive_with_name", query: "purpose=interactive&name=a", wantErr: errNcInvalidDeviceName},
+		{name: "absent_purpose_with_name", query: "name=a", wantErr: errNcInvalidDeviceName},
+		{name: "job_with_name", query: "purpose=job&operation_id=5&name=a", wantErr: errNcInvalidDeviceName},
+		{name: "wrong_case_device", query: "purpose=DEVICE&name=a", wantErr: errNcInvalidPurpose},
 	}
 
 	for _, tc := range cases {
@@ -149,6 +164,7 @@ func TestHandleNcTokenPurpose_ChoosesTheUserAgentNextcloudNamesTheTokenAfter(t *
 		{name: "no_purpose_is_interactive", query: "", wantAgent: "curatorium-auth/1"},
 		{name: "interactive", query: "&purpose=interactive", wantAgent: "curatorium-auth/1"},
 		{name: "job", query: "&purpose=job&operation_id=1234", wantAgent: "curatorium-job/1 op=1234"},
+		{name: "device", query: "&purpose=device&name=Alexs-Laptop", wantAgent: "curatorium-device/1 Alexs-Laptop"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,6 +198,10 @@ func TestHandleNcTokenPurpose_RejectsABadRequestBeforeAnyNextcloudCall(t *testin
 		{name: "job_zero_operation_id", query: "&purpose=job&operation_id=0", wantCode: "invalid_operation_id"},
 		{name: "job_non_numeric_operation_id", query: "&purpose=job&operation_id=abc", wantCode: "invalid_operation_id"},
 		{name: "operation_id_without_purpose", query: "&operation_id=5", wantCode: "invalid_operation_id"},
+		{name: "device_without_name", query: "&purpose=device", wantCode: "invalid_device_name"},
+		{name: "device_name_with_a_space", query: "&purpose=device&name=a%20b", wantCode: "invalid_device_name"},
+		{name: "device_with_operation_id", query: "&purpose=device&name=a&operation_id=5", wantCode: "invalid_operation_id"},
+		{name: "name_without_purpose", query: "&name=a", wantCode: "invalid_device_name"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
