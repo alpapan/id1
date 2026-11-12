@@ -81,7 +81,7 @@ id1's `/internal/nc-token` and `/internal/nc-provision` calls to Nextcloud use `
 
 ## Tests
 
-- Run the declared task: `ENV=test pixi run -m apps/id1/pixi.toml test`; add `test-testmint`, `test-curatoriumdemo` and `test-integration` where the change touches those handlers or `main.go_` (a bare `go test` compiles neither mint handler). One test: `go test -run <name> -v` from `apps/id1`.
+- Run the declared task: `ENV=test pixi run -m apps/id1/pixi.toml test`. It runs three builds (untagged, `curatoriumdemo`, `testmint,curatoriumdemo`) and fails if any fails, so it compiles both mint handlers (a bare `go test` compiles neither). `test-testmint`, `test-curatoriumdemo` and `test-integration` each run one shape alone; add `test-integration` where the change touches `main.go_`, the only run of its real binary. One test: `go test -run <name> -v` from `apps/id1`.
 - mTLS-specific tests: `tls_config_test.go`, `mtls_connectivity_test.go`.
 - **`main.go_` is a Docker build template, not a Go artefact.**
   - The Dockerfile's build stage copies it in (`COPY main.go_ /go/src/cmd/main.go`) and compiles it as a separate `id1-main` module. It is never part of the on-disk `id1` package, so `go test ./...` never compiles it.

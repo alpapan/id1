@@ -38,16 +38,16 @@ test = """bash -c 'P=$(scripts/cpu_share.sh) || exit 69; R=0; go test -v -count=
 
 # `pixi run -m apps/id1/pixi.toml test-testmint`
 # The dev/test image shape: compiles testmint_on.go (the arbitrary-ORCID
-# /auth/test_user mint). The default `test` task compiles testmint_off.go, so
-# both shapes need running - a change that passes one can break the other.
+# /auth/test_user mint). The default `test` task runs this shape as its third
+# build (`testmint,curatoriumdemo`); this task runs the testmint shape alone.
 test-testmint = """bash -c 'go test -v -count=1 -p "$(scripts/cpu_share.sh)" -skip "^TestWalker" -tags=testmint ./... "$@"' _"""
 
 # `pixi run -m apps/id1/pixi.toml test-curatoriumdemo`
 # Curatorium's own deployment shape: compiles demo_on.go (the demo-identity
 # /auth/unauth_demo mint the four production demo pages depend on). The default
-# `test` task compiles demo_off.go (the annot8r_id1 shape, which must never carry
-# this handler) - both shapes need running, since a change that passes one can
-# break the other.
+# `test` task also runs this shape (its second and third builds); its first,
+# untagged build compiles demo_off.go (the annot8r_id1 shape, which must never
+# carry this handler). This task runs the curatoriumdemo shape alone.
 test-curatoriumdemo = """bash -c 'go test -v -count=1 -p "$(scripts/cpu_share.sh)" -skip "^TestWalker" -tags=curatoriumdemo ./... "$@"' _"""
 
 # `pixi run -m apps/id1/pixi.toml test-race`
