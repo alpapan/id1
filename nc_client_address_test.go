@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const testEdgeSecret = "0123456789abcdef0123456789abcdef"
+const testEdgeSecret = "00000000-0000-0000-0000-000000000000"
 
 func connectorTestRule() ClientAddressRule {
 	stub := &connectorLookupStub{addrs: []netip.Addr{netip.MustParseAddr("10.42.1.10"), netip.MustParseAddr("10.42.2.20")}}
