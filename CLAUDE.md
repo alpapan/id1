@@ -36,10 +36,36 @@ Internet -> cloudflared -> Traefik (TLS-terminating IngressRoute) -> id1-router:
 
 - The `frontend-sync-to-id1` and `frontend-auth-to-id1` `IngressRoute`s match `Host(<CURATORIUM_DOMAIN>)` plus the paths above and forward to `id1-router:8080`.
 - `machine-host-to-nextcloud` does the same for `/nextcloud/remote.php/dav` on the machine domain, rendered only when `MACHINE_DOMAIN` is set.
-- Upstream scheme is `http`, or `https` through the `id1-insecure` `ServersTransport` when `MTLS_ENABLED=true`.
-- Rendered by `Config._frontend_traefik_route_yaml` and `Config._machine_host_traefik_route_yaml` into `apps/backend/k8/templates/0-traefik-passthrough.yaml.template` (its header documents the TLS secret and the matchers); plain TLS-terminating `IngressRoute`s despite the name, no `IngressRouteTCP`.
+- Upstream scheme is `http`, or `https` when `MTLS_ENABLED=true`. The `/sync` route then uses the `id1-insecure` `ServersTransport`; the routes that carry `/nextcloud/remote.php/dav` (`frontend-auth-to-id1`, `machine-host-to-nextcloud` and, on the Nextcloud client hostname, `nextcloud-host-to-id1`) use `id1-proxy-transport`, which presents Traefik's client certificate `traefik-id1-proxy-client` and verifies id1's certificate.
+- Rendered by `Config._frontend_traefik_route_yaml`, `Config._machine_host_traefik_route_yaml` and `Config._nextcloud_host_traefik_route_yaml` into `apps/backend/k8/templates/0-traefik-passthrough.yaml.template` (its header documents the TLS secret and the matchers); plain TLS-terminating `IngressRoute`s despite the name, no `IngressRouteTCP`.
 - The JWKS read is unauthenticated (internal ClusterIP); Starlette validates the browser's user JWT against it.
 - The backend's calls to `/internal/nc-token` and `/internal/nc-provision` carry the `X-ID1-Internal-Secret` header, which must equal id1's `ID1_INTERNAL_SECRET`.
+
+### The `/nextcloud` proxy and the caller address
+
+The `/nextcloud` and `/nextcloud/` routes (registered in `main.go_` only when `NEXTCLOUD_PROXY_URL` is non-empty) reverse-proxy public WebDAV to Nextcloud's id1-only TLS port 8087 and state the caller's address in `X-Curatorium-Client-Address`, so Nextcloud's brute-force protection counts each caller separately. The proxy refuses a request whose address it cannot believe: it never forwards without one. The rule, the two edge-proof methods and the checks that halt a deployment are in `docs/authentication.md` ("Caller address", "Setting up and rotating the edge proof"). The rule lives in:
+
+| File | Holds |
+|---|---|
+| `nc_client_address.go` | `ClientAddressRule.Decide` (which address to state, or 400/403) and `ApplyClientAddress` (strips the caller's own `X-Curatorium-Client-Address` and `X-Curatorium-Edge`, and the `Connection` tokens naming them) |
+| `connector_set.go` | the `cloudflared-connectors.kube-system.svc.cluster.local` lookup behind the `connector-address` proof (5 s cache) |
+| `traefik_proof.go` | `RequestFromTraefik`: a verified chain with leaf common name `traefik-id1-proxy-client` ending at the `TRAEFIK_PROXY_CA_FILE` certificate |
+| `nc_proxy.go` | `ResolveNextcloudProxyConfig` (reads and validates the variables below) and the proxy handler |
+
+The variables have no defaults. They are read only when `NEXTCLOUD_PROXY_URL` is set, and then a missing or invalid one stops id1 at start (`log.Fatalf` in `main.go_`), except where the right-hand column says otherwise. The deployment sets them in `apps/backend/k8/templates/3-id1-deployment.yaml.template`.
+
+| Variable | Meaning | When unset |
+|---|---|---|
+| `NEXTCLOUD_PROXY_URL` | https URL of Nextcloud's id1-only port (`https://nextcloud:8087`) | the `/nextcloud` proxy is not registered and id1 starts; non-https stops id1 |
+| `EDGE_PROOF_METHOD` | `connector-address` or `edge-secret` | stops id1 (when the proxy is registered); the manifest render halts first |
+| `EDGE_PROOF_SECRET` | compared with `X-Curatorium-Edge` under `edge-secret`; from `curatorium-secrets` | stops id1 under `edge-secret`; ignored under `connector-address` |
+| `POD_EGRESS_CLUSTER_POD_CIDR` | the pod range; a caller address inside it is refused (400) | stops id1 |
+| `MTLS_ENABLED` | `true` requires Traefik's client certificate on `/nextcloud`; any other value requires none and logs a warning at start | off |
+| `TRAEFIK_PROXY_CA_FILE` | PEM CA that signs Traefik's certificate (`id1-proxy-mtls-ca`); also added to the listener's client CAs | stops id1 when `MTLS_ENABLED=true` |
+| `NEXTCLOUD_CLIENT_CERT_FILE`, `NEXTCLOUD_CLIENT_KEY_FILE` | id1's client certificate for Nextcloud (`id1-nextcloud-client`), required whatever `MTLS_ENABLED` says | stops id1 |
+| `NEXTCLOUD_SERVER_CA_FILE` | the only CA id1 trusts for Nextcloud's server certificate | stops id1 |
+
+id1's `/internal/nc-token` and `/internal/nc-provision` calls to Nextcloud use `NEXTCLOUD_URL` (port 80) and do not pass through this proxy. Tests: `nc_client_address_test.go`, `connector_set_test.go`, `traefik_proof_test.go`, `nc_proxy_test.go`, `tls_config_traefik_ca_test.go` and `main_nextcloud_proxy_integration_test.go`.
 
 ## Build from the monorepo, not locally
 
