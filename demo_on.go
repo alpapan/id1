@@ -23,8 +23,9 @@ func RegisterDemoRoutes(mux *http.ServeMux, kvStore KeyValueStore) {
 }
 
 // demoUserEnv names the setting that holds the ORCID iD of the seeded demo_user
-// (migrations/seed/02b_user_core_seed.sql), granted all roles EXCEPT admin
-// (migrations/seed/99_seed_tables.sql). The setting must name the NON-admin demo
+// (migrations/seed/02b_user_core_seed.sql). The seed grants it no role directly: its
+// rights come from enrolment (fn_enrol_user in migrations/base/99_seed_tables_schema.sql).
+// It is not a site admin. The setting must name the NON-admin demo
 // identity, never the iD that ORCID_SANDBOX_REAL_USER names (the real person, who is the
 // administrator): minting an administrator from a public endpoint would hand anonymous
 // callers an admin token. There is no default.

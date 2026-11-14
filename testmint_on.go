@@ -4,29 +4,62 @@ package id1
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 )
 
+const (
+	// testMintEnableEnv is the per-site opt-in, "on" or "off", with no default.
+	testMintEnableEnv = "ID1_TEST_MINT"
+	// testMintSecretEnv names the per-site secret a caller must present. It is its
+	// own key, never ID1_INTERNAL_SECRET, which also opens the destructive routes.
+	testMintSecretEnv = "ID1_TEST_MINT_SECRET"
+	// testMintSecretHeader carries the secret on a request to the mint.
+	testMintSecretHeader = "X-ID1-Test-Mint-Secret"
+)
+
 // RegisterTestMintRoutes registers the arbitrary-ORCID mint at /auth/test_user.
-// The handler exists only in a binary built with the `testmint` tag, and even
-// then registers only when ENV is dev or test.
+// The handler exists only in a binary built with the `testmint` tag. It registers
+// only when ENV is dev or test AND the site has declared ID1_TEST_MINT=on. The
+// opt-in has no default: unset or any value other than "on" or "off" halts boot, so
+// a deployment never gains the mint by omission. With the opt-in on, the secret
+// ID1_TEST_MINT_SECRET must be set too; an empty one halts boot rather than
+// leaving the route open.
 func RegisterTestMintRoutes(mux *http.ServeMux, kvStore KeyValueStore) {
 	if !IsDevOrTestEnv(os.Getenv("ENV")) {
 		return
+	}
+	switch os.Getenv(testMintEnableEnv) {
+	case "on":
+	case "off":
+		return
+	default:
+		panic(testMintEnableEnv + " is required and has no default; set it to \"on\" or \"off\" for this deployment")
+	}
+	if os.Getenv(testMintSecretEnv) == "" {
+		panic(testMintSecretEnv + " is required when " + testMintEnableEnv + "=on and has no default")
 	}
 	mux.HandleFunc("/auth/test_user", HandleTestUser(kvStore))
 }
 
 // HandleTestUser returns an HTTP handler that issues a test JWT for an arbitrary
 // ORCID. It is compiled in only under the `testmint` build tag. It uses the same
-// signing infrastructure as the ORCID callback.
+// signing infrastructure as the ORCID callback. A caller must present
+// ID1_TEST_MINT_SECRET in the X-ID1-Test-Mint-Secret header; the comparison is
+// constant-time and an unset secret refuses every caller. Each issued token is
+// logged with its iD, amr and caller address (never the token).
 func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if !secretMatches(r.Header.Get(testMintSecretHeader), os.Getenv(testMintSecretEnv)) {
+			http.Error(w, "Test mint secret required", http.StatusUnauthorized)
 			return
 		}
 
@@ -47,9 +80,8 @@ func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
-		// Optional ?amr= override (default "test"), whitelisted to the known
-		// mint-path values so the backend's provisioning gate can be exercised
-		// with a chosen provenance. An unknown value is rejected rather than
+		// Optional ?amr= override (default "test"), whitelisted to the values only
+		// a test or demo mint may stamp. An unknown value is rejected rather than
 		// silently defaulted.
 		amr := r.URL.Query().Get("amr")
 		if amr == "" {
@@ -72,16 +104,19 @@ func HandleTestUser(kvStore KeyValueStore) http.HandlerFunc {
 			return
 		}
 
+		log.Printf("test mint: issued token sub=%s amr=%s remote=%s", orcidID, amr, r.RemoteAddr)
+
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"jwt":%q}`, jwtToken)
 	}
 }
 
-// isKnownAMR reports whether v is one of the recognised authentication-method-reference
-// (mint-path provenance) values. Used to whitelist the /auth/test_user ?amr= override.
+// isKnownAMR reports whether v is an authentication-method-reference value the test
+// mint may stamp. "orcid" and "sovereign" are real-login provenance that only the
+// ORCID callback and the device-key sign-in stamp, so the mint never offers them.
 func isKnownAMR(v string) bool {
 	switch v {
-	case "test", "orcid", "sovereign", "demo":
+	case "test", "demo":
 		return true
 	default:
 		return false

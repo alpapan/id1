@@ -30,6 +30,12 @@ const pubKeyTTL = "604800"   // 7 days - refreshed on every login
 // lasting device key.
 const errNotPersonSubject = "id must be an ORCID iD"
 
+// errTrustedPathOnlySubject is returned when ?id is an identity that signs in only
+// through trusted paths (the reserved 0000-0000- block or the demo user). The public
+// enrolment path never stores a device key for it, so a short-lived test or demo
+// token cannot become a durable credential.
+const errTrustedPathOnlySubject = "id signs in only through trusted paths and cannot enrol a device key"
+
 // registerCommitStatus is the JSON body of a successful commit response.
 type registerCommitStatus struct {
 	Status string `json:"status"`
@@ -86,6 +92,10 @@ func HandleRegisterBegin(kvStore KeyValueStore) http.HandlerFunc {
 		}
 		if !orcidPattern.MatchString(orcidId) {
 			http.Error(w, errNotPersonSubject, http.StatusBadRequest)
+			return
+		}
+		if isTrustedPathOnlyOrcid(orcidId) {
+			http.Error(w, errTrustedPathOnlySubject, http.StatusForbidden)
 			return
 		}
 
@@ -219,6 +229,10 @@ func HandleRegisterCommit(kvStore KeyValueStore) http.HandlerFunc {
 		}
 		if !orcidPattern.MatchString(orcidId) {
 			http.Error(w, errNotPersonSubject, http.StatusBadRequest)
+			return
+		}
+		if isTrustedPathOnlyOrcid(orcidId) {
+			http.Error(w, errTrustedPathOnlySubject, http.StatusForbidden)
 			return
 		}
 

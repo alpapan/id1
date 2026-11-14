@@ -3,9 +3,12 @@
 package id1
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -13,10 +16,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRegisterTestMintRoutes_RegistersInDevAndTest(t *testing.T) {
+// testMintSecretForTests is the shared secret every handler test arms and presents.
+const testMintSecretForTests = "unit-test-mint-secret-value"
+
+// armTestMint sets the per-site secret the handler compares against.
+func armTestMint(t *testing.T) {
+	t.Helper()
+	t.Setenv(testMintSecretEnv, testMintSecretForTests)
+}
+
+// mintGet builds a GET to the mint carrying the secret header.
+func mintGet(target string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set(testMintSecretHeader, testMintSecretForTests)
+	return req
+}
+
+func TestRegisterTestMintRoutes_RegistersInDevAndTestWhenOptedIn(t *testing.T) {
 	for _, env := range []string{"dev", "test"} {
 		t.Run(env, func(t *testing.T) {
 			t.Setenv("ENV", env)
+			t.Setenv(testMintEnableEnv, "on")
+			armTestMint(t)
 			mux := http.NewServeMux()
 			RegisterTestMintRoutes(mux, ID1KeyValueStore{})
 
@@ -29,20 +50,131 @@ func TestRegisterTestMintRoutes_RegistersInDevAndTest(t *testing.T) {
 }
 
 // Even a testmint-tagged binary must refuse to register the mint when ENV is not
-// dev or test, so a wrongly-deployed image does not re-open the endpoint.
+// dev or test, so a wrongly-deployed image does not re-open the endpoint. The
+// opt-in being on does not override it, and an unset opt-in does not halt there.
 func TestRegisterTestMintRoutes_RefusesOutsideDevAndTest(t *testing.T) {
 	for _, env := range []string{"production", "prod", "", "TEST"} {
-		t.Run(env, func(t *testing.T) {
-			t.Setenv("ENV", env)
-			mux := http.NewServeMux()
-			RegisterTestMintRoutes(mux, ID1KeyValueStore{})
+		for _, optIn := range []string{"on", ""} {
+			t.Run(env+"/optin="+optIn, func(t *testing.T) {
+				t.Setenv("ENV", env)
+				t.Setenv(testMintEnableEnv, optIn)
+				armTestMint(t)
+				mux := http.NewServeMux()
+				RegisterTestMintRoutes(mux, ID1KeyValueStore{})
 
-			_, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, "/auth/test_user", nil))
-			if pattern != "" {
-				t.Fatalf("ENV=%q registered /auth/test_user (pattern %q); only dev/test may", env, pattern)
-			}
+				_, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, "/auth/test_user", nil))
+				if pattern != "" {
+					t.Fatalf("ENV=%q registered /auth/test_user (pattern %q); only dev/test may", env, pattern)
+				}
+			})
+		}
+	}
+}
+
+// The per-site opt-in has no default: unset or unrecognised halts boot, and "off"
+// registers nothing.
+func TestRegisterTestMintRoutes_OptInHasNoDefault(t *testing.T) {
+	armTestMint(t)
+	t.Setenv("ENV", "test")
+	for _, bad := range []string{"", "yes", "ON", "true", " on"} {
+		t.Run("halts/"+bad, func(t *testing.T) {
+			t.Setenv(testMintEnableEnv, bad)
+			assert.Panics(t, func() { RegisterTestMintRoutes(http.NewServeMux(), ID1KeyValueStore{}) })
 		})
 	}
+	t.Run("off", func(t *testing.T) {
+		t.Setenv(testMintEnableEnv, "off")
+		mux := http.NewServeMux()
+		RegisterTestMintRoutes(mux, ID1KeyValueStore{})
+		_, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, "/auth/test_user", nil))
+		assert.Empty(t, pattern)
+	})
+}
+
+// With the opt-in on and no secret, the route must never open: boot halts.
+func TestRegisterTestMintRoutes_OnWithoutSecretHalts(t *testing.T) {
+	t.Setenv("ENV", "test")
+	t.Setenv(testMintEnableEnv, "on")
+	t.Setenv(testMintSecretEnv, "")
+	assert.Panics(t, func() { RegisterTestMintRoutes(http.NewServeMux(), ID1KeyValueStore{}) })
+}
+
+func TestHandleTestUser_RequiresTheSecretHeader(t *testing.T) {
+	kv := setupTestKVStore(t)
+	armTestMint(t)
+	handler := HandleTestUser(kv)
+	cases := map[string]string{
+		"missing":          "",
+		"wrong":            "not-the-secret",
+		"prefix-of-secret": testMintSecretForTests[:5],
+		"secret-plus-more": testMintSecretForTests + "x",
+	}
+	for name, header := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0000-0028", nil)
+			if header != "" {
+				req.Header.Set(testMintSecretHeader, header)
+			}
+			rec := httptest.NewRecorder()
+			handler(rec, req)
+			assert.Equal(t, http.StatusUnauthorized, rec.Code)
+			assert.NotContains(t, rec.Body.String(), "jwt")
+		})
+	}
+	t.Run("correct", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler(rec, mintGet("/auth/test_user?orcid=0000-0000-0000-0028"))
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+	// The default-iD path (no query string) is the exposure the gate closes.
+	t.Run("default-iD-without-header", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user", nil))
+		assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+}
+
+// An unset server-side secret never matches, not even an empty header: the handler
+// fails closed even when built without going through RegisterTestMintRoutes.
+func TestHandleTestUser_UnsetSecretRefusesEveryCaller(t *testing.T) {
+	kv := setupTestKVStore(t)
+	t.Setenv(testMintSecretEnv, "")
+	for _, header := range []string{"", "anything"} {
+		req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0000-0028", nil)
+		if header != "" {
+			req.Header.Set(testMintSecretHeader, header)
+		}
+		rec := httptest.NewRecorder()
+		HandleTestUser(kv)(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "header %q", header)
+		assert.NotContains(t, rec.Body.String(), "jwt")
+	}
+}
+
+// The mint records who received a token (iD, amr, caller address) and never the token.
+func TestHandleTestUser_LogsTheMintWithoutTheToken(t *testing.T) {
+	kv := setupTestKVStore(t)
+	armTestMint(t)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	req := mintGet("/auth/test_user?orcid=0000-0000-0000-0036")
+	req.RemoteAddr = "192.0.2.7:4242"
+	rec := httptest.NewRecorder()
+	HandleTestUser(kv)(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body struct {
+		JWT string `json:"jwt"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	line := buf.String()
+	assert.Contains(t, line, "0000-0000-0000-0036")
+	assert.Contains(t, line, "test")
+	assert.Contains(t, line, "192.0.2.7")
+	assert.NotContains(t, line, body.JWT)
+	assert.NotContains(t, line, testMintSecretForTests)
 }
 
 // End-to-end: a real issuer (HandleTestUser) must produce auth_time, proving no
@@ -51,7 +183,8 @@ func TestRegisterTestMintRoutes_RefusesOutsideDevAndTest(t *testing.T) {
 func TestHandleTestUser_StampsAuthTime(t *testing.T) {
 	t.Setenv("ENV", "test")
 	kv := setupTestKVStore(t)
-	req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0019", nil)
+	armTestMint(t)
+	req := mintGet("/auth/test_user?orcid=0000-0000-0009-0019")
 	rec := httptest.NewRecorder()
 	HandleTestUser(kv)(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
@@ -70,10 +203,11 @@ func TestHandleTestUser_StampsAuthTime(t *testing.T) {
 // under the `testmint` build tag.
 func TestHandleTestUser(t *testing.T) {
 	kvStore := setupTestKVStore(t)
+	armTestMint(t)
 	handler := HandleTestUser(kvStore)
 
 	t.Run("GET returns JWT for provided ORCID", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0027", nil)
+		req := mintGet("/auth/test_user?orcid=0000-0000-0009-0027")
 		w := httptest.NewRecorder()
 		handler(w, req)
 		if w.Code != http.StatusOK {
@@ -106,7 +240,7 @@ func TestHandleTestUser(t *testing.T) {
 	})
 
 	t.Run("GET with invalid ORCID returns 400", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=not-an-orcid", nil)
+		req := mintGet("/auth/test_user?orcid=not-an-orcid")
 		w := httptest.NewRecorder()
 		handler(w, req)
 		if w.Code != http.StatusBadRequest {
@@ -115,7 +249,7 @@ func TestHandleTestUser(t *testing.T) {
 	})
 
 	t.Run("GET with no ORCID returns JWT with default ORCID", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/auth/test_user", nil)
+		req := mintGet("/auth/test_user")
 		w := httptest.NewRecorder()
 		handler(w, req)
 		if w.Code != http.StatusOK {
@@ -156,26 +290,31 @@ func TestHandleTestUser(t *testing.T) {
 }
 
 // TestHandleTestUser_AMRParam verifies the test-helper mint honours an optional
-// whitelisted ?amr= override (so a caller can mint a token with a chosen
-// mint-path provenance) and rejects an unknown value. Compiled in only under
-// the `testmint` build tag.
+// ?amr= override limited to the values only a test or demo mint may stamp, and
+// rejects every other value, including the real-login provenances "orcid" and
+// "sovereign", which only the ORCID callback and the device-key sign-in may stamp.
+// Compiled in only under the `testmint` build tag.
 func TestHandleTestUser_AMRParam(t *testing.T) {
 	kv := setupTestKVStore(t)
-	// chosen amr honoured
-	rec := httptest.NewRecorder()
-	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0035&amr=orcid", nil))
-	require.Equal(t, http.StatusOK, rec.Code)
-	var body struct {
-		JWT string `json:"jwt"`
+	armTestMint(t)
+	for _, amr := range []string{"test", "demo"} {
+		rec := httptest.NewRecorder()
+		HandleTestUser(kv)(rec, mintGet("/auth/test_user?orcid=0000-0000-0009-0035&amr="+amr))
+		require.Equal(t, http.StatusOK, rec.Code, amr)
+		var body struct {
+			JWT string `json:"jwt"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
+		require.NoError(t, err)
+		assert.Equal(t, []string{amr}, claims.AMR)
 	}
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-	claims, err := ValidateRS256JWTID1Claims(body.JWT, kv)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"orcid"}, claims.AMR)
-	// unknown amr rejected
-	rec2 := httptest.NewRecorder()
-	HandleTestUser(kv)(rec2, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0035&amr=bogus", nil))
-	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+	for _, amr := range []string{"orcid", "sovereign", "bogus"} {
+		rec := httptest.NewRecorder()
+		HandleTestUser(kv)(rec, mintGet("/auth/test_user?orcid=0000-0000-0009-0035&amr="+amr))
+		assert.Equal(t, http.StatusBadRequest, rec.Code, amr)
+		assert.NotContains(t, rec.Body.String(), "jwt", amr)
+	}
 }
 
 // TestHandleTestUser_StampsTestAMR verifies the test-helper mint stamps
@@ -183,8 +322,9 @@ func TestHandleTestUser_AMRParam(t *testing.T) {
 // login. Compiled in only under the `testmint` build tag.
 func TestHandleTestUser_StampsTestAMR(t *testing.T) {
 	kv := setupTestKVStore(t)
+	armTestMint(t)
 	rec := httptest.NewRecorder()
-	HandleTestUser(kv)(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid=0000-0000-0009-0035", nil))
+	HandleTestUser(kv)(rec, mintGet("/auth/test_user?orcid=0000-0000-0009-0035"))
 	require.Equal(t, http.StatusOK, rec.Code)
 	var body struct {
 		JWT string `json:"jwt"`
@@ -250,10 +390,11 @@ func TestIsTestMintOrcid(t *testing.T) {
 
 func TestHandleTestUser_RefusesAnIDOutsideTheReservedRange(t *testing.T) {
 	kv := setupTestKVStore(t)
+	armTestMint(t)
 	handler := HandleTestUser(kv)
 	for _, orcid := range []string{"0000-0002-1825-0097", "0000-0000-0000-0029"} {
 		rec := httptest.NewRecorder()
-		handler(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid="+orcid, nil))
+		handler(rec, mintGet("/auth/test_user?orcid="+orcid))
 		assert.Equal(t, http.StatusForbidden, rec.Code, orcid)
 		assert.Contains(t, rec.Body.String(), "ORCID iD outside the reserved test range", orcid)
 		assert.NotContains(t, rec.Body.String(), "jwt", orcid)
@@ -262,13 +403,14 @@ func TestHandleTestUser_RefusesAnIDOutsideTheReservedRange(t *testing.T) {
 
 func TestHandleTestUser_SignsTheFixedIdentitiesOutsideTheRange(t *testing.T) {
 	kv := setupTestKVStore(t)
+	armTestMint(t)
 	handler := HandleTestUser(kv)
 	_, privKey, err := GetOrCreateSigningKey(kv)
 	require.NoError(t, err)
 	fixedIdentities := []string{"0000-0000-0000-0001", "0000-0000-0000-0002", "0000-0000-0000-0003", "0000-0000-0000-0004", "0000-0000-0000-0005", "0000-0000-0000-0006", "0000-0000-0000-0007", "0000-0000-0000-0008", "0000-0000-0000-0009", requireDemoUserSetting(t)}
 	for _, orcid := range fixedIdentities {
 		rec := httptest.NewRecorder()
-		handler(rec, httptest.NewRequest(http.MethodGet, "/auth/test_user?orcid="+orcid, nil))
+		handler(rec, mintGet("/auth/test_user?orcid="+orcid))
 		require.Equal(t, http.StatusOK, rec.Code, orcid)
 		var resp map[string]string
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), orcid)

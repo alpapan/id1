@@ -42,6 +42,14 @@ func HandleRefresh(kvStore KeyValueStore) http.HandlerFunc {
 			http.Error(w, "Invalid or expired token", http.StatusUnauthorized)
 			return
 		}
+		// A demo token is renewable only through the rate-limited demo mint, never
+		// by chained refreshes.
+		for _, method := range claims.AMR {
+			if method == "demo" {
+				http.Error(w, "Demo tokens are not refreshable", http.StatusForbidden)
+				return
+			}
+		}
 		if claims.AuthTime == nil {
 			http.Error(w, "Token not refreshable", http.StatusUnauthorized)
 			return

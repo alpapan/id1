@@ -120,7 +120,8 @@ func TestID1MintsRequireBuildTags(t *testing.T) {
 		{"curatorium_prod_shape_prod_env", curatoriumProdBin, "prod", http.StatusNotFound, http.StatusOK},
 		{"curatorium_prod_shape_test_env", curatoriumProdBin, "test", http.StatusNotFound, http.StatusOK},
 		{"curatorium_devtest_shape_prod_env", curatoriumDevTestBin, "prod", http.StatusNotFound, http.StatusOK},
-		{"curatorium_devtest_shape_test_env", curatoriumDevTestBin, "test", http.StatusOK, http.StatusOK},
+		// Registered but gated: the mint answers 401 until the secret header is presented.
+		{"curatorium_devtest_shape_test_env", curatoriumDevTestBin, "test", http.StatusUnauthorized, http.StatusOK},
 	}
 
 	for _, tc := range cases {
@@ -132,6 +133,9 @@ func TestID1MintsRequireBuildTags(t *testing.T) {
 				"MTLS_ENABLED":    "false",
 				"ENV":             tc.env,
 				"ORCID_DEMO_USER": requireDemoUserSetting(t),
+				// The per-site opt-in and secret; a testmint binary in dev/test halts without them.
+				"ID1_TEST_MINT":        "on",
+				"ID1_TEST_MINT_SECRET": integrationTestMintSecret,
 			})
 			client := &http.Client{Timeout: 3 * time.Second}
 			// /pub/jwks.json is registered in every env; polling it confirms readiness,
@@ -139,6 +143,10 @@ func TestID1MintsRequireBuildTags(t *testing.T) {
 			assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
 			assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/test_user", tc.wantTestUser)
 			assertStatus(t, client, "http://127.0.0.1:"+port+"/auth/unauth_demo", tc.wantUnauthDemo)
+			if tc.wantTestUser == http.StatusUnauthorized {
+				assertStatusWithHeader(t, client, "http://127.0.0.1:"+port+"/auth/test_user?orcid=0000-0000-0000-0028", "X-ID1-Test-Mint-Secret", integrationTestMintSecret, http.StatusOK)
+				assertStatusWithHeader(t, client, "http://127.0.0.1:"+port+"/auth/test_user?orcid=0000-0000-0000-0028", "X-ID1-Test-Mint-Secret", "wrong", http.StatusUnauthorized)
+			}
 		})
 	}
 }
@@ -735,6 +743,25 @@ func assertJWKSHasRSAKey(t *testing.T, client *http.Client, url string) {
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("JWKS at %s never returned an RSA key: %v", url, lastErr)
+}
+
+const integrationTestMintSecret = "integration-test-mint-secret"
+
+func assertStatusWithHeader(t *testing.T, client *http.Client, url, header, value string, want int) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("build GET %s: %v", url, err)
+	}
+	req.Header.Set(header, value)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != want {
+		t.Fatalf("GET %s with %s = %d, want %d", url, header, resp.StatusCode, want)
+	}
 }
 
 func assertStatus(t *testing.T, client *http.Client, url string, want int) {

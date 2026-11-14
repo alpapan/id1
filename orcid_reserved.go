@@ -1,6 +1,9 @@
 package id1
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // reservedOrcidBlockPrefix opens the block of iDs this deployment keeps for its
 // own accounts: the system accounts 0000-0000-0000-0001 to 0000-0000-0000-0009
@@ -14,4 +17,16 @@ const reservedOrcidBlockPrefix = "0000-0000-"
 // groups are 0000-0000- is refused, whatever its check character.
 func isReservedOrcidBlock(orcid string) bool {
 	return strings.HasPrefix(orcid, reservedOrcidBlockPrefix)
+}
+
+// isTrustedPathOnlyOrcid reports whether orcid signs in only through trusted paths:
+// the reserved block above, or the demo user the ORCID_DEMO_USER setting names (it may
+// lie outside the block). An unset setting names no iD. Public device-key enrolment
+// refuses these identities whatever amr the presenting token carries.
+func isTrustedPathOnlyOrcid(orcid string) bool {
+	if isReservedOrcidBlock(orcid) {
+		return true
+	}
+	demoUser := os.Getenv("ORCID_DEMO_USER")
+	return demoUser != "" && orcid == demoUser
 }
