@@ -97,10 +97,6 @@ func TestNcMintUserAgentFor(t *testing.T) {
 	}{
 		{name: "absent_purpose_is_interactive", query: "", wantAgent: "curatorium-auth/1"},
 		{name: "explicit_interactive", query: "purpose=interactive", wantAgent: "curatorium-auth/1"},
-		{name: "job_with_operation", query: "purpose=job&operation_id=1234", wantAgent: "curatorium-job/1 op=1234"},
-		{name: "job_max_int64", query: "purpose=job&operation_id=9223372036854775807", wantAgent: "curatorium-job/1 op=9223372036854775807"},
-		{name: "job_plus_sign_is_built_from_the_parsed_integer", query: "purpose=job&operation_id=%2B5", wantAgent: "curatorium-job/1 op=5"},
-		{name: "job_leading_zeros_are_built_from_the_parsed_integer", query: "purpose=job&operation_id=007", wantAgent: "curatorium-job/1 op=7"},
 		{name: "malformed_percent_escape", query: "purpose=%zz", wantErr: errNcInvalidQuery},
 		{name: "semicolon_separator", query: "purpose=job&operation_id=5;x=1", wantErr: errNcInvalidQuery},
 		{name: "empty_purpose", query: "purpose=", wantErr: errNcInvalidPurpose},
@@ -108,17 +104,8 @@ func TestNcMintUserAgentFor(t *testing.T) {
 		{name: "wrong_case_purpose", query: "purpose=JOB&operation_id=5", wantErr: errNcInvalidPurpose},
 		{name: "repeated_purpose", query: "purpose=job&purpose=interactive&operation_id=5", wantErr: errNcInvalidPurpose},
 		{name: "unknown_purpose_with_operation", query: "purpose=other&operation_id=5", wantErr: errNcInvalidPurpose},
-		{name: "job_without_operation", query: "purpose=job", wantErr: errNcInvalidOperationID},
-		{name: "job_empty_operation", query: "purpose=job&operation_id=", wantErr: errNcInvalidOperationID},
-		{name: "job_zero_operation", query: "purpose=job&operation_id=0", wantErr: errNcInvalidOperationID},
-		{name: "job_negative_operation", query: "purpose=job&operation_id=-3", wantErr: errNcInvalidOperationID},
-		{name: "job_overflowing_operation", query: "purpose=job&operation_id=9223372036854775808", wantErr: errNcInvalidOperationID},
-		{name: "job_letters_after_digits", query: "purpose=job&operation_id=12abc", wantErr: errNcInvalidOperationID},
-		{name: "job_leading_space", query: "purpose=job&operation_id=%205", wantErr: errNcInvalidOperationID},
-		{name: "job_decimal", query: "purpose=job&operation_id=1.5", wantErr: errNcInvalidOperationID},
-		{name: "job_hex", query: "purpose=job&operation_id=0x10", wantErr: errNcInvalidOperationID},
-		{name: "job_header_injection", query: "purpose=job&operation_id=5%0d%0aX-Evil%3A%201", wantErr: errNcInvalidOperationID},
-		{name: "job_repeated_operation", query: "purpose=job&operation_id=1&operation_id=2", wantErr: errNcInvalidOperationID},
+		{name: "retired_job_purpose", query: "purpose=job&operation_id=5", wantErr: errNcInvalidPurpose},
+		{name: "retired_job_purpose_without_operation", query: "purpose=job", wantErr: errNcInvalidPurpose},
 		{name: "interactive_with_operation", query: "purpose=interactive&operation_id=5", wantErr: errNcInvalidOperationID},
 		{name: "absent_purpose_with_operation", query: "operation_id=5", wantErr: errNcInvalidOperationID},
 		{name: "device_with_name", query: "purpose=device&name=Alexs-Laptop", wantAgent: "curatorium-device/1 Alexs-Laptop"},
@@ -134,7 +121,6 @@ func TestNcMintUserAgentFor(t *testing.T) {
 		{name: "device_with_operation", query: "purpose=device&name=a&operation_id=5", wantErr: errNcInvalidOperationID},
 		{name: "interactive_with_name", query: "purpose=interactive&name=a", wantErr: errNcInvalidDeviceName},
 		{name: "absent_purpose_with_name", query: "name=a", wantErr: errNcInvalidDeviceName},
-		{name: "job_with_name", query: "purpose=job&operation_id=5&name=a", wantErr: errNcInvalidDeviceName},
 		{name: "wrong_case_device", query: "purpose=DEVICE&name=a", wantErr: errNcInvalidPurpose},
 	}
 
@@ -163,7 +149,6 @@ func TestHandleNcTokenPurpose_ChoosesTheUserAgentNextcloudNamesTheTokenAfter(t *
 	}{
 		{name: "no_purpose_is_interactive", query: "", wantAgent: "curatorium-auth/1"},
 		{name: "interactive", query: "&purpose=interactive", wantAgent: "curatorium-auth/1"},
-		{name: "job", query: "&purpose=job&operation_id=1234", wantAgent: "curatorium-job/1 op=1234"},
 		{name: "device", query: "&purpose=device&name=Alexs-Laptop", wantAgent: "curatorium-device/1 Alexs-Laptop"},
 	}
 	for _, tc := range cases {
@@ -194,9 +179,7 @@ func TestHandleNcTokenPurpose_RejectsABadRequestBeforeAnyNextcloudCall(t *testin
 		{name: "malformed_pair_is_not_dropped", query: "&purpose=job;x=1", wantCode: "invalid_query"},
 		{name: "unknown_purpose", query: "&purpose=admin", wantCode: "invalid_purpose"},
 		{name: "empty_purpose", query: "&purpose=", wantCode: "invalid_purpose"},
-		{name: "job_without_operation_id", query: "&purpose=job", wantCode: "invalid_operation_id"},
-		{name: "job_zero_operation_id", query: "&purpose=job&operation_id=0", wantCode: "invalid_operation_id"},
-		{name: "job_non_numeric_operation_id", query: "&purpose=job&operation_id=abc", wantCode: "invalid_operation_id"},
+		{name: "retired_job_purpose", query: "&purpose=job&operation_id=5", wantCode: "invalid_purpose"},
 		{name: "operation_id_without_purpose", query: "&operation_id=5", wantCode: "invalid_operation_id"},
 		{name: "device_without_name", query: "&purpose=device", wantCode: "invalid_device_name"},
 		{name: "device_name_with_a_space", query: "&purpose=device&name=a%20b", wantCode: "invalid_device_name"},
@@ -219,24 +202,6 @@ func TestHandleNcTokenPurpose_RejectsABadRequestBeforeAnyNextcloudCall(t *testin
 			assert.Empty(t, agents, "a refused request must mint nothing")
 		})
 	}
-}
-
-// During a derivation-key rotation the handler tries the current key, then the
-// previous one. Every attempt is a separate getapppassword request, and every
-// one must carry the job's User-Agent, or the token that finally succeeds
-// could be named for the wrong purpose.
-func TestHandleNcTokenPurpose_JobUserAgentIsSentOnEveryDerivationKeyAttempt(t *testing.T) {
-	currentKey := []byte("current-derivation-key")
-	previousKey := []byte("previous-derivation-key")
-	previousPassword, err := DeriveNextcloudPassword(previousKey, purposeTestOrcid)
-	require.NoError(t, err)
-	fake := newPurposeNextcloud(t, previousPassword)
-
-	rr := callNcToken(t, fake, currentKey, "orcid="+purposeTestOrcid+"&purpose=job&operation_id=77", previousKey)
-
-	require.Equal(t, http.StatusOK, rr.Code)
-	_, agents := fake.snapshot()
-	assert.Equal(t, []string{"curatorium-job/1 op=77", "curatorium-job/1 op=77"}, agents)
 }
 
 // MintAppToken sends the User-Agent it is given and refuses to send none: an

@@ -24,7 +24,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,13 +139,6 @@ const ncHTTPClientTimeout = 30 * time.Second
 // revocation matches on it, so changing it changes which tokens are selectable.
 // The literal is an owner decision.
 const NcMintUserAgent = "curatorium-auth/1"
-
-// NcJobMintUserAgentPrefix begins the User-Agent of an app password minted for
-// one Slurm or OVH operation. The operation number follows it as a base-10
-// integer (for example "curatorium-job/1 op=1234"), so a consumer that lists
-// tokens can tell a job token from the interactive one and read the operation
-// number back from the token's name.
-const NcJobMintUserAgentPrefix = "curatorium-job/1 op="
 
 // NcDeviceMintUserAgentPrefix begins the User-Agent of an app password minted
 // for one desktop or mobile Nextcloud client that its owner approved. The rest
@@ -575,7 +567,7 @@ func (c *NextcloudClient) refuseProvisionerPassword(shape string) error {
 // app token. OCS statuscode 200 is the only success.
 //
 // userAgent is sent as the User-Agent header unchanged. Nextcloud names the new
-// app password after it, which is how a consumer tells a job token from an
+// app password after it, which is how a consumer tells a device token from an
 // interactive one. An empty userAgent is refused before any request, because
 // Nextcloud would name the token after an empty string.
 //
@@ -1121,7 +1113,6 @@ func writeNcPasswordRejected(w http.ResponseWriter) {
 // accepts. An absent parameter means ncPurposeInteractive.
 const (
 	ncPurposeInteractive = "interactive"
-	ncPurposeJob         = "job"
 	ncPurposeDevice      = "device"
 )
 
@@ -1148,22 +1139,17 @@ var (
 // purpose would then look absent and be minted as interactive. A string that
 // does not parse is errNcInvalidQuery.
 //
-// purpose is a closed set: absent or "interactive" gives NcMintUserAgent,
-// "job" gives NcJobMintUserAgentPrefix followed by the operation number, and
+// purpose is a closed set: absent or "interactive" gives NcMintUserAgent, and
 // "device" gives NcDeviceMintUserAgentPrefix followed by the device name. Any
 // other value, an empty or repeated purpose, is errNcInvalidPurpose.
 //
-// operation_id belongs to "job" alone. Under "job" it must appear exactly once
-// and parse with strconv.ParseInt(s, 10, 64) to a value greater than zero;
-// otherwise, and whenever it accompanies "interactive", "device" or no
-// purpose, the answer is errNcInvalidOperationID. The User-Agent is built from
-// the parsed integer with strconv.FormatInt, never from the raw query text, so
-// nothing but digits (and a leading minus, which is refused above) can reach
-// the header.
+// operation_id belongs to no purpose: whenever it accompanies "interactive",
+// "device" or no purpose, or appears more than once, the answer is
+// errNcInvalidOperationID.
 //
 // name belongs to "device" alone. Under "device" it must appear exactly once
 // and match ncDeviceNamePattern; otherwise, and whenever it accompanies
-// "interactive", "job" or no purpose, the answer is errNcInvalidDeviceName. An
+// "interactive" or no purpose, the answer is errNcInvalidDeviceName. An
 // operation_id is checked before name, so "device" with both is
 // errNcInvalidOperationID.
 func ncMintUserAgentFor(rawQuery string) (string, error) {
@@ -1192,18 +1178,6 @@ func ncMintUserAgentFor(rawQuery string) (string, error) {
 			return "", errNcInvalidDeviceName
 		}
 		return NcMintUserAgent, nil
-	case ncPurposeJob:
-		if !operationPresent {
-			return "", errNcInvalidOperationID
-		}
-		operationID, err := strconv.ParseInt(operationValues[0], 10, 64)
-		if err != nil || operationID <= 0 {
-			return "", errNcInvalidOperationID
-		}
-		if namePresent {
-			return "", errNcInvalidDeviceName
-		}
-		return NcJobMintUserAgentPrefix + strconv.FormatInt(operationID, 10), nil
 	case ncPurposeDevice:
 		if operationPresent {
 			return "", errNcInvalidOperationID
@@ -1266,13 +1240,13 @@ func answerNcTokenFailure(w http.ResponseWriter, step, orcid string, err error) 
 }
 
 // HandleNcToken returns an HTTP handler for
-// GET /internal/nc-token?orcid=<X>[&purpose=<p>][&operation_id=<n>].
+// GET /internal/nc-token?orcid=<X>[&purpose=<p>][&name=<device>].
 // It requires header X-ID1-Internal-Secret to match internalSecret.
 //
 // purpose chooses the User-Agent Nextcloud names the new app password after
-// (see ncMintUserAgentFor): absent or "interactive" is NcMintUserAgent, "job"
-// with a positive integer operation_id is NcJobMintUserAgentPrefix plus that
-// integer, and anything else is answered 400 before any Nextcloud call.
+// (see ncMintUserAgentFor): absent or "interactive" is NcMintUserAgent,
+// "device" with a valid name is NcDeviceMintUserAgentPrefix plus that name,
+// and anything else is answered 400 before any Nextcloud call.
 //
 // The handler mints only. It does NOT create the Nextcloud account: that is
 // /internal/nc-provision's job, on its own wider budget. Before any login as
