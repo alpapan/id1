@@ -14,6 +14,7 @@
 - CORS: `Access-Control-Allow-Origin` is sent only when the request's `Origin` equals the pod variable `CURATORIUM_BROWSER_ORIGIN` exactly.
   - The variable comes from the `curatorium-secrets` key `FRONTEND_URL` (the bare browser origin) through a `secretKeyRef` in `apps/backend/k8/templates/3-id1-deployment.yaml.template`. It has no default; id1 refuses to start when it is empty.
   - That secret key is distinct from id1's own `FRONTEND_URL` env var, the full post-ORCID landing page taken from the secret key `ORCID_FRONTEND_REGISTER_URL`.
+- The shared host daemon (`annot8r_id1`, one per host, serving every curatorium on it) declares `ID1_HOST_DAEMON=true`. It then needs neither `CURATORIUM_NAMESPACE` nor `CURATORIUM_BROWSER_ORIGIN`, never reads them, writes no Kubernetes Secret, answers CORS with no `Access-Control-Allow-Origin` at all and refuses any WebSocket handshake that carries an `Origin` header. Without that declaration both variables keep their halt-when-unset behaviour (`TestID1RefusesToStartWithoutNamespace`, `TestID1RefusesToStartWithoutBrowserOrigin`).
 - WebSocket origin: the same variable gates both upgraders (the KV socket and `/sync`). An upgrade with no `Origin` header (non-browser client) or an `Origin` exactly equal to it passes; any other gets 403.
   - The KV socket checks authentication first: an unauthenticated KV upgrade gets 401 with the challenge, or 404, before the origin check.
   - `/sync` checks the origin before it reads the ticket.

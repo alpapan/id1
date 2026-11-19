@@ -545,6 +545,29 @@ func TestID1RefusesToStartWithoutBrowserOrigin(t *testing.T) {
 	}
 }
 
+// TestID1HostDaemonStartsWithoutNamespaceOrBrowserOrigin: the shared host
+// annot8r_id1 runs in no cluster and serves no browser page, so a deployment that
+// declares ID1_HOST_DAEMON=true starts and serves with neither CURATORIUM_NAMESPACE
+// nor CURATORIUM_BROWSER_ORIGIN. Without the declaration the same environment still
+// refuses (TestID1RefusesToStartWithoutNamespace and ...BrowserOrigin).
+func TestID1HostDaemonStartsWithoutNamespaceOrBrowserOrigin(t *testing.T) {
+	bin := buildID1Binary(t, "")
+	port := freePort(t)
+	startID1(t, bin, map[string]string{
+		"PORT":                      port,
+		"DBPATH":                    t.TempDir(),
+		"MTLS_ENABLED":              "false",
+		"ENV":                       "test",
+		"ID1_HOST_DAEMON":           "true",
+		"CURATORIUM_NAMESPACE":      "",
+		"CURATORIUM_BROWSER_ORIGIN": "",
+	})
+	client := &http.Client{Timeout: 3 * time.Second}
+	// Waits for the listener; a refused boot never serves a key set.
+	assertJWKSHasRSAKey(t, client, "http://127.0.0.1:"+port+"/pub/jwks.json")
+	assertStatus(t, client, "http://127.0.0.1:"+port+"/health", http.StatusOK)
+}
+
 // TestID1RefusesToStartWithoutBindAddr: id1 has no default bind address. With
 // BIND_ADDR explicitly empty it must exit at boot, name the variable, and never open
 // the port.

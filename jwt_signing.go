@@ -280,6 +280,10 @@ func GetOrCreateSigningKey(kvStore KeyValueStore) (string, *rsa.PrivateKey, erro
 // An unset CURATORIUM_NAMESPACE never reaches here: CuratoriumNamespace panics,
 // and main resolves it at boot before the server starts listening.
 func persistKeyToKubeSecret(privPEM []byte, keyID string) {
+	// The host daemon holds no Kubernetes Secret and has no namespace to name.
+	if HostDaemon() {
+		return
+	}
 	if err := secretWriter(privPEM, keyID); err != nil {
 		fmt.Printf(
 			"warning: the signing key was not written to curatorium-secrets: %v. "+
